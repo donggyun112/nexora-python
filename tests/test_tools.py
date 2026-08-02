@@ -25,6 +25,9 @@ class Defs:
     def get(self, name: str) -> dict[str, Any] | None:
         return self.defs.get(name)
 
+    def list(self) -> list[dict[str, Any]]:
+        return []
+
 
 def a_call(name: str, cid: str = "c1", **arguments: Any) -> ToolCall:
     return ToolCall(cid, name, arguments)

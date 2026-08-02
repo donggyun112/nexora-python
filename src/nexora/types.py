@@ -43,6 +43,14 @@ class Tools(Protocol):
         """The tool's definition, read for its `is_exclusive` / `terminates_loop` flags."""
         ...
 
+    def list(self) -> list[dict[str, Any]]:
+        """Every available tool as `{name, description, parameters}`.
+
+        The `while` loop never needs this — the model was already told what it may call. An
+        engine that builds the graph from the tool set does.
+        """
+        ...
+
 
 # ── Hooks ────────────────────────────────────────────────────────────────────
 

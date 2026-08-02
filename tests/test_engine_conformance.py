@@ -28,10 +28,31 @@ from nexora_langgraph.engine import langgraph_loop
 
 
 class ScriptedModel(GenericFakeChatModel):
-    """A fake that accepts `bind_tools`, which `create_agent` always calls."""
+    """A fake that binds tools and streams.
+
+    `GenericFakeChatModel` alone cannot do both: asking it to stream a turn that carries tool
+    calls fails with "No generations found in stream". Streaming is not optional for this
+    comparison — the whole question of whether the engines behave alike includes whether text
+    arrives token by token — so the fake implements `_stream` itself.
+    """
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
         return self
+
+    def _stream(self, messages: Any, stop: Any = None, run_manager: Any = None, **kw: Any) -> Any:
+        from langchain_core.messages import AIMessageChunk
+        from langchain_core.outputs import ChatGenerationChunk
+
+        reply = next(self.messages)
+        assert isinstance(reply, AIMessage), "script this fake with AIMessages"
+        if reply.tool_calls:
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content=reply.content, tool_calls=reply.tool_calls)
+            )
+            return
+        for i, word in enumerate(str(reply.content).split(" ")):
+            piece = word if i == 0 else " " + word
+            yield ChatGenerationChunk(message=AIMessageChunk(content=piece))
 
 
 def a_tool(name: str = "read") -> dict[str, Any]:
@@ -65,8 +86,27 @@ async def run_langgraph(
     return [e async for e in langgraph_loop(model, tools, "hi", **kw)]
 
 
-def types_of(events: list[dict[str, Any]]) -> list[str]:
-    return [e["type"] for e in events]
+def shape_of(events: list[dict[str, Any]]) -> list[str]:
+    """Event types with runs of the same type collapsed.
+
+    How many `text` deltas a provider splits an answer into is the provider's business, not
+    a semantic the engines have to agree on. Comparing raw type lists would bake one engine's
+    streaming granularity into the contract.
+    """
+    shape: list[str] = []
+    for event in events:
+        if not shape or shape[-1] != event["type"]:
+            shape.append(event["type"])
+    return shape
+
+
+def structure_of(events: list[dict[str, Any]]) -> list[str]:
+    """Shape with `text` dropped — whether a turn had prose is not a control-flow fact."""
+    return [t for t in shape_of(events) if t != "text"]
+
+
+def text_of(events: list[dict[str, Any]]) -> str:
+    return "".join(e["text"] for e in events if e["type"] == "text")
 
 
 # ── Both engines ─────────────────────────────────────────────────────────────
@@ -75,7 +115,7 @@ def types_of(events: list[dict[str, Any]]) -> list[str]:
 async def test_plain_a_reply_without_tool_calls_completes() -> None:
     events = await run_plain([[done("all done")]], ListingTools())
 
-    assert types_of(events) == ["done"]
+    assert shape_of(events) == ["done"]
     assert events[-1]["content"] == "all done"
     assert events[-1]["stop_reason"] == "completed"
 
@@ -83,7 +123,8 @@ async def test_plain_a_reply_without_tool_calls_completes() -> None:
 async def test_langgraph_a_reply_without_tool_calls_completes() -> None:
     events = await run_langgraph([AIMessage(content="all done")], ListingTools())
 
-    assert types_of(events) == ["text", "done"]
+    assert shape_of(events) == ["text", "done"]
+    assert text_of(events) == "all done"
     assert events[-1]["content"] == "all done"
     assert events[-1]["stop_reason"] == "completed"
 
@@ -94,7 +135,7 @@ async def test_plain_a_tool_round_reports_call_then_result() -> None:
         ListingTools(["read"]),
     )
 
-    assert types_of(events) == ["tool_call", "tool_result", "done"]
+    assert structure_of(events) == ["tool_call", "tool_result", "done"]
 
 
 async def test_langgraph_a_tool_round_reports_call_then_result() -> None:
@@ -107,9 +148,7 @@ async def test_langgraph_a_tool_round_reports_call_then_result() -> None:
         ListingTools(["read"]),
     )
 
-    assert "tool_call" in types_of(events)
-    assert "tool_result" in types_of(events)
-    assert events[-1]["type"] == "done"
+    assert structure_of(events) == ["tool_call", "tool_result", "done"]
 
 
 async def test_plain_the_system_prompt_reaches_the_provider() -> None:
@@ -128,9 +167,9 @@ async def test_langgraph_the_system_prompt_reaches_the_provider() -> None:
     seen: list[list[tuple[str, Any]]] = []
 
     class Recording(ScriptedModel):
-        def _generate(self, messages: Any, *a: Any, **k: Any) -> Any:
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
             seen.append([(m.type, m.content) for m in messages])
-            return super()._generate(messages, *a, **k)
+            yield from super()._stream(messages, *a, **k)
 
     model = Recording(messages=iter([AIMessage(content="ok")]))
     async for _ in langgraph_loop(model, ListingTools(), "hi", system_prompt="너는 도우미다"):
@@ -190,8 +229,9 @@ async def test_langgraph_the_policy_hook_can_end_the_run() -> None:
 
 
 class BrokenModel(ScriptedModel):
-    def _generate(self, messages: Any, *a: Any, **k: Any) -> Any:
+    def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
         raise RuntimeError("429 rate limited")
+        yield  # pragma: no cover — makes this a generator
 
 
 async def test_plain_a_provider_failure_is_reported() -> None:
@@ -272,3 +312,102 @@ async def test_langgraph_a_tool_round_emits_the_hook_sequence() -> None:
     await run_langgraph([asked, AIMessage(content="fin")], ListingTools(["read"]), emit=sink)
 
     assert sink.seen == ["pre_tool_use", "post_tool_use", "post_tool_batch", "stop"]
+
+
+# ── #12 tool result fidelity ─────────────────────────────────────────────────
+
+_MULTIMODAL: dict[str, Any] = {
+    "type": "content",
+    "blocks": [
+        {"type": "text", "text": "page 1"},
+        {"type": "image", "data": "xxx", "mime_type": "image/png"},
+    ],
+}
+
+
+async def test_plain_a_tool_result_reaches_the_caller_unchanged() -> None:
+    tools = ListingTools(["render"], results={"render": _MULTIMODAL})
+    events = await run_plain([[*call("c1", "render"), done()], [done("fin")]], tools)
+
+    result = next(e for e in events if e["type"] == "tool_result")["result"]
+    assert result == _MULTIMODAL
+
+
+async def test_langgraph_a_tool_result_reaches_the_caller_unchanged() -> None:
+    tools = ListingTools(["render"], results={"render": _MULTIMODAL})
+    asked = AIMessage(content="", tool_calls=[{"id": "c1", "name": "render", "args": {}}])
+    events = await run_langgraph([asked, AIMessage(content="fin")], tools)
+
+    result = next(e for e in events if e["type"] == "tool_result")["result"]
+    assert result == _MULTIMODAL
+
+
+# ── #10 abort part-way through a run ─────────────────────────────────────────
+
+
+class AbortAfterFirstRound:
+    """Cancels once a tool has run, the way an operator would mid-run."""
+
+    def __init__(self, tools: ListingTools) -> None:
+        self._tools = tools
+
+    def __call__(self) -> bool:
+        return bool(self._tools.ran)
+
+
+async def test_plain_an_abort_part_way_through_stops_the_run() -> None:
+    tools = ListingTools(["read"])
+    events = await run_plain(
+        [[*call("c1", "read"), done()], [done("should not be reached")]],
+        tools,
+        aborted=AbortAfterFirstRound(tools),
+    )
+
+    assert events[-1]["stop_reason"] == "aborted"
+
+
+async def test_langgraph_an_abort_part_way_through_stops_the_run() -> None:
+    tools = ListingTools(["read"])
+    asked = AIMessage(content="", tool_calls=[{"id": "c1", "name": "read", "args": {}}])
+    events = await run_langgraph(
+        [asked, AIMessage(content="should not be reached")],
+        tools,
+        aborted=AbortAfterFirstRound(tools),
+    )
+
+    assert events[-1]["stop_reason"] == "aborted"
+
+
+# ── #6 a steer arriving as the turn finishes ─────────────────────────────────
+
+
+def late_steer() -> Any:
+    """Returns a steer only on the second drain — i.e. while the first turn is ending."""
+    drains = 0
+
+    def drain() -> list[Any]:
+        nonlocal drains
+        drains += 1
+        return [{"role": "user", "content": "wait"}] if drains == 2 else []
+
+    return drain
+
+
+async def test_plain_a_late_steer_cancels_the_stop() -> None:
+    events = await run_plain(
+        [[done("almost")], [done("really done")]],
+        ListingTools(),
+        drain_steers=late_steer(),
+    )
+
+    assert events[-1]["content"] == "really done"
+
+
+async def test_langgraph_a_late_steer_cancels_the_stop() -> None:
+    events = await run_langgraph(
+        [AIMessage(content="almost"), AIMessage(content="really done")],
+        ListingTools(),
+        drain_steers=late_steer(),
+    )
+
+    assert events[-1]["content"] == "really done"

@@ -36,6 +36,7 @@ async def langgraph_loop(
     tools: Tools,
     prompt: str,
     *,
+    system_prompt: str | None = None,
     history: list[LLMMessage] | None = None,
     aborted: Aborted = lambda: False,
     before_tool_call: BeforeToolCall | None = None,
@@ -54,7 +55,12 @@ async def langgraph_loop(
     and `after_model`'s `interrupt`) and are simply not written yet; the stop policy does not
     — see the note on `_Steering`. The conformance suite records which is which.
     """
-    agent = create_agent(model, _as_langchain_tools(tools), middleware=[_Steering(drain_steers)])
+    agent = create_agent(
+        model,
+        _as_langchain_tools(tools),
+        system_prompt=system_prompt,
+        middleware=[_Steering(drain_steers)],
+    )
 
     state: dict[str, Any] = {"messages": _to_langchain(history or [], prompt)}
     seen: set[str] = set()

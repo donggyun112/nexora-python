@@ -112,6 +112,33 @@ async def test_langgraph_a_tool_round_reports_call_then_result() -> None:
     assert events[-1]["type"] == "done"
 
 
+async def test_plain_the_system_prompt_reaches_the_provider() -> None:
+    llm = Llm([done("ok")])
+    await run_plain([[done("ok")]], ListingTools())  # warm the shared helper's expectations
+
+    events = [
+        e async for e in react_loop(llm, ListingTools(), "hi", system_prompt="너는 도우미다")
+    ]
+
+    assert llm.seen[0][0] == {"role": "system", "content": "너는 도우미다"}
+    assert events[-1]["type"] == "done"
+
+
+async def test_langgraph_the_system_prompt_reaches_the_provider() -> None:
+    seen: list[list[tuple[str, Any]]] = []
+
+    class Recording(ScriptedModel):
+        def _generate(self, messages: Any, *a: Any, **k: Any) -> Any:
+            seen.append([(m.type, m.content) for m in messages])
+            return super()._generate(messages, *a, **k)
+
+    model = Recording(messages=iter([AIMessage(content="ok")]))
+    async for _ in langgraph_loop(model, ListingTools(), "hi", system_prompt="너는 도우미다"):
+        pass
+
+    assert seen[0][0] == ("system", "너는 도우미다")
+
+
 # ── Where the engines are expected to diverge ────────────────────────────────
 
 

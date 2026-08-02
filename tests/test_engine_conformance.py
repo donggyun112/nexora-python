@@ -149,12 +149,8 @@ async def test_plain_a_terminating_tool_ends_the_run() -> None:
     assert events[-1]["stop_reason"] == "tool"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="ADR-001 §2: `terminates_loop` fires after tools run, and LangChain's middleware "
-    "has no after-tools hook. The agent keeps going instead of stopping.",
-)
 async def test_langgraph_a_terminating_tool_ends_the_run() -> None:
+    """Predicted impossible, and it is not: `before_model` re-derives that tools just ran."""
     tools = ListingTools(["submit"], defs={"submit": {"terminates_loop": True}})
     asked = AIMessage(content="", tool_calls=[{"id": "c1", "name": "submit", "args": {}}])
     events = await run_langgraph([asked, AIMessage(content="kept going")], tools)
@@ -175,11 +171,8 @@ async def test_plain_the_policy_hook_can_end_the_run() -> None:
     assert events[-1]["stop_reason"] == "policy"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="ADR-001 §2: `should_stop_after_turn` also needs an after-tools hook.",
-)
 async def test_langgraph_the_policy_hook_can_end_the_run() -> None:
+    """Also predicted impossible. Same workaround."""
     async def stop_now(turn: int, content: str, calls: list[Any]) -> bool:
         return True
 
@@ -191,3 +184,91 @@ async def test_langgraph_the_policy_hook_can_end_the_run() -> None:
     )
 
     assert events[-1]["stop_reason"] == "policy"
+
+
+# ── #1 provider failure ──────────────────────────────────────────────────────
+
+
+class BrokenModel(ScriptedModel):
+    def _generate(self, messages: Any, *a: Any, **k: Any) -> Any:
+        raise RuntimeError("429 rate limited")
+
+
+async def test_plain_a_provider_failure_is_reported() -> None:
+    class Broken:
+        def stream(self, messages: Any) -> Any:
+            async def gen() -> Any:
+                raise RuntimeError("429 rate limited")
+                yield  # pragma: no cover
+
+            return gen()
+
+    events = [e async for e in react_loop(Broken(), ListingTools(), "hi")]
+
+    assert events == [{"type": "error", "message": "429 rate limited"}]
+
+
+async def test_langgraph_a_provider_failure_is_reported() -> None:
+    model = BrokenModel(messages=iter([AIMessage(content="")]))
+    events = [e async for e in langgraph_loop(model, ListingTools(), "hi")]
+
+    assert events[-1]["type"] == "error"
+    assert "429" in events[-1]["message"]
+
+
+# ── #2 the policy gate ───────────────────────────────────────────────────────
+
+
+async def deny_rm(call: Any) -> dict[str, Any] | None:
+    return {"type": "error", "message": "not allowed"} if call.name == "rm" else None
+
+
+async def test_plain_the_gate_denies_without_running_the_tool() -> None:
+    tools = ListingTools(["rm"])
+    events = await run_plain(
+        [[*call("c1", "rm"), done()], [done("recovered")]], tools, before_tool_call=deny_rm
+    )
+
+    assert tools.ran == []
+    denied = next(e for e in events if e["type"] == "tool_result")
+    assert denied["is_error"] is True
+
+
+async def test_langgraph_the_gate_denies_without_running_the_tool() -> None:
+    tools = ListingTools(["rm"])
+    asked = AIMessage(content="", tool_calls=[{"id": "c1", "name": "rm", "args": {}}])
+    events = await run_langgraph(
+        [asked, AIMessage(content="recovered")], tools, before_tool_call=deny_rm
+    )
+
+    assert tools.ran == []
+    denied = next(e for e in events if e["type"] == "tool_result")
+    assert denied["is_error"] is True
+
+
+# ── #4 event emission ────────────────────────────────────────────────────────
+
+
+class Recorder:
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+
+    async def __call__(self, event_type: str, payload: dict[str, Any]) -> None:
+        self.seen.append(event_type)
+
+
+async def test_plain_a_tool_round_emits_the_hook_sequence() -> None:
+    sink = Recorder()
+    await run_plain(
+        [[*call("c1", "read"), done()], [done("fin")]], ListingTools(["read"]), emit=sink
+    )
+
+    assert sink.seen == ["pre_tool_use", "post_tool_use", "post_tool_batch", "stop"]
+
+
+async def test_langgraph_a_tool_round_emits_the_hook_sequence() -> None:
+    sink = Recorder()
+    asked = AIMessage(content="", tool_calls=[{"id": "c1", "name": "read", "args": {}}])
+    await run_langgraph([asked, AIMessage(content="fin")], ListingTools(["read"]), emit=sink)
+
+    assert sink.seen == ["pre_tool_use", "post_tool_use", "post_tool_batch", "stop"]

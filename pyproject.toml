@@ -36,6 +36,9 @@ packages = ["src/nexora"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "perf: timing-sensitive properties (concurrency, scaling). Deselect with -m 'not perf'.",
+]
 
 [tool.ruff]
 target-version = "py312"

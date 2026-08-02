@@ -212,3 +212,27 @@ async def test_gate_events_carry_the_same_payload(engine: Any) -> None:
         "type": "error",
         "message": "not allowed",
     }
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_the_tool_call_id_reaches_the_executor(engine: Any) -> None:
+    """The call id is the idempotency key (ADR-002), so it has to survive to `execute`.
+
+    The LangGraph engine passed the tool *name* instead. Every call of a tool then shared one
+    key: a genuine retry looked like a new call, and two different calls looked like the same
+    one. Only a heartbeat-driven re-execution would have surfaced it in production.
+    """
+    seen: list[str] = []
+
+    class Recording(Tools):
+        async def execute(self, name: str, call_id: str, args: Any) -> dict[str, Any]:
+            seen.append(call_id)
+            return {"type": "text", "text": "ok"}
+
+    await run(
+        engine,
+        [says("", a_call("c1", "read"), a_call("c2", "read")), says("fin")],
+        Recording(names=["read"]),
+    )
+
+    assert seen == ["c1", "c2"]

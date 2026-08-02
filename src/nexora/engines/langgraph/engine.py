@@ -10,6 +10,7 @@ than worked around silently — the gaps are the point.
 
 from collections import Counter
 from collections.abc import AsyncIterator, Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -173,7 +174,11 @@ class _GateMiddleware(AgentMiddleware):
         if decision is not None:
             return await self._refuse(call, decision)
 
-        result = await handler(request)
+        token = _CALL_ID.set(call["id"] or "")
+        try:
+            result = await handler(request)
+        finally:
+            _CALL_ID.reset(token)
         await self._gate.announce(
             call, {"type": "text", "text": str(getattr(result, "content", ""))}
         )
@@ -309,6 +314,20 @@ class _Steering(AgentMiddleware):
 
 
 
+_CALL_ID: ContextVar[str] = ContextVar("nexora_tool_call_id", default="")
+"""The id of the call currently executing.
+
+`StructuredTool` hands the wrapped function only the model's arguments, and passing an explicit
+`args_schema` stops LangChain from inspecting the signature, so `InjectedToolCallId` never
+fires. `_GateMiddleware` does know the id, and a context variable is the one channel that
+reaches the coroutine it awaits.
+
+This matters because the call id is the idempotency key (ADR-002). Before this, the tool name
+was passed in its place: every call of a tool shared one key, which both misses a real retry
+and makes two different calls look like the same one.
+"""
+
+
 def _as_langchain_tools(tools: Tools) -> list[StructuredTool]:
     """Wrap our executor's tools so `create_agent`'s ToolNode can call them."""
     wrapped: list[StructuredTool] = []
@@ -319,7 +338,7 @@ def _as_langchain_tools(tools: Tools) -> list[StructuredTool]:
             # `content_and_artifact` keeps the result's real shape alongside the text the
             # model sees; without it a multimodal or suspend result is flattened to a string
             # on the way through `ToolMessage` and cannot be recovered.
-            result = await tools.execute(_name, _name, kwargs)
+            result = await tools.execute(_name, _CALL_ID.get(), kwargs)
             return render_for_model(result), result
 
         wrapped.append(

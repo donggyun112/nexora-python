@@ -13,13 +13,13 @@ second engine runs the same behavior on LangChain's `create_agent`, and a confor
 holds the two to identical output, so "the loop is simpler this way" stays a measured claim
 rather than an opinion.
 
-Messages, tool calls and models are LangChain's. What Nexora owns is the control-flow
-contract: the hooks, the event vocabulary, and the semantics ported from the TypeScript
-reference.
+Messages, tool calls and chat models are LangChain's — owning our own versions of those bought
+translation layers and little else.
 
-Nexora owns the product semantics: model providers and fallback, tool execution and ordering,
-permission policy, authority attenuation, sandboxed workspaces, delegation, handraise,
-tenancy, transport, stores, and observability.
+What Nexora owns is everything the loop decides and everything around it: the control-flow
+contract (hooks, event vocabulary, and the semantics ported from the TypeScript reference),
+tool execution and ordering, permission policy, authority attenuation, sandboxed workspaces,
+delegation, handraise, tenancy, transport, stores, and observability.
 
 ## Development
 

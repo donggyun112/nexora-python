@@ -1,6 +1,11 @@
 # ADR-001: 기본 엔진은 평범한 `async while`
 
-**상태**: Accepted — 근거는 3차 전면 교체 (2026-08-03)
+**상태**: **Superseded by [ADR-003](adr-003-no-langgraph.md)** (2026-08-03)
+
+> 이 ADR은 두 엔진을 나란히 유지하기로 했다. ADR-003이 그 결정을 뒤집는다 — `ToolNode` 우회가
+> 가능해지자 `create_agent`가 주는 것이 체크포인터 하나로 좁혀졌고, 그것이 transcript와 겹친다는
+> 것이 확인됐다. 아래는 그 결론에 이르기까지의 기록으로 남긴다.
+
 **범위**: `nexora.engines`, `nexora.contracts`, `AGENTS.md`
 
 > **이력.** 이 ADR은 세 번 다시 쓰였고, 그때마다 근거가 틀린 것으로 드러났다.

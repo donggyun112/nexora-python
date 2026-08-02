@@ -15,7 +15,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 from ...contracts.events import EventType
@@ -24,7 +24,6 @@ from ...contracts.types import (
     BeforeToolCall,
     DrainSteers,
     Emit,
-    LLMMessage,
     OnSuspend,
     ShouldStopAfterTurn,
     ToolCall,
@@ -39,7 +38,7 @@ async def langgraph_loop(
     prompt: str,
     *,
     system_prompt: str | None = None,
-    history: list[LLMMessage] | None = None,
+    history: list[BaseMessage] | None = None,
     aborted: Aborted = lambda: False,
     before_tool_call: BeforeToolCall | None = None,
     emit: Emit | None = None,
@@ -69,7 +68,7 @@ async def langgraph_loop(
         ],
     )
 
-    state: dict[str, Any] = {"messages": _to_langchain(history or [], prompt)}
+    state: dict[str, Any] = {"messages": [*(history or []), HumanMessage(prompt)]}
     seen: set[str] = set()
     calls_made: list[dict[str, Any]] = []
     spent: Counter[str] = Counter()
@@ -109,7 +108,7 @@ async def langgraph_loop(
         return
     if outcome.suspended is not None:
         call, result = outcome.suspended
-        yield {"type": "suspended", "pending_id": result["pending_id"], "tool_call_id": call.id}
+        yield {"type": "suspended", "pending_id": result["pending_id"], "tool_call_id": call["id"]}
         return
 
     if emit is not None:
@@ -164,7 +163,12 @@ class _Gate(AgentMiddleware):
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
         raw = request.tool_call
-        call = ToolCall(raw.get("id") or "", raw["name"], raw.get("args", {}))
+        call: ToolCall = {
+            "id": raw.get("id") or "",
+            "name": raw["name"],
+            "args": raw.get("args", {}),
+            "type": "tool_call",
+        }
         await self._publish(EventType.PRE_TOOL_USE, call, {})
 
         decision = await self._before(call) if self._before else None
@@ -184,14 +188,16 @@ class _Gate(AgentMiddleware):
             await self._publish(EventType.PERMISSION_REQUEST, call, {"request": decision})
             self._outcome.suspended = (call, decision)
             return ToolMessage(
-                content="suspended pending approval", tool_call_id=call.id, name=call.name
+                content="suspended pending approval",
+                tool_call_id=call["id"],
+                name=call["name"],
             )
         await self._publish(EventType.PERMISSION_DENIED, call, {"reason": decision})
         await self._publish(EventType.POST_TOOL_USE_FAILURE, call, {"result": decision})
         return ToolMessage(
             content=render_for_model(decision),
-            tool_call_id=call.id,
-            name=call.name,
+            tool_call_id=call["id"],
+            name=call["name"],
             status="error",
         )
 
@@ -199,7 +205,7 @@ class _Gate(AgentMiddleware):
         if self._emit is None:
             return
         await self._emit(
-            event, {"call_id": call.id, "name": call.name, "input": call.arguments, **extra}
+            event, {"call_id": call["id"], "name": call["name"], "input": call["args"], **extra}
         )
 
 
@@ -254,7 +260,7 @@ class _RoundEnd(AgentMiddleware):
         # A successful terminating tool ends the run; a failed one gets a recovery round.
         ended_by_tool = any(
             m.status != "error"
-            and terminates_loop(self._tools, ToolCall(m.tool_call_id, m.name or "", {}))
+            and terminates_loop(self._tools, _as_call(m))
             for m in finished
         )
         stopped_by_policy = self._should_stop is not None and await self._should_stop(
@@ -264,6 +270,16 @@ class _RoundEnd(AgentMiddleware):
             self._outcome.stop_reason = "tool" if ended_by_tool else "policy"
             return {"jump_to": "end"}
         return None
+
+
+def _as_call(message: ToolMessage) -> ToolCall:
+    """A finished tool message read back as the call it answered."""
+    return {
+        "id": message.tool_call_id,
+        "name": message.name or "",
+        "args": {},
+        "type": "tool_call",
+    }
 
 
 def _trailing_tool_messages(messages: list[BaseMessage]) -> list[ToolMessage]:
@@ -290,7 +306,7 @@ class _Steering(AgentMiddleware):
         steers = self._drain()
         if not steers:
             return None
-        return {"messages": _to_langchain(steers, None)}
+        return {"messages": list(steers)}
 
     def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         """A steer that landed as the turn finished cancels the stop — react.ts L152."""
@@ -302,7 +318,7 @@ class _Steering(AgentMiddleware):
         steers = self._drain()
         if not steers:
             return None
-        return {"messages": _to_langchain(steers, None), "jump_to": "model"}
+        return {"messages": list(steers), "jump_to": "model"}
 
 
 
@@ -331,18 +347,6 @@ def _as_langchain_tools(tools: Tools) -> list[StructuredTool]:
     return wrapped
 
 
-def _to_langchain(messages: list[LLMMessage], prompt: str | None) -> list[BaseMessage]:
-    from langchain_core.messages import HumanMessage
-
-    out: list[BaseMessage] = [
-        HumanMessage(content=m["content"] if isinstance(m["content"], str) else "")
-        for m in messages
-    ]
-    if prompt is not None:
-        out.append(HumanMessage(content=prompt))
-    return out
-
-
 def _translate(
     message: BaseMessage,
     tools: Tools,
@@ -358,14 +362,14 @@ def _translate(
                     "completion_tokens": message.usage_metadata.get("output_tokens", 0),
                 }
             )
-        requested = [ToolCall(c["id"] or "", c["name"], c["args"]) for c in message.tool_calls]
+        requested = list(message.tool_calls)
         for call in select_for_execution(tools, requested):
-            calls_made.append({"name": call.name, "input": call.arguments})
+            calls_made.append({"name": call["name"], "input": call["args"]})
             yield {
                 "type": "tool_call",
-                "id": call.id,
-                "name": call.name,
-                "input": call.arguments,
+                "id": call["id"],
+                "name": call["name"],
+                "input": call["args"],
             }
     elif isinstance(message, ToolMessage):
         yield {

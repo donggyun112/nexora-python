@@ -55,7 +55,7 @@ async def execute_calls(
             result = (
                 decision
                 if decision is not None
-                else await tools.execute(call.name, call.id, call.arguments)
+                else await tools.execute(call["name"], call["id"] or "", call["args"])
             )
             results.append((call, result))
             if result.get("type") == "suspend":
@@ -97,9 +97,9 @@ class _Gate:
             event,
             {
                 "turn": self._turn,
-                "call_id": call.id,
-                "name": call.name,
-                "input": call.arguments,
+                "call_id": call["id"],
+                "name": call["name"],
+                "input": call["args"],
                 **extra,
             },
         )
@@ -119,14 +119,14 @@ async def _announce(
             EventType.POST_TOOL_USE_FAILURE if failed else EventType.POST_TOOL_USE,
             {
                 "turn": turn,
-                "call_id": call.id,
-                "name": call.name,
+                "call_id": call["id"],
+                "name": call["name"],
                 "result": result,
             },
         )
     await emit(
         EventType.POST_TOOL_BATCH,
-        {"turn": turn, "calls": [{"call_id": c.id, "name": c.name} for c, _ in results]},
+        {"turn": turn, "calls": [{"call_id": c["id"], "name": c["name"]} for c, _ in results]},
     )
 
 
@@ -148,16 +148,16 @@ async def _execute_batched(
             break
 
     allowed = [call for call, decision in decided if decision is None]
-    batch = [{"call_id": c.id, "name": c.name, "input": c.arguments} for c in allowed]
+    batch = [{"call_id": c["id"], "name": c["name"], "input": c["args"]} for c in allowed]
     ran = await run_batch(batch) if allowed else []
-    by_id = {call.id: result for call, result in _in_call_order(allowed, ran)}
+    by_id = {call["id"]: result for call, result in _in_call_order(allowed, ran)}
 
     results: list[tuple[ToolCall, dict[str, Any]]] = []
     for call, decision in decided:
         if decision is not None:
             results.append((call, decision))
-        elif call.id in by_id:
-            results.append((call, by_id[call.id]))
+        elif call["id"] in by_id:
+            results.append((call, by_id[call["id"]]))
     return results
 
 
@@ -173,13 +173,14 @@ def _in_call_order(
     """
     by_id = {result["call_id"]: result for result in batch_results}
     suspended = any(r["result"].get("type") == "suspend" for r in batch_results)
-    answered = [c for c in calls if c.id in by_id] if suspended else calls
+    answered = [c for c in calls if c["id"] in by_id] if suspended else calls
 
     ordered: list[tuple[ToolCall, dict[str, Any]]] = []
     for call in answered:
-        result = by_id.get(call.id)
+        result = by_id.get(call["id"])
         if result is None:
-            ordered.append((call, {"type": "error", "message": f"Missing tool result: {call.id}"}))
+            missing = f"Missing tool result: {call['id']}"
+            ordered.append((call, {"type": "error", "message": missing}))
         else:
             ordered.append((call, result["result"]))
     return ordered
@@ -203,9 +204,9 @@ def terminates_loop(tools: Tools, call: ToolCall) -> bool:
 
 def _flag(tools: Tools, call: ToolCall, name: str) -> bool:
     """Read a loop flag, which may be a bool or a predicate over the call's arguments."""
-    definition = tools.get(call.name) or {}
+    definition = tools.get(call["name"]) or {}
     flag = definition.get(name, False)
-    return bool(flag(call.arguments) if callable(flag) else flag)
+    return bool(flag(call["args"]) if callable(flag) else flag)
 
 
 def render_for_model(result: dict[str, Any]) -> str:

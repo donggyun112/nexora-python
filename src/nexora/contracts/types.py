@@ -1,22 +1,33 @@
-"""What the loop and its collaborators agree on.
+"""What the engines and their collaborators agree on.
 
-Provider chunks, tool results and emitted events stay as tagged dicts — they cross a wire and
-their shape is the provider's or the tool author's, not ours. Their `type` values:
+Messages and tool calls are LangChain's (`BaseMessage`, `ToolCall`) rather than ours. Owning
+those types bought a translation layer in every direction and a provider adapter that
+re-implemented `ChatOpenAI`; the types themselves were never the interesting part. What stays
+ours is the loop's control-flow contract — the hooks below, and the event vocabulary in
+`events.py`.
 
-    chunk    text_delta | thinking_delta | tool_call_start | tool_call_delta | done
-    result   text | image | content | error | suspend
-    event    text | thinking | tool_call | tool_result | suspended | done
+Tool results stay plain tagged dicts. Their `type` values:
+
+    text | image | content | error | suspend
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any, Literal, Protocol, TypedDict
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal, Protocol
 
+from langchain_core.messages import BaseMessage, ToolCall
 
-class LLMMessage(TypedDict):
-    role: Literal["system", "user", "assistant", "tool_result"]
-    content: str | list[dict[str, Any]]
-
+__all__ = [
+    "Aborted",
+    "BaseMessage",
+    "BeforeToolCall",
+    "DrainSteers",
+    "Emit",
+    "OnSuspend",
+    "ShouldStopAfterTurn",
+    "StopReason",
+    "ToolCall",
+    "Tools",
+]
 
 StopReason = Literal["completed", "aborted", "tool", "policy"]
 """Why a run ended, carried on the terminal `done` event.
@@ -25,18 +36,9 @@ StopReason = Literal["completed", "aborted", "tool", "policy"]
 """
 
 
-@dataclass(frozen=True, slots=True)
-class ToolCall:
-    id: str
-    name: str
-    arguments: Any
-
-
-class LLM(Protocol):
-    def stream(self, messages: list[LLMMessage]) -> AsyncIterator[dict[str, Any]]: ...
-
-
 class Tools(Protocol):
+    """Runs tool calls and describes them. Implementations own permissions and sandboxing."""
+
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]: ...
 
     def get(self, name: str) -> dict[str, Any] | None:
@@ -44,11 +46,7 @@ class Tools(Protocol):
         ...
 
     def list(self) -> list[dict[str, Any]]:
-        """Every available tool as `{name, description, parameters}`.
-
-        The `while` loop never needs this — the model was already told what it may call. An
-        engine that builds the graph from the tool set does.
-        """
+        """Every available tool as `{name, description, parameters}`, for binding to a model."""
         ...
 
 
@@ -57,7 +55,7 @@ class Tools(Protocol):
 Aborted = Callable[[], bool]
 """True once the run has been cancelled. Checked at every round boundary."""
 
-DrainSteers = Callable[[], list[LLMMessage]]
+DrainSteers = Callable[[], list[BaseMessage]]
 """Pops user messages injected mid-run. Returns [] when nothing is queued."""
 
 ShouldStopAfterTurn = Callable[[int, str, list[dict[str, Any]]], Awaitable[bool]]
@@ -67,13 +65,13 @@ This is also where an iteration cap lives — the loop does not impose one.
 """
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
-"""Publishes an observing event. See `nexora.events` for the vocabulary and the envelope.
+"""Publishes an observing event. See `nexora.contracts.events` for the vocabulary.
 
-Observing only — nothing the loop emits here can change what it does next. Anything that
+Observing only — nothing emitted here can change what the loop does next. Anything that
 should be able to is a hook with a return value, like `BeforeToolCall`.
 """
 
-BeforeToolCall = Callable[["ToolCall"], Awaitable[dict[str, Any] | None]]
+BeforeToolCall = Callable[[ToolCall], Awaitable[dict[str, Any] | None]]
 """The policy gate, consulted before every tool call.
 
 Returns a tool result to stand in for the call, or None to allow it:
@@ -89,7 +87,7 @@ fit inside a transport timeout.
 """
 
 OnSuspend = Callable[
-    ["ToolCall", dict[str, Any], list[LLMMessage], list[dict[str, Any]]], Awaitable[None]
+    [ToolCall, dict[str, Any], list[BaseMessage], list[dict[str, Any]]], Awaitable[None]
 ]
 """Called with (call, suspend_result, history_snapshot, completed_results) when a tool suspends.
 

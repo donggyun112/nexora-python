@@ -2,7 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from .contracts import LLM, LLMMessage, ToolCall, Tools
+from .contracts import BaseMessage, ToolCall, Tools
 from .engines.plain import react_loop
 
 try:
@@ -10,4 +10,4 @@ try:
 except PackageNotFoundError:  # pragma: no cover - source tree without installation
     __version__ = "0.0.0"
 
-__all__ = ["LLM", "LLMMessage", "ToolCall", "Tools", "__version__", "react_loop"]
+__all__ = ["BaseMessage", "ToolCall", "Tools", "__version__", "react_loop"]

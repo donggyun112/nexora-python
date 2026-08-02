@@ -536,6 +536,7 @@ name = "nexora"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "langchain-core" },
     { name = "loguru" },
     { name = "psycopg", extra = ["binary", "pool"] },
 ]
@@ -558,6 +559,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "langchain", marker = "extra == 'langgraph'", specifier = ">=1,<2" },
+    { name = "langchain-core", specifier = ">=1,<2" },
     { name = "langchain-openai", marker = "extra == 'langgraph'", specifier = ">=0.3,<1" },
     { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=1.2,<2" },
     { name = "loguru", specifier = ">=0.7,<1" },

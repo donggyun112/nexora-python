@@ -29,7 +29,7 @@ from ...contracts.types import (
     ToolCall,
     Tools,
 )
-from ...tools import render_for_model, select_for_execution, terminates_loop
+from ...tools import ToolGate, render_for_model, select_for_execution, terminates_loop
 
 
 async def langgraph_loop(
@@ -64,7 +64,7 @@ async def langgraph_loop(
             _Steering(drain_steers),
             _RoundEnd(tools, emit, should_stop_after_turn, outcome, aborted),
             _ReportFailures(outcome),
-            _Gate(before_tool_call, emit, outcome),
+            _GateMiddleware(ToolGate(before_tool_call, emit), outcome),
         ],
     )
 
@@ -147,18 +147,17 @@ class _ReportFailures(AgentMiddleware):
             return AIMessage(content="")
 
 
-class _Gate(AgentMiddleware):
-    """The policy gate — allow / deny / ask — plus the events recording what it decided."""
+class _GateMiddleware(AgentMiddleware):
+    """Adapts the shared `ToolGate` to LangChain's tool-call wrapper.
 
-    def __init__(
-        self,
-        before_tool_call: BeforeToolCall | None,
-        emit: Emit | None,
-        outcome: _Outcome,
-    ) -> None:
+    The decision and its events live in `nexora.tools.ToolGate` so both engines gate
+    identically; this class only translates shapes and parks a suspension for the engine to
+    report once the graph unwinds.
+    """
+
+    def __init__(self, gate: ToolGate, outcome: _Outcome) -> None:
         super().__init__()
-        self._before = before_tool_call
-        self._emit = emit
+        self._gate = gate
         self._outcome = outcome
 
     async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
@@ -169,43 +168,31 @@ class _Gate(AgentMiddleware):
             "args": raw.get("args", {}),
             "type": "tool_call",
         }
-        await self._publish(EventType.PRE_TOOL_USE, call, {})
 
-        decision = await self._before(call) if self._before else None
+        decision = await self._gate.decide(call)
         if decision is not None:
             return await self._refuse(call, decision)
 
         result = await handler(request)
-        await self._publish(
-            EventType.POST_TOOL_USE,
-            call,
-            {"result": {"type": "text", "text": str(getattr(result, "content", ""))}},
+        await self._gate.announce(
+            call, {"type": "text", "text": str(getattr(result, "content", ""))}
         )
         return result
 
     async def _refuse(self, call: ToolCall, decision: dict[str, Any]) -> ToolMessage:
         if decision.get("type") == "suspend":
-            await self._publish(EventType.PERMISSION_REQUEST, call, {"request": decision})
             self._outcome.suspended = (call, decision)
             return ToolMessage(
                 content="suspended pending approval",
                 tool_call_id=call["id"],
                 name=call["name"],
             )
-        await self._publish(EventType.PERMISSION_DENIED, call, {"reason": decision})
-        await self._publish(EventType.POST_TOOL_USE_FAILURE, call, {"result": decision})
+        await self._gate.announce(call, decision)
         return ToolMessage(
             content=render_for_model(decision),
             tool_call_id=call["id"],
             name=call["name"],
             status="error",
-        )
-
-    async def _publish(self, event: EventType, call: ToolCall, extra: dict[str, Any]) -> None:
-        if self._emit is None:
-            return
-        await self._emit(
-            event, {"call_id": call["id"], "name": call["name"], "input": call["args"], **extra}
         )
 
 

@@ -7,10 +7,15 @@ Durable multi-agent runtime for Python.
 
 ## Direction
 
-The agent loop is an ordinary `async while`. Control flow — when to stop, when to inject a
-steer, when to hand a decision to a human — is expressed in Python rather than as a graph,
-because a graph would re-describe `if` and `while` as data and turn local variables into
-serialized state. Durability is layered around the loop instead of built into it.
+The default agent loop is an ordinary `async while`: control flow — when to stop, when to
+inject a steer, when to hand a decision to a human — reads on the line where it happens. A
+second engine runs the same behavior on LangChain's `create_agent`, and a conformance suite
+holds the two to identical output, so "the loop is simpler this way" stays a measured claim
+rather than an opinion.
+
+Messages, tool calls and models are LangChain's. What Nexora owns is the control-flow
+contract: the hooks, the event vocabulary, and the semantics ported from the TypeScript
+reference.
 
 Nexora owns the product semantics: model providers and fallback, tool execution and ordering,
 permission policy, authority attenuation, sandboxed workspaces, delegation, handraise,
@@ -37,8 +42,7 @@ src/nexora/
 ├── engines/         # the interchangeable part
 │   ├── plain/       #   the loop as an `async while`
 │   └── langgraph/   #   the same loop on LangChain's `create_agent`
-├── providers/       # provider stream → the chunk vocabulary engines read
-├── tools.py         # tool policy and execution — shared by both engines
+├── tools.py         # the shared policy gate, tool execution, result rendering
 └── history.py       # suspension snapshots — shared by both engines
 ```
 

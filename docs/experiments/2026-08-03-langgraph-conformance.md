@@ -145,7 +145,10 @@
 ### 실험 중 발견한 것
 
 - **`GenericFakeChatModel`은 tool call과 스트리밍을 동시에 못 한다** (`No generations found in
-  stream`). 타당성 위협 #3이 실제로 나타났고, 가짜 모델에 `_stream`을 직접 구현해 우회했다.
+  stream`). 버그가 아니라 미구현이고 docstring에 *"Streaming is not implemented yet"*이라고
+  적혀 있다. `_stream`은 `content`가 있을 때만 청크를 내고, 도구는 구식 `additional_kwargs`의
+  `function_call`만 처리한다 — 현행 `tool_calls` 필드는 어느 분기에도 안 걸린다.
+  타당성 위협 #3이 실제로 나타났고, 가짜 모델에 `_stream`을 직접 구현해 우회했다.
 - **적합성 스위트가 while 엔진의 우연한 선택을 정답으로 굳히고 있었다** (타당성 위협 #2). 텍스트
   델타를 몇 개로 쪼개는지는 프로바이더 사정인데 테스트가 개수를 단언하고 있었다. `shape_of` /
   `structure_of`로 분리했다.
@@ -153,6 +156,10 @@
 ### 이 실험이 답하지 않는 것
 
 - **실제 프로바이더 검증 없음.** 전부 가짜 모델이다.
+- **도구 인자 스트리밍 조립을 안 거쳤다.** 대신 쓴 가짜 모델이 도구 호출을 한 청크에 통째로
+  낸다. 실제 프로바이더는 인자 JSON을 `tool_call_chunks`로 조각내 보내고, while 엔진은 그걸
+  `ModelTurn`이 직접 조립하며 테스트도 있다. langgraph 쪽은 LangChain이 조립해 주는 것을 믿었을
+  뿐 확인하지 않았다. 이 경로에서 두 엔진이 갈릴 수 있다.
 - **`on_suspend` 재개 경로 미구현.** LangGraph는 체크포인터 + `Command(resume=)`, 우리는 새 run.
   이건 여전히 미확인이고, LangGraph가 실제로 더 주는 부분이다.
 - **`interrupt` 기반 서스펜션을 안 써봤다.** 게이트의 `ask`를 사이드 채널로 처리했지, LangGraph의

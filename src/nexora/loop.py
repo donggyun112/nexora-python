@@ -5,6 +5,7 @@ loop runs until something tells it to stop — there is no built-in iteration ca
 long an agent may run is the caller's decision (see `ShouldStopAfterTurn`).
 """
 
+from collections import Counter
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -44,13 +45,15 @@ async def react_loop(
 
     messages: list[LLMMessage] = [*(history or []), {"role": "user", "content": prompt}]
     calls_made: list[dict[str, Any]] = []
+    spent: Counter[str] = Counter()
+    """Token usage summed across every round of this run. Counter adds keys for us."""
     last_text = ""
     turn = -1
 
     while True:
         turn += 1
         if aborted():
-            yield await _done(emit, last_text, calls_made, "aborted")
+            yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
         if drain_steers:
             messages += drain_steers()
@@ -67,14 +70,15 @@ async def react_loop(
             # escaping into the caller's event loop. Cancellation is not an Exception, so it
             # still propagates.
             if aborted():
-                yield await _done(emit, last_text, calls_made, "aborted")
+                yield await _done(emit, last_text, calls_made, "aborted", spent)
             else:
                 yield {"type": "error", "message": str(failure)}
             return
         last_text = model_turn.text
+        spent.update(model_turn.usage)
 
         if aborted():
-            yield await _done(emit, last_text, calls_made, "aborted")
+            yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
 
         requested = select_for_execution(tools, model_turn.tool_calls())
@@ -85,7 +89,7 @@ async def react_loop(
             if drain_steers and (steers := drain_steers()):
                 messages += steers
                 continue
-            yield await _done(emit, model_turn.text, calls_made, "completed")
+            yield await _done(emit, model_turn.text, calls_made, "completed", spent)
             return
 
         # ── Act ──────────────────────────────────────────────────────────────
@@ -139,7 +143,7 @@ async def react_loop(
 
         messages.append({"role": "tool_result", "content": result_blocks})
         if aborted():
-            yield await _done(emit, last_text, calls_made, "aborted")
+            yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
 
         # ── Stop? ────────────────────────────────────────────────────────────
@@ -150,7 +154,7 @@ async def react_loop(
         )
         if a_tool_ended_the_run or policy_says_stop:
             reason: StopReason = "tool" if a_tool_ended_the_run else "policy"
-            yield await _done(emit, last_text or "(stopped after turn)", calls_made, reason)
+            yield await _done(emit, last_text or "(stopped after turn)", calls_made, reason, spent)
             return
 
 
@@ -168,17 +172,22 @@ async def _done(
     content: str,
     calls_made: list[dict[str, Any]],
     reason: StopReason,
+    spent: Counter[str],
 ) -> dict[str, Any]:
     """The single terminal event. Every exit but `suspended` goes through here.
 
     `stop_reason` exists so an abort leaves a record: without it a cancelled run and a finished
-    one both look like a stream that simply ended.
+    one both look like a stream that simply ended. `usage` is omitted rather than zeroed when
+    the provider reported none — nothing spent and nothing measured are different facts.
     """
     if emit is not None:
         await emit(EventType.STOP, {"reason": reason, "content": content})
-    return {
+    done: dict[str, Any] = {
         "type": "done",
         "content": content,
         "tool_calls": calls_made,
         "stop_reason": reason,
     }
+    if spent:
+        done["usage"] = dict(spent)
+    return done

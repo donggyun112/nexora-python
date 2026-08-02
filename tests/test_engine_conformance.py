@@ -272,3 +272,62 @@ async def test_post_tool_use_carries_the_real_result_and_classifies_failure(
     assert [t for t, _ in seen] == ["post_tool_use", "post_tool_use_failure"]
     assert seen[0][1]["result"] == multimodal
     assert seen[1][1]["result"] == {"type": "error", "message": "nope"}
+
+
+async def _emitted(engine: Any, replies: list[AIMessage], tools: Tools, **kw: Any) -> list[Any]:
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        seen.append((event_type, payload))
+
+    await run(engine, replies, tools, emit=emit, **kw)
+    return seen
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_post_tool_batch_names_the_round(engine: Any) -> None:
+    seen = await _emitted(
+        engine,
+        [says("", a_call("c1", "read"), a_call("c2", "grep")), says("fin")],
+        Tools(names=["read", "grep"]),
+    )
+
+    batch = next(p for t, p in seen if t == "post_tool_batch")
+    assert batch == {
+        "turn": 0,
+        "calls": [{"call_id": "c1", "name": "read"}, {"call_id": "c2", "name": "grep"}],
+    }
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_every_exit_reaches_the_event_log(engine: Any) -> None:
+    """A run that ends must say so and say why, whichever way it ended.
+
+    `jump_to` is ignored unless the hook declares `can_jump_to`, so the LangGraph engine used
+    to keep calling the model after a terminating tool while still reporting `stop_reason`
+    correctly — the events said one thing and the graph did another.
+    """
+    ended = Tools(defs={"submit": {"terminates_loop": True}}, names=["submit"])
+    seen = await _emitted(engine, [says("bye", a_call("c1", "submit")), says("never")], ended)
+    assert ("stop", {"reason": "tool", "content": "bye"}) in seen
+
+    seen = await _emitted(engine, [says("x")], Tools(), aborted=lambda: True)
+    assert ("stop", {"reason": "aborted", "content": ""}) in seen
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_a_failed_run_is_recorded_as_a_failure(engine: Any) -> None:
+    class Broken(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            raise RuntimeError("boom")
+            yield  # pragma: no cover
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        seen.append((event_type, payload))
+
+    async for _ in engine(Broken(messages=iter([])), Tools(), "hi", emit=emit):
+        pass
+
+    assert seen == [("stop_failure", {"reason": "error", "message": "boom"})]

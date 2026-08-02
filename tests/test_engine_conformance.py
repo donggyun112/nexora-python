@@ -236,3 +236,39 @@ async def test_the_tool_call_id_reaches_the_executor(engine: Any) -> None:
     )
 
     assert seen == ["c1", "c2"]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_post_tool_use_carries_the_real_result_and_classifies_failure(
+    engine: Any,
+) -> None:
+    """Counting events is not enough — the payload is the audit record.
+
+    The LangGraph engine announced the *rendering* the model sees rather than the tool's own
+    result. A multimodal result arrived flattened, and an error arrived as the string
+    "[ERROR] ...", which is not `{"type": "error"}` — so a failed call was logged as
+    `post_tool_use` and `post_tool_use_failure` never fired.
+    """
+    multimodal: dict[str, Any] = {
+        "type": "content",
+        "blocks": [{"type": "text", "text": "page 1"}],
+    }
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type.startswith("post_tool_use"):
+            seen.append((event_type, payload))
+
+    await run(
+        engine,
+        [says("", a_call("c1", "render"), a_call("c2", "boom")), says("fin")],
+        Tools(
+            results={"render": multimodal, "boom": {"type": "error", "message": "nope"}},
+            names=["render", "boom"],
+        ),
+        emit=emit,
+    )
+
+    assert [t for t, _ in seen] == ["post_tool_use", "post_tool_use_failure"]
+    assert seen[0][1]["result"] == multimodal
+    assert seen[1][1]["result"] == {"type": "error", "message": "nope"}

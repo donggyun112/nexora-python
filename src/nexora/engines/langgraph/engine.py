@@ -179,9 +179,11 @@ class _GateMiddleware(AgentMiddleware):
             result = await handler(request)
         finally:
             _CALL_ID.reset(token)
-        await self._gate.announce(
-            call, {"type": "text", "text": str(getattr(result, "content", ""))}
-        )
+        # The artifact carries the tool's real result; `content` is only the rendering the
+        # model sees. Announcing the rendering instead flattens multimodal results and — worse
+        # — turns an error into a plain string, so `announce` classifies a failed call as a
+        # success and `post_tool_use_failure` never fires.
+        await self._gate.announce(call, _result_of(result))
         return result
 
     async def _refuse(self, call: ToolCall, decision: dict[str, Any]) -> ToolMessage:
@@ -262,6 +264,16 @@ class _RoundEnd(AgentMiddleware):
             self._outcome.stop_reason = "tool" if ended_by_tool else "policy"
             return {"jump_to": "end"}
         return None
+
+
+def _result_of(result: Any) -> dict[str, Any]:
+    """The tool's own result, not the text rendered for the model."""
+    artifact = getattr(result, "artifact", None)
+    if isinstance(artifact, dict):
+        return artifact
+    if getattr(result, "status", None) == "error":
+        return {"type": "error", "message": str(getattr(result, "content", ""))}
+    return {"type": "text", "text": str(getattr(result, "content", ""))}
 
 
 def _as_call(message: ToolMessage) -> ToolCall:

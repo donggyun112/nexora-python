@@ -19,8 +19,8 @@ from typing import Any
 
 import pytest
 
-from nexora.events import EventEnvelope, EventStream, EventType
-from nexora.loop import react_loop
+from nexora.contracts import EventEnvelope, EventStream, EventType
+from nexora.engines.plain import react_loop
 from tests.test_loop import Llm, Tools, call, done
 
 pytestmark = pytest.mark.perf

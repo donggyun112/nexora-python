@@ -9,11 +9,8 @@ from collections import Counter
 from collections.abc import AsyncIterator
 from typing import Any
 
-from .events import EventType
-from .history import suspend_history_snapshot
-from .model_turn import ModelTurn
-from .tools import execute_calls, render_for_model, select_for_execution, terminates_loop
-from .types import (
+from ...contracts.events import EventType
+from ...contracts.types import (
     LLM,
     Aborted,
     BeforeToolCall,
@@ -26,6 +23,9 @@ from .types import (
     ToolCall,
     Tools,
 )
+from ...history import suspend_history_snapshot
+from ...tools import execute_calls, render_for_model, select_for_execution, terminates_loop
+from .model_turn import ModelTurn
 
 
 async def react_loop(

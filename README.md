@@ -31,12 +31,23 @@ uv run pytest
 
 ```text
 src/nexora/
-├── types.py       # messages, tool calls, and the hook signatures
-├── model_turn.py  # provider chunk stream → one assistant turn
-├── tools.py       # the policy gate, tool execution, result rendering
-├── history.py     # suspension snapshots
-├── events.py      # event vocabulary and envelope
-└── loop.py        # the ReAct loop
+├── contracts/       # what everything agrees on
+│   ├── types.py     #   messages, tool calls, hook signatures
+│   └── events.py    #   event vocabulary and envelope
+├── engines/         # the interchangeable part
+│   ├── plain/       #   the loop as an `async while`
+│   └── langgraph/   #   the same loop on LangChain's `create_agent`
+├── providers/       # provider stream → the chunk vocabulary engines read
+├── tools.py         # tool policy and execution — shared by both engines
+└── history.py       # suspension snapshots — shared by both engines
+```
+
+Both engines take the same inputs and emit the same events;
+`tests/test_engine_conformance.py` is what makes that a fact rather than a claim. The
+LangGraph one needs the `langgraph` extra:
+
+```bash
+uv sync --extra langgraph
 ```
 
 The loop covers the reference's stop conditions, exclusive and terminating tools, steering,

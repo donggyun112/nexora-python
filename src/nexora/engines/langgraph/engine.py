@@ -18,9 +18,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
-from nexora.events import EventType
-from nexora.tools import render_for_model, select_for_execution, terminates_loop
-from nexora.types import (
+from ...contracts.events import EventType
+from ...contracts.types import (
     Aborted,
     BeforeToolCall,
     DrainSteers,
@@ -31,6 +30,7 @@ from nexora.types import (
     ToolCall,
     Tools,
 )
+from ...tools import render_for_model, select_for_execution, terminates_loop
 
 
 async def langgraph_loop(

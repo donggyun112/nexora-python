@@ -9,7 +9,8 @@ than worked around silently — the gaps are the point.
 """
 
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
@@ -17,7 +18,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
-from nexora.tools import render_for_model, select_for_execution
+from nexora.events import EventType
+from nexora.tools import render_for_model, select_for_execution, terminates_loop
 from nexora.types import (
     Aborted,
     BeforeToolCall,
@@ -55,11 +57,17 @@ async def langgraph_loop(
     and `after_model`'s `interrupt`) and are simply not written yet; the stop policy does not
     — see the note on `_Steering`. The conformance suite records which is which.
     """
+    outcome = _Outcome()
     agent = create_agent(
         model,
         _as_langchain_tools(tools),
         system_prompt=system_prompt,
-        middleware=[_Steering(drain_steers)],
+        middleware=[
+            _Steering(drain_steers),
+            _RoundEnd(tools, emit, should_stop_after_turn, outcome),
+            _ReportFailures(outcome),
+            _Gate(before_tool_call, emit, outcome),
+        ],
     )
 
     state: dict[str, Any] = {"messages": _to_langchain(history or [], prompt)}
@@ -78,12 +86,180 @@ async def langgraph_loop(
             if key in seen:
                 continue
             seen.add(key)
-            async for event in _translate(message, tools, calls_made, spent, before_tool_call):
+            for event in _translate(message, tools, calls_made, spent):
                 if event["type"] == "text":
                     text = event["text"]
                 yield event
 
-    yield _done(text, calls_made, "completed", spent)
+    # A hook cannot say "the run failed" through its return value — it must return something
+    # the graph accepts — so the middlewares park the reason here and the engine reads it once
+    # the graph is done. The event therefore arrives after the round rather than during it.
+    if outcome.error is not None:
+        yield {"type": "error", "message": outcome.error}
+        return
+    if outcome.suspended is not None:
+        call, result = outcome.suspended
+        yield {"type": "suspended", "pending_id": result["pending_id"], "tool_call_id": call.id}
+        return
+
+    if emit is not None:
+        await emit(EventType.STOP, {"reason": outcome.stop_reason, "content": text})
+    yield _done(text, calls_made, outcome.stop_reason, spent)
+
+
+@dataclass
+class _Outcome:
+    """Side channel out of the middleware.
+
+    ponytail: a workaround, not a hook. `wrap_model_call` must return a `ModelResponse` and
+    `wrap_tool_call` a `ToolMessage`, so neither can report "this run ended badly" in-band.
+    """
+
+    error: str | None = None
+    suspended: tuple[ToolCall, dict[str, Any]] | None = None
+    stop_reason: str = "completed"
+    """Why the run ended. `jump_to: "end"` stops the graph but carries no reason with it."""
+
+
+class _ReportFailures(AgentMiddleware):
+    """Provider failure ends the run as a reported error — react.ts L131."""
+
+    def __init__(self, outcome: _Outcome) -> None:
+        super().__init__()
+        self._outcome = outcome
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        try:
+            return await handler(request)
+        except Exception as failure:
+            self._outcome.error = str(failure)
+            # Ending the graph means handing back a turn with no tool calls; the engine
+            # replaces the resulting `done` with the error it parked above.
+            return AIMessage(content="")
+
+
+class _Gate(AgentMiddleware):
+    """The policy gate — allow / deny / ask — plus the events recording what it decided."""
+
+    def __init__(
+        self,
+        before_tool_call: BeforeToolCall | None,
+        emit: Emit | None,
+        outcome: _Outcome,
+    ) -> None:
+        super().__init__()
+        self._before = before_tool_call
+        self._emit = emit
+        self._outcome = outcome
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        raw = request.tool_call
+        call = ToolCall(raw.get("id") or "", raw["name"], raw.get("args", {}))
+        await self._publish(EventType.PRE_TOOL_USE, call, {})
+
+        decision = await self._before(call) if self._before else None
+        if decision is not None:
+            return await self._refuse(call, decision)
+
+        result = await handler(request)
+        await self._publish(
+            EventType.POST_TOOL_USE,
+            call,
+            {"result": {"type": "text", "text": str(getattr(result, "content", ""))}},
+        )
+        return result
+
+    async def _refuse(self, call: ToolCall, decision: dict[str, Any]) -> ToolMessage:
+        if decision.get("type") == "suspend":
+            await self._publish(EventType.PERMISSION_REQUEST, call, {"request": decision})
+            self._outcome.suspended = (call, decision)
+            return ToolMessage(
+                content="suspended pending approval", tool_call_id=call.id, name=call.name
+            )
+        await self._publish(EventType.PERMISSION_DENIED, call, {"reason": decision})
+        await self._publish(EventType.POST_TOOL_USE_FAILURE, call, {"result": decision})
+        return ToolMessage(
+            content=render_for_model(decision),
+            tool_call_id=call.id,
+            name=call.name,
+            status="error",
+        )
+
+    async def _publish(self, event: EventType, call: ToolCall, extra: dict[str, Any]) -> None:
+        if self._emit is None:
+            return
+        await self._emit(
+            event, {"call_id": call.id, "name": call.name, "input": call.arguments, **extra}
+        )
+
+
+class _RoundEnd(AgentMiddleware):
+    """Everything that has to happen *after tools ran* — `post_tool_batch` and the stop policy.
+
+    ponytail: there is no after-tools hook, so this runs in `before_model` and works out that
+    tools just ran by looking for `ToolMessage`s at the tail of the message list. That is state
+    re-derivation: the position the loop is at is not available, so it is reconstructed. The
+    `while` engine knows because it is on that line.
+
+    The re-derivation is also lossy. It fires on the next model call, so a round whose tools
+    ran but whose run then ended never reports its batch.
+    """
+
+    def __init__(
+        self,
+        tools: Tools,
+        emit: Emit | None,
+        should_stop: ShouldStopAfterTurn | None,
+        outcome: _Outcome,
+    ) -> None:
+        super().__init__()
+        self._tools = tools
+        self._emit = emit
+        self._should_stop = should_stop
+        self._outcome = outcome
+        self._turn = -1
+        self._reported = 0
+
+    async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        self._turn += 1
+        finished = _trailing_tool_messages(state["messages"])
+        if not finished or len(finished) <= self._reported:
+            return None
+        self._reported = len(finished)
+
+        if self._emit is not None:
+            await self._emit(
+                EventType.POST_TOOL_BATCH,
+                {
+                    "turn": self._turn - 1,
+                    "calls": [{"call_id": m.tool_call_id, "name": m.name or ""} for m in finished],
+                },
+            )
+
+        # A successful terminating tool ends the run; a failed one gets a recovery round.
+        ended_by_tool = any(
+            m.status != "error"
+            and terminates_loop(self._tools, ToolCall(m.tool_call_id, m.name or "", {}))
+            for m in finished
+        )
+        stopped_by_policy = self._should_stop is not None and await self._should_stop(
+            self._turn - 1, "", []
+        )
+        if ended_by_tool or stopped_by_policy:
+            self._outcome.stop_reason = "tool" if ended_by_tool else "policy"
+            return {"jump_to": "end"}
+        return None
+
+
+def _trailing_tool_messages(messages: list[BaseMessage]) -> list[ToolMessage]:
+    """The `ToolMessage`s closing the most recent round, oldest first."""
+    tail: list[ToolMessage] = []
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            tail.append(message)
+        elif tail:
+            break
+    return list(reversed(tail))
 
 
 class _Steering(AgentMiddleware):
@@ -138,13 +314,12 @@ def _to_langchain(messages: list[LLMMessage], prompt: str | None) -> list[BaseMe
     return out
 
 
-async def _translate(
+def _translate(
     message: BaseMessage,
     tools: Tools,
     calls_made: list[dict[str, Any]],
     spent: Counter[str],
-    before_tool_call: BeforeToolCall | None,
-) -> AsyncIterator[dict[str, Any]]:
+) -> Iterator[dict[str, Any]]:
     """One LangChain message into zero or more Nexora events."""
     if isinstance(message, AIMessage):
         if message.usage_metadata:

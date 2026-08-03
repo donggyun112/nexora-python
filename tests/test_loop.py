@@ -169,6 +169,28 @@ async def test_steer_arriving_at_the_end_resumes_instead_of_completing() -> None
     assert len(llm.seen) == 2
 
 
+async def test_usage_is_summed_across_rounds() -> None:
+    """A budget policy needs the whole run's cost, not the last round's."""
+    spend = {"type": "done", "content": "", "stop_reason": "end_turn",
+             "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+    llm = Llm(
+        [*call("c1", "read"), spend],
+        [{"type": "done", "content": "fin", "stop_reason": "end_turn",
+          "usage": {"prompt_tokens": 30, "completion_tokens": 5}}],
+    )
+
+    events = await run(llm)
+
+    assert events[-1]["usage"] == {"prompt_tokens": 40, "completion_tokens": 7}
+
+
+async def test_usage_is_absent_rather_than_zero_when_nothing_reported_it() -> None:
+    """Nothing spent and nothing measured are different facts."""
+    events = await run(Llm([done("hi")]))
+
+    assert "usage" not in events[-1]
+
+
 async def test_abort_leaves_a_record_instead_of_a_stream_that_just_stops() -> None:
     llm = Llm([done("never")])
     events = await run(llm, aborted=lambda: True)

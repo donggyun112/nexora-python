@@ -122,6 +122,25 @@ def test_a_snapshot_provider_that_skips_deltas_still_yields_its_text() -> None:
     assert turn.text == "all at once"
 
 
+def test_everything_the_provider_reported_is_kept() -> None:
+    """A provider says these once. `thinking` especially cannot be recovered later."""
+    turn = ModelTurn()
+    turn.absorb({"type": "thinking_delta", "delta": "let me "})
+    turn.absorb({"type": "thinking_delta", "delta": "check"})
+    turn.absorb(
+        {
+            "type": "done",
+            "content": "here",
+            "stop_reason": "max_tokens",
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+        }
+    )
+
+    assert turn.thinking == "let me check"
+    assert turn.stop_reason == "max_tokens"
+    assert turn.usage == {"prompt_tokens": 12, "completion_tokens": 3}
+
+
 def test_tool_calls_keep_the_order_the_model_issued_them() -> None:
     turn = ModelTurn()
     for chunk in [

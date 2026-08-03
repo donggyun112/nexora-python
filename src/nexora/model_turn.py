@@ -14,9 +14,18 @@ from .types import ToolCall
 
 @dataclass
 class ModelTurn:
-    """Accumulates one assistant turn, chunk by chunk."""
+    """Accumulates one assistant turn, chunk by chunk.
+
+    Everything the provider reported is kept, including fields nothing reads yet. A provider
+    only says these once: `thinking` in particular cannot be recovered later, and Anthropic
+    expects a turn's reasoning blocks echoed back when the conversation continues through a
+    tool call.
+    """
 
     text: str = ""
+    thinking: str = ""
+    stop_reason: str = "end_turn"
+    usage: dict[str, int] = field(default_factory=dict)
     _partial: dict[str, list[str]] = field(default_factory=dict)
     _order: list[str] = field(default_factory=list)
 
@@ -29,6 +38,7 @@ class ModelTurn:
             return {"type": "text", "text": chunk["delta"]}
 
         if kind == "thinking_delta" and chunk["delta"]:
+            self.thinking += chunk["delta"]
             return {"type": "thinking", "content": chunk["delta"]}
 
         if kind == "tool_call_start" and chunk["id"] not in self._partial:
@@ -38,9 +48,12 @@ class ModelTurn:
         elif kind == "tool_call_delta" and chunk["id"] in self._partial:
             self._partial[chunk["id"]][1] += chunk["delta"]
 
-        elif kind == "done" and chunk.get("content"):
+        elif kind == "done":
             # A snapshot-style provider emits no deltas at all, so `done.content` wins.
-            self.text = chunk["content"]
+            if chunk.get("content"):
+                self.text = chunk["content"]
+            self.stop_reason = chunk.get("stop_reason", self.stop_reason)
+            self.usage = chunk.get("usage") or self.usage
 
         return None
 

@@ -21,8 +21,12 @@
 - **Gate logic is shared, never per-engine.** `tools.ToolGate` decides and emits; an engine only
   adapts shapes around it. Two engines that gate differently is a security difference.
 - Nexora owns providers' *selection*, tools, permissions, authority, sandboxing, and transport.
-- External side effects must be idempotent. A tool call's id is its idempotency key: a crash
-  between executing a tool and recording its result is indistinguishable from never running it.
+- **Retry safety needs two things, not one** ([ADR-002](docs/architecture/adrs/adr-002-retry-safety-needs-order-determinism.md)):
+  - *per-call idempotency* — a tool call's id is its idempotency key, because a crash between
+    executing a tool and recording its result is indistinguishable from never running it;
+  - *batch order determinism* — two individually idempotent writes to the same file give
+    different results in different orders, so a batch runs sequentially unless every call in
+    it is declared concurrency-safe.
 - Suspension records carry only what the pause can change. Anything deterministically
   reconstructible from the conversation stays out; external facts go in.
 

@@ -50,6 +50,9 @@ class Tools:
     def get(self, name: str) -> dict[str, Any] | None:
         return self.defs.get(name)
 
+    def list(self) -> list[dict[str, Any]]:
+        return []
+
 
 def cap(turns: int) -> Any:
     """Stop after N rounds — the loop has no built-in limit, callers set one."""

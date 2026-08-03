@@ -22,6 +22,14 @@ dependencies = [
   "psycopg[binary,pool]>=3.3,<4",
 ]
 
+[project.optional-dependencies]
+# The alternate engine. Kept out of the core so `nexora` itself never depends on a
+# framework's loop — see docs/architecture/adrs/adr-001.
+langgraph = [
+  "langchain>=1,<2",
+  "langgraph>=1.2,<2",
+]
+
 [dependency-groups]
 dev = [
   "mypy>=1.19,<2",
@@ -31,7 +39,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nexora"]
+packages = ["src/nexora", "src/nexora_langgraph"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -143,10 +143,19 @@ def _rounds(n: int) -> Llm:
     return Llm(*turns, [done("finished")])
 
 
-async def _time_rounds(n: int) -> float:
-    started = time.perf_counter()
-    await drain(_rounds(n), Tools(), "hi")
-    return time.perf_counter() - started
+async def _time_rounds(n: int, best_of: int = 3) -> float:
+    """Fastest of several runs.
+
+    Noise only ever adds time — a GC pause, another test's import, a busy core — so the
+    minimum is the measurement and the rest is interference. Averaging would let one unlucky
+    run decide whether CI is red.
+    """
+    best = float("inf")
+    for _ in range(best_of):
+        started = time.perf_counter()
+        await drain(_rounds(n), Tools(), "hi")
+        best = min(best, time.perf_counter() - started)
+    return best
 
 
 async def test_per_round_cost_does_not_grow_with_history() -> None:

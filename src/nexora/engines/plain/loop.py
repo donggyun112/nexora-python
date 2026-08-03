@@ -88,6 +88,11 @@ async def react_loop(
             if aborted():
                 yield await _done(emit, last_text, calls_made, "aborted", spent)
             else:
+                # A failed run has to reach the event log too, or the audit record just stops.
+                if emit is not None:
+                    await emit(
+                        EventType.STOP_FAILURE, {"reason": "error", "message": str(failure)}
+                    )
                 yield {"type": "error", "message": str(failure)}
             return
 

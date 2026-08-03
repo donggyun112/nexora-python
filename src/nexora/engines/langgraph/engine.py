@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, hook_config
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
@@ -76,6 +76,8 @@ async def langgraph_loop(
     text = ""
 
     if aborted():
+        if emit is not None:
+            await emit(EventType.STOP, {"reason": "aborted", "content": text})
         yield _done(text, calls_made, "aborted", spent)
         return
 
@@ -105,6 +107,9 @@ async def langgraph_loop(
     # the graph accepts — so the middlewares park the reason here and the engine reads it once
     # the graph is done. The event therefore arrives after the round rather than during it.
     if outcome.error is not None:
+        # A failed run has to reach the event log too, or the audit record simply stops.
+        if emit is not None:
+            await emit(EventType.STOP_FAILURE, {"reason": "error", "message": outcome.error})
         yield {"type": "error", "message": outcome.error}
         return
     if outcome.suspended is not None:
@@ -112,6 +117,8 @@ async def langgraph_loop(
         yield {"type": "suspended", "pending_id": result["pending_id"], "tool_call_id": call["id"]}
         return
 
+    if outcome.stop_reason != "completed":
+        text = text or "(stopped after turn)"
     if emit is not None:
         await emit(EventType.STOP, {"reason": outcome.stop_reason, "content": text})
     yield _done(text, calls_made, outcome.stop_reason, spent)
@@ -232,6 +239,11 @@ class _RoundEnd(AgentMiddleware):
         self._turn = -1
         self._reported = 0
 
+    # `jump_to` is ignored unless the hook declares where it may jump: the declaration is
+    # what builds the conditional edge. Without it the graph simply carries on, which is how
+    # `terminates_loop` and the stop policy appeared to work while the model was still being
+    # called for another round.
+    @hook_config(can_jump_to=["end"])
     async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         self._turn += 1
         if self._aborted():
@@ -312,6 +324,7 @@ class _Steering(AgentMiddleware):
             return None
         return {"messages": list(steers)}
 
+    @hook_config(can_jump_to=["model"])
     def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         """A steer that landed as the turn finished cancels the stop — react.ts L152."""
         if self._drain is None:

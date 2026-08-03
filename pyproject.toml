@@ -27,6 +27,7 @@ dependencies = [
 # framework's loop — see docs/architecture/adrs/adr-001.
 langgraph = [
   "langchain>=1,<2",
+  "langchain-openai>=0.3,<1",
   "langgraph>=1.2,<2",
 ]
 
@@ -39,7 +40,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nexora", "src/nexora_langgraph"]
+packages = ["src/nexora"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

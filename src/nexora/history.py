@@ -6,7 +6,7 @@ replayed. Ported from `loop-helpers.ts:96-125`.
 
 from typing import Any
 
-from .types import LLMMessage
+from .contracts.types import LLMMessage
 
 
 def suspend_history_snapshot(

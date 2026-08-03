@@ -7,10 +7,10 @@ the rule rather than at the loop.
 
 from typing import Any
 
+from nexora.contracts import LLMMessage, ToolCall
+from nexora.engines.plain import ModelTurn, parse_arguments
 from nexora.history import suspend_history_snapshot
-from nexora.model_turn import ModelTurn, parse_arguments
 from nexora.tools import render_for_model, select_for_execution, terminates_loop
-from nexora.types import LLMMessage, ToolCall
 
 
 class Defs:

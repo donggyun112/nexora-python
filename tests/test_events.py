@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from nexora.events import BLOCKING, EventEnvelope, EventStream, EventType
-from nexora.loop import react_loop
+from nexora.contracts import BLOCKING, EventEnvelope, EventStream, EventType
+from nexora.engines.plain import react_loop
 from tests.test_loop import Llm, Tools, call, done
 
 

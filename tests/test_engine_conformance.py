@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from nexora.loop import react_loop
+from nexora.engines.plain import react_loop
 from tests.test_loop import Llm, Tools, call, done
 
 pytest.importorskip("langchain", reason="the langgraph extra is not installed")
@@ -24,7 +24,7 @@ from langchain_core.language_models.fake_chat_models import (
 )
 from langchain_core.messages import AIMessage
 
-from nexora_langgraph.engine import langgraph_loop
+from nexora.engines.langgraph import langgraph_loop
 
 
 class ScriptedModel(GenericFakeChatModel):

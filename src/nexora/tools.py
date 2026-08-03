@@ -8,8 +8,8 @@ driving a turn.
 import json
 from typing import Any
 
-from .events import EventType
-from .types import Aborted, BeforeToolCall, Emit, ToolCall, Tools
+from .contracts.events import EventType
+from .contracts.types import Aborted, BeforeToolCall, Emit, ToolCall, Tools
 
 
 async def execute_calls(

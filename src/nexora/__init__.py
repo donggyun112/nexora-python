@@ -2,8 +2,8 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from .loop import react_loop
-from .types import LLM, LLMMessage, ToolCall, Tools
+from .contracts import LLM, LLMMessage, ToolCall, Tools
+from .engines.plain import react_loop
 
 try:
     __version__ = version("nexora")

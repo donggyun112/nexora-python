@@ -179,3 +179,36 @@ async def test_a_provider_failure_is_reported(engine: Any) -> None:
 
     assert events[-1]["type"] == "error"
     assert "429" in events[-1]["message"]
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_gate_events_carry_the_same_payload(engine: Any) -> None:
+    """Types alone are not enough. One engine used to omit `turn` from its payloads and this
+    suite could not see it, because the gate was implemented twice — once per engine."""
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        seen.append((event_type, payload))
+
+    async def deny(call: dict[str, Any]) -> dict[str, Any] | None:
+        return {"type": "error", "message": "not allowed"}
+
+    await run(
+        engine,
+        [says("", a_call("c1", "rm")), says("fin")],
+        Tools(names=["rm"]),
+        before_tool_call=deny,
+        emit=emit,
+    )
+
+    gate_events = {t: p for t, p in seen if t.startswith(("pre_tool", "permission"))}
+    assert gate_events["pre_tool_use"] == {
+        "turn": 0,
+        "call_id": "c1",
+        "name": "rm",
+        "input": {},
+    }
+    assert gate_events["permission_denied"]["reason"] == {
+        "type": "error",
+        "message": "not allowed",
+    }

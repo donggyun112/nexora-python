@@ -41,7 +41,7 @@ async def execute_calls(
     Either way the round is cut short by a suspend or an abort: the remaining calls are simply
     absent from the result, and the model re-issues them on resume.
     """
-    gate = _Gate(before_tool_call, emit, turn)
+    gate = ToolGate(before_tool_call, emit, turn)
     run_batch = getattr(tools, "execute_batch", None)
 
     if run_batch is not None:
@@ -61,21 +61,32 @@ async def execute_calls(
             if result.get("type") == "suspend":
                 break
 
-    await _announce(emit, turn, results)
+    await _announce(gate, emit, turn, results)
     return results
 
 
-class _Gate:
-    """The policy gate plus the events that record what it decided."""
+class ToolGate:
+    """The policy gate, and the events that record what it decided.
 
-    def __init__(self, before_tool_call: BeforeToolCall | None, emit: Emit | None, turn: int):
+    Shared by every engine rather than reimplemented per engine. Two engines that gate
+    differently is a security difference, not a stylistic one — and it had already started:
+    one copy of this omitted `turn` from its payloads, which the conformance suite missed
+    because it compares event types and not their contents.
+    """
+
+    def __init__(
+        self,
+        before_tool_call: BeforeToolCall | None = None,
+        emit: Emit | None = None,
+        turn: int = 0,
+    ) -> None:
         self._before_tool_call = before_tool_call
         self._emit = emit
         self._turn = turn
 
     async def decide(self, call: ToolCall) -> dict[str, Any] | None:
-        """None to run the call, or the result that stands in for it."""
-        await self._publish(EventType.PRE_TOOL_USE, call, {})
+        """None to run the call, or the tool result that stands in for it."""
+        await self.publish(EventType.PRE_TOOL_USE, call)
         if self._before_tool_call is None:
             return None
 
@@ -85,12 +96,21 @@ class _Gate:
 
         kind = decision.get("type")
         if kind == "error":
-            await self._publish(EventType.PERMISSION_DENIED, call, {"reason": decision})
+            await self.publish(EventType.PERMISSION_DENIED, call, reason=decision)
         elif kind == "suspend":
-            await self._publish(EventType.PERMISSION_REQUEST, call, {"request": decision})
+            await self.publish(EventType.PERMISSION_REQUEST, call, request=decision)
         return decision
 
-    async def _publish(self, event: EventType, call: ToolCall, extra: dict[str, Any]) -> None:
+    async def announce(self, call: ToolCall, result: dict[str, Any]) -> None:
+        """Report a finished call, as success or as failure."""
+        failed = result.get("type") == "error"
+        await self.publish(
+            EventType.POST_TOOL_USE_FAILURE if failed else EventType.POST_TOOL_USE,
+            call,
+            result=result,
+        )
+
+    async def publish(self, event: EventType, call: ToolCall, **extra: Any) -> None:
         if self._emit is None:
             return
         await self._emit(
@@ -105,35 +125,30 @@ class _Gate:
         )
 
 
+
 async def _announce(
+    gate: ToolGate,
     emit: Emit | None,
     turn: int,
     results: list[tuple[ToolCall, dict[str, Any]]],
 ) -> None:
     """Report each finished call, then the round as a whole."""
-    if emit is None:
-        return
     for call, result in results:
-        failed = result.get("type") == "error"
+        await gate.announce(call, result)
+    if emit is not None:
         await emit(
-            EventType.POST_TOOL_USE_FAILURE if failed else EventType.POST_TOOL_USE,
+            EventType.POST_TOOL_BATCH,
             {
                 "turn": turn,
-                "call_id": call["id"],
-                "name": call["name"],
-                "result": result,
+                "calls": [{"call_id": c["id"], "name": c["name"]} for c, _ in results],
             },
         )
-    await emit(
-        EventType.POST_TOOL_BATCH,
-        {"turn": turn, "calls": [{"call_id": c["id"], "name": c["name"]} for c, _ in results]},
-    )
 
 
 async def _execute_batched(
     run_batch: Any,
     calls: list[ToolCall],
-    gate: _Gate,
+    gate: ToolGate,
 ) -> list[tuple[ToolCall, dict[str, Any]]]:
     """Gate every call first, then hand the executor only what it may run.
 

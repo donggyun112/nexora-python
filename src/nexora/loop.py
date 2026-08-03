@@ -33,6 +33,7 @@ async def react_loop(
     tools: Tools,
     prompt: str,
     *,
+    system_prompt: str | None = None,
     history: list[LLMMessage] | None = None,
     aborted: Aborted = lambda: False,
     before_tool_call: BeforeToolCall | None = None,
@@ -43,7 +44,16 @@ async def react_loop(
 ) -> AsyncIterator[dict[str, Any]]:
     """Reason, act, repeat. Yields events as they happen."""
 
-    messages: list[LLMMessage] = [*(history or []), {"role": "user", "content": prompt}]
+    # A `system` role rather than a separate argument to the provider: adapters that need it
+    # split out (Anthropic) can lift it back out, and the loop stays provider-neutral.
+    preamble: list[LLMMessage] = (
+        [{"role": "system", "content": system_prompt}] if system_prompt else []
+    )
+    messages: list[LLMMessage] = [
+        *preamble,
+        *(history or []),
+        {"role": "user", "content": prompt},
+    ]
     calls_made: list[dict[str, Any]] = []
     spent: Counter[str] = Counter()
     """Token usage summed across every round of this run. Counter adds keys for us."""

@@ -5,12 +5,11 @@ Nothing here knows how a loop is driven. Both engines import these; neither impo
 
 from .events import BLOCKING, EventEnvelope, EventStream, EventType, Sink
 from .types import (
-    LLM,
     Aborted,
+    BaseMessage,
     BeforeToolCall,
     DrainSteers,
     Emit,
-    LLMMessage,
     OnSuspend,
     ShouldStopAfterTurn,
     StopReason,
@@ -20,15 +19,14 @@ from .types import (
 
 __all__ = [
     "BLOCKING",
-    "LLM",
     "Aborted",
+    "BaseMessage",
     "BeforeToolCall",
     "DrainSteers",
     "Emit",
     "EventEnvelope",
     "EventStream",
     "EventType",
-    "LLMMessage",
     "OnSuspend",
     "ShouldStopAfterTurn",
     "Sink",

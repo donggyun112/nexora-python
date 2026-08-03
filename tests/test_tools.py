@@ -7,8 +7,9 @@ the rule rather than at the loop.
 
 from typing import Any
 
-from nexora.contracts import LLMMessage, ToolCall
-from nexora.engines.plain import ModelTurn, parse_arguments
+from langchain_core.messages import AIMessage, HumanMessage
+
+from nexora.contracts import BaseMessage, ToolCall
 from nexora.history import suspend_history_snapshot
 from nexora.tools import render_for_model, select_for_execution, terminates_loop
 
@@ -30,7 +31,7 @@ class Defs:
 
 
 def a_call(name: str, cid: str = "c1", **arguments: Any) -> ToolCall:
-    return ToolCall(cid, name, arguments)
+    return {"id": cid, "name": name, "args": arguments, "type": "tool_call"}
 
 
 # ── select_for_execution ─────────────────────────────────────────────────────
@@ -101,105 +102,38 @@ def test_a_multimodal_result_keeps_text_and_marks_images_in_order() -> None:
     assert render_for_model(result) == "page 1\n[image]\npage 2"
 
 
-# ── parse_arguments ──────────────────────────────────────────────────────────
-
-
-def test_arguments_parse_from_concatenated_fragments() -> None:
-    assert parse_arguments('{"path": "a.py"}') == {"path": "a.py"}
-
-
-def test_empty_and_malformed_arguments_both_degrade_to_no_args() -> None:
-    assert parse_arguments("") == {}
-    assert parse_arguments("{unclosed") == {}
-
-
-# ── ModelTurn ────────────────────────────────────────────────────────────────
-
-
-def test_a_snapshot_provider_that_skips_deltas_still_yields_its_text() -> None:
-    turn = ModelTurn()
-
-    done = {"type": "done", "content": "all at once", "stop_reason": "end_turn"}
-
-    assert turn.absorb(done) is None
-    assert turn.text == "all at once"
-
-
-def test_everything_the_provider_reported_is_kept() -> None:
-    """A provider says these once. `thinking` especially cannot be recovered later."""
-    turn = ModelTurn()
-    turn.absorb({"type": "thinking_delta", "delta": "let me "})
-    turn.absorb({"type": "thinking_delta", "delta": "check"})
-    turn.absorb(
-        {
-            "type": "done",
-            "content": "here",
-            "stop_reason": "max_tokens",
-            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
-        }
-    )
-
-    assert turn.thinking == "let me check"
-    assert turn.stop_reason == "max_tokens"
-    assert turn.usage == {"prompt_tokens": 12, "completion_tokens": 3}
-
-
-def test_tool_calls_keep_the_order_the_model_issued_them() -> None:
-    turn = ModelTurn()
-    for chunk in [
-        {"type": "tool_call_start", "id": "c2", "name": "grep"},
-        {"type": "tool_call_start", "id": "c1", "name": "read"},
-        {"type": "tool_call_delta", "id": "c1", "delta": '{"p":'},
-        {"type": "tool_call_delta", "id": "c1", "delta": '"a"}'},
-    ]:
-        turn.absorb(chunk)
-
-    calls = turn.tool_calls()
-    assert [c.id for c in calls] == ["c2", "c1"]
-    assert calls[1].arguments == {"p": "a"}
-
-
 # ── suspend_history_snapshot ─────────────────────────────────────────────────
 
 
-def _assistant(*call_ids: str) -> LLMMessage:
-    return {
-        "role": "assistant",
-        "content": [
-            {"type": "tool_call", "id": cid, "name": "t", "arguments": {}} for cid in call_ids
-        ],
-    }
+def _assistant(*call_ids: str) -> AIMessage:
+    return AIMessage(content="", tool_calls=[a_call("t", cid) for cid in call_ids])
 
 
 def test_the_snapshot_keeps_the_suspended_call_and_the_completed_ones() -> None:
-    messages: list[LLMMessage] = [
-        {"role": "user", "content": "go"},
-        _assistant("c1", "c2", "c3"),
-    ]
+    messages: list[BaseMessage] = [HumanMessage("go"), _assistant("c1", "c2", "c3")]
 
     snapshot = suspend_history_snapshot(messages, "c2", ["c1"])
 
-    blocks = snapshot[1]["content"]
-    assert isinstance(blocks, list)
-    assert [b["id"] for b in blocks] == ["c1", "c2"]
+    kept = snapshot[1]
+    assert isinstance(kept, AIMessage)
+    assert [c["id"] for c in kept.tool_calls] == ["c1", "c2"]
 
 
 def test_the_snapshot_does_not_mutate_the_live_history() -> None:
-    messages: list[LLMMessage] = [_assistant("c1", "c2")]
+    original = _assistant("c1", "c2")
+    messages: list[BaseMessage] = [original]
 
     suspend_history_snapshot(messages, "c1", [])
 
-    blocks = messages[0]["content"]
-    assert isinstance(blocks, list)
-    assert [b["id"] for b in blocks] == ["c1", "c2"]
+    assert [c["id"] for c in original.tool_calls] == ["c1", "c2"]
 
 
 def test_earlier_turns_are_left_alone() -> None:
     """Only the message that issued the suspended call is pruned."""
-    messages: list[LLMMessage] = [_assistant("old1", "old2"), _assistant("c1", "c2")]
+    messages: list[BaseMessage] = [_assistant("old1", "old2"), _assistant("c1", "c2")]
 
     snapshot = suspend_history_snapshot(messages, "c1", [])
 
-    earlier = snapshot[0]["content"]
-    assert isinstance(earlier, list)
-    assert [b["id"] for b in earlier] == ["old1", "old2"]
+    earlier = snapshot[0]
+    assert isinstance(earlier, AIMessage)
+    assert [c["id"] for c in earlier.tool_calls] == ["old1", "old2"]

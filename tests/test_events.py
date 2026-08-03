@@ -4,7 +4,7 @@ from typing import Any
 
 from nexora.contracts import BLOCKING, EventEnvelope, EventStream, EventType
 from nexora.engines.plain import react_loop
-from tests.test_loop import Llm, Tools, call, done
+from tests.test_loop import Tools, a_call, says, scripted
 
 
 class Recorder:
@@ -25,7 +25,7 @@ def a_stream(sink: Recorder) -> EventStream:
 
 
 async def test_a_tool_round_emits_the_full_hook_sequence() -> None:
-    llm = Llm([*call("c1", "read"), done()], [done("finished")])
+    llm = scripted(says("", a_call("c1", "read")), says("finished"))
     sink = Recorder()
 
     async for _ in react_loop(llm, Tools(), "hi", emit=a_stream(sink)):
@@ -40,7 +40,7 @@ async def test_a_tool_round_emits_the_full_hook_sequence() -> None:
 
 
 async def test_a_failing_tool_emits_the_failure_variant() -> None:
-    llm = Llm([*call("c1", "read"), done()], [done("x")])
+    llm = scripted(says("", a_call("c1", "read")), says("x"))
     tools = Tools(results={"read": {"type": "error", "message": "nope"}})
     sink = Recorder()
 
@@ -52,7 +52,7 @@ async def test_a_failing_tool_emits_the_failure_variant() -> None:
 
 
 async def test_the_gate_decision_is_announced() -> None:
-    llm = Llm([*call("c1", "rm"), done()], [done("x")])
+    llm = scripted(says("", a_call("c1", "rm")), says("x"))
     sink = Recorder()
 
     async def deny(c: Any) -> dict[str, Any]:
@@ -67,7 +67,7 @@ async def test_the_gate_decision_is_announced() -> None:
 
 
 async def test_an_ask_decision_announces_a_permission_request() -> None:
-    llm = Llm([*call("c1", "deploy"), done()])
+    llm = scripted(says("", a_call("c1", "deploy")))
     sink = Recorder()
 
     async def ask(c: Any) -> dict[str, Any]:
@@ -83,7 +83,7 @@ async def test_an_ask_decision_announces_a_permission_request() -> None:
 async def test_stop_carries_the_reason() -> None:
     sink = Recorder()
 
-    async for _ in react_loop(Llm([done("bye")]), Tools(), "hi", emit=a_stream(sink)):
+    async for _ in react_loop(scripted(says("bye")), Tools(), "hi", emit=a_stream(sink)):
         pass
 
     stop = sink.seen[-1]

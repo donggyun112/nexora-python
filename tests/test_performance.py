@@ -21,7 +21,7 @@ import pytest
 
 from nexora.contracts import EventEnvelope, EventStream, EventType
 from nexora.engines.plain import react_loop
-from tests.test_loop import Llm, Tools, call, done
+from tests.test_loop import Llm, Tools, a_call, says, scripted
 
 pytestmark = pytest.mark.perf
 
@@ -32,15 +32,10 @@ LATENCY = 0.02
 class SlowLlm(Llm):
     """A provider that awaits before answering, like a real one."""
 
-    def stream(self, messages: list[Any]) -> Any:
-        inner = super().stream(messages)
-
-        async def gen() -> Any:
-            await asyncio.sleep(LATENCY)
-            async for chunk in inner:
-                yield chunk
-
-        return gen()
+    async def astream(self, *args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(LATENCY)
+        async for chunk in super().astream(*args, **kwargs):
+            yield chunk
 
 
 class SlowTools(Tools):
@@ -56,7 +51,9 @@ async def drain(*args: Any, **kwargs: Any) -> None:
 
 def a_conversation() -> tuple[SlowLlm, SlowTools]:
     """Two rounds: one tool call, then a final answer."""
-    return SlowLlm([*call("c1", "read"), done()], [done("finished")]), SlowTools()
+    llm = SlowLlm(messages=iter([says("", a_call("c1", "read")), says("finished")]))
+    llm.seen = []
+    return llm, SlowTools()
 
 
 # ── Concurrency ──────────────────────────────────────────────────────────────
@@ -121,8 +118,7 @@ async def test_a_gated_batch_still_runs_concurrently() -> None:
 
             return list(await asyncio.gather(*(run(c) for c in calls)))
 
-    chunks = [c for i in range(5) for c in call(f"c{i}", "read")]
-    llm = Llm([*chunks, done()], [done("x")])
+    llm = scripted(says("", *[a_call(f"c{i}", "read") for i in range(5)]), says("x"))
 
     async def allow(c: Any) -> None:
         return None
@@ -139,8 +135,7 @@ async def test_a_gated_batch_still_runs_concurrently() -> None:
 
 def _rounds(n: int) -> Llm:
     """n tool rounds followed by a final answer, with no simulated latency."""
-    turns = [[*call(f"c{i}", "read"), done()] for i in range(n)]
-    return Llm(*turns, [done("finished")])
+    return scripted(*[says("", a_call(f"c{i}", "read")) for i in range(n)], says("finished"))
 
 
 async def _time_rounds(n: int, best_of: int = 3) -> float:

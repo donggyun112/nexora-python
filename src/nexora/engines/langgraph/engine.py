@@ -52,10 +52,9 @@ async def langgraph_loop(
     `model` is a LangChain chat model here rather than a `nexora.types.LLM`: `create_agent`
     owns the provider call, so the engines cannot share that one argument.
 
-    ponytail: `before_tool_call`, `emit`, `should_stop_after_turn` and `on_suspend` are
-    accepted and ignored. The gate and the suspend handoff have homes here (`wrap_tool_call`
-    and `after_model`'s `interrupt`) and are simply not written yet; the stop policy does not
-    — see the note on `_Steering`. The conformance suite records which is which.
+    ponytail: `on_suspend` is accepted and ignored — the gate reports a suspension as an
+    event, but handing the caller a history snapshot to persist is not written. Everything
+    else is implemented; `tests/test_engine_conformance.py` says which.
     """
     outcome = _Outcome()
     agent = create_agent(
@@ -305,9 +304,6 @@ class _Steering(AgentMiddleware):
             return None
         return {"messages": _to_langchain(steers, None), "jump_to": "model"}
 
-    # ponytail: react.ts L152 — a steer arriving as the turn finishes must cancel the stop.
-    # `after_model` can `jump_to: "model"`, but only after the model already produced its
-    # final answer, so the cancelled stop is observable in the stream. Not implemented.
 
 
 def _as_langchain_tools(tools: Tools) -> list[StructuredTool]:

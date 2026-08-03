@@ -64,7 +64,7 @@ async def langgraph_loop(
         system_prompt=system_prompt,
         middleware=[
             _Steering(drain_steers),
-            _RoundEnd(tools, emit, should_stop_after_turn, outcome),
+            _RoundEnd(tools, emit, should_stop_after_turn, outcome, aborted),
             _ReportFailures(outcome),
             _Gate(before_tool_call, emit, outcome),
         ],
@@ -80,15 +80,26 @@ async def langgraph_loop(
         yield _done(text, calls_made, "aborted", spent)
         return
 
-    async for chunk in agent.astream(state, stream_mode="values"):  # type: ignore[call-overload]
-        for message in chunk["messages"]:
+    # Both modes at once: `messages` carries the provider's deltas so text streams token by
+    # token, `values` carries whole messages so tool calls and results can be read structurally.
+    async for mode, payload in agent.astream(  # type: ignore[call-overload]
+        state, stream_mode=["values", "messages"]
+    ):
+        if mode == "messages":
+            delta = getattr(payload[0], "content", "")
+            if isinstance(delta, str) and delta:
+                yield {"type": "text", "text": delta}
+            continue
+        for message in payload["messages"]:
             key = str(getattr(message, "id", None) or id(message))
             if key in seen:
                 continue
             seen.add(key)
+            # The final answer is the last assistant turn, not every delta ever streamed —
+            # accumulating the deltas would concatenate turns that a steer split apart.
+            if isinstance(message, AIMessage) and isinstance(message.content, str):
+                text = message.content
             for event in _translate(message, tools, calls_made, spent):
-                if event["type"] == "text":
-                    text = event["text"]
                 yield event
 
     # A hook cannot say "the run failed" through its return value — it must return something
@@ -211,8 +222,10 @@ class _RoundEnd(AgentMiddleware):
         emit: Emit | None,
         should_stop: ShouldStopAfterTurn | None,
         outcome: _Outcome,
+        aborted: Aborted,
     ) -> None:
         super().__init__()
+        self._aborted = aborted
         self._tools = tools
         self._emit = emit
         self._should_stop = should_stop
@@ -222,6 +235,9 @@ class _RoundEnd(AgentMiddleware):
 
     async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         self._turn += 1
+        if self._aborted():
+            self._outcome.stop_reason = "aborted"
+            return {"jump_to": "end"}
         finished = _trailing_tool_messages(state["messages"])
         if not finished or len(finished) <= self._reported:
             return None
@@ -263,7 +279,7 @@ def _trailing_tool_messages(messages: list[BaseMessage]) -> list[ToolMessage]:
 
 
 class _Steering(AgentMiddleware):
-    """`drain_steers` at the top of a round — react.ts L116."""
+    """Steers absorbed at both points react.ts uses — L116 and L152."""
 
     def __init__(self, drain_steers: DrainSteers | None) -> None:
         super().__init__()
@@ -277,6 +293,18 @@ class _Steering(AgentMiddleware):
             return None
         return {"messages": _to_langchain(steers, None)}
 
+    def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        """A steer that landed as the turn finished cancels the stop — react.ts L152."""
+        if self._drain is None:
+            return None
+        last = state["messages"][-1]
+        if not isinstance(last, AIMessage) or last.tool_calls:
+            return None
+        steers = self._drain()
+        if not steers:
+            return None
+        return {"messages": _to_langchain(steers, None), "jump_to": "model"}
+
     # ponytail: react.ts L152 — a steer arriving as the turn finishes must cancel the stop.
     # `after_model` can `jump_to: "model"`, but only after the model already produced its
     # final answer, so the cancelled stop is observable in the stream. Not implemented.
@@ -288,8 +316,12 @@ def _as_langchain_tools(tools: Tools) -> list[StructuredTool]:
     for summary in tools.list():
         name = summary["name"]
 
-        async def run(_name: str = name, **kwargs: Any) -> str:
-            return render_for_model(await tools.execute(_name, _name, kwargs))
+        async def run(_name: str = name, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+            # `content_and_artifact` keeps the result's real shape alongside the text the
+            # model sees; without it a multimodal or suspend result is flattened to a string
+            # on the way through `ToolMessage` and cannot be recovered.
+            result = await tools.execute(_name, _name, kwargs)
+            return render_for_model(result), result
 
         wrapped.append(
             StructuredTool.from_function(
@@ -297,6 +329,7 @@ def _as_langchain_tools(tools: Tools) -> list[StructuredTool]:
                 name=name,
                 description=summary["description"],
                 args_schema=summary["parameters"],
+                response_format="content_and_artifact",
             )
         )
     return wrapped
@@ -329,8 +362,6 @@ def _translate(
                     "completion_tokens": message.usage_metadata.get("output_tokens", 0),
                 }
             )
-        if isinstance(message.content, str) and message.content:
-            yield {"type": "text", "text": message.content}
         requested = [ToolCall(c["id"] or "", c["name"], c["args"]) for c in message.tool_calls]
         for call in select_for_execution(tools, requested):
             calls_made.append({"name": call.name, "input": call.arguments})
@@ -345,7 +376,9 @@ def _translate(
             "type": "tool_result",
             "id": message.tool_call_id,
             "name": message.name or "",
-            "result": {"type": "text", "text": str(message.content)},
+            "result": message.artifact
+            if isinstance(message.artifact, dict)
+            else {"type": "text", "text": str(message.content)},
             "is_error": message.status == "error",
         }
 

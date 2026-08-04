@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nexora · Durable Agent Lab</title>
+    <link rel="stylesheet" href="/assets/styles.css?v=6" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <header>
+      <div class="brand"><span class="mark">N</span><span>NEXORA</span></div>
+      <div class="title-block">
+        <span class="eyebrow">LOCAL EXECUTION CONSOLE</span>
+        <h1>Durable Agent Lab</h1>
+      </div>
+      <div class="engine"><span id="health-dot" class="dot"></span><span id="engine-label">connecting</span></div>
+    </header>
+
+    <main>
+      <section class="panel conversation">
+        <div class="panel-head">
+          <div><span class="step">01</span><h2>Agent stream</h2></div>
+          <span id="run-id" class="run-id">NO ACTIVE RUN</span>
+        </div>
+        <div id="messages" class="messages">
+          <div class="empty-state">
+            <span class="glyph">⌁</span>
+            <h3>Run the plain agent loop</h3>
+            <p>Model output, tool calls, and durable suspension will stream here.</p>
+          </div>
+        </div>
+        <div id="approval" class="approval hidden">
+          <div><span class="pulse"></span><strong>Execution suspended</strong><small>Worker released · continuation persisted</small></div>
+          <div class="approval-actions">
+            <button id="deny" class="secondary">Deny</button>
+            <button id="approve">Approve & resume</button>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="samples">
+            <button data-policy="allow" data-prompt="짧게 자기소개해줘">Chat</button>
+            <button data-policy="allow" data-prompt="echo 도구로 'durable hello'를 실행하고 결과를 알려줘">Tool call</button>
+            <button data-policy="allow" data-prompt="배포 전에 request_approval 도구로 내 승인을 요청해줘">Tool waits</button>
+            <button data-policy="approval" data-prompt="remember_note 도구로 deploy 키에 ready 값을 저장해줘">Pre-tool gate</button>
+          </div>
+          <textarea id="prompt" rows="3" placeholder="에이전트에게 작업을 요청하세요…"></textarea>
+          <div class="composer-foot">
+            <label>MODEL <input id="model" spellcheck="false" /></label>
+            <label>PRE-TOOL POLICY
+              <select id="policy">
+                <option value="allow">ALLOW</option>
+                <option value="approval">ASK BEFORE REMEMBER_NOTE</option>
+              </select>
+            </label>
+            <button id="send" class="send">Run agent <span>↗</span></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel ledger">
+        <div class="panel-head">
+          <div><span class="step">02</span><h2>Orchestrator ledger</h2></div>
+          <span id="status" class="status idle">IDLE</span>
+        </div>
+        <div class="metrics">
+          <div><span>ROUNDS</span><strong id="round-count">0</strong></div>
+          <div><span>EFFECTS</span><strong id="effect-count">0</strong></div>
+          <div><span>EVENTS</span><strong id="event-count">0</strong></div>
+        </div>
+        <div class="rail-label"><span>CANONICAL EMIT RAIL</span><span>ONE EVENT · ONE ENTRY</span></div>
+        <div id="events" class="events">
+          <div class="rail-empty">Waiting for execution</div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>PLAIN ASYNC WHILE</span><i>→</i><span>MEDIATED EXECUTION</span><i>→</i><span>STEPLOG</span>
+    </footer>
+    <script src="/assets/app.js?v=6"></script>
+  </body>
+</html>

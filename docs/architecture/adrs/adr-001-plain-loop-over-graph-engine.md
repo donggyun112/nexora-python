@@ -1,6 +1,6 @@
 # ADR-001: 기본 엔진은 평범한 `async while`
 
-**상태**: **Superseded by [ADR-003](adr-003-no-langgraph.md)** (2026-08-03)
+**상태**: **Superseded by [ADR-005](adr-005-withdraw-langgraph.md)** (2026-08-05)
 
 > 이 ADR은 두 엔진을 나란히 유지하기로 했다. ADR-003이 그 결정을 뒤집는다 — `ToolNode` 우회가
 > 가능해지자 `create_agent`가 주는 것이 체크포인터 하나로 좁혀졌고, 그것이 transcript와 겹친다는
@@ -10,8 +10,10 @@
 
 > **이력.** 이 ADR은 세 번 다시 쓰였고, 그때마다 근거가 틀린 것으로 드러났다.
 >
-> 1. **초판**: 직접 `StateGraph`를 조립하는 비용을 근거로 들었다 → 허수아비였다. 아무도 그렇게 안
->    쓴다. 실제 대안은 `create_agent` + 미들웨어고, 거기선 그 비용을 안 낸다.
+> 1. **초판**: 직접 `StateGraph`를 조립하는 비용을 근거로 들었다 → 허수아비라고 판정했다. **그
+>    판정 자체가 틀렸다** (2026-08-04). 직접 조립해 재보니 328줄에 적응 코드가 0이고, `create_agent`
+>    버전(481줄)보다 모든 축에서 낫다. "아무도 그렇게 안 쓴다"는 측정이 아니라 추측이었다. 전문은
+>    [ADR-003 §정정 기록](adr-003-no-langgraph.md#정정-기록-2026-08-03).
 > 2. **2판**: "LangChain의 훅 여섯 개로는 react.ts 시맨틱을 다 표현할 수 없다" →
 >    [실험](../../experiments/2026-08-03-langgraph-conformance.md)에서 **반증**됐다. 12/12 통과.
 > 3. **현재**: 남았던 "계약 소유"와 "의존성"도 스스로 뒤집었다 — LangChain의 메시지·프로바이더
@@ -24,15 +26,22 @@
 
 ## 결정
 
-기본 엔진은 `nexora.engines.plain` — 평범한 `async while`. `nexora.engines.langgraph`는
-`create_agent` 위에 같은 동작을 구현해 나란히 유지한다. 둘은 같은 입력에서 같은 이벤트를 낸다.
+기본 엔진은 `nexora.engines.plain` — 평범한 `async while`. `nexora.engines.langgraph`는 같은
+동작을 구현해 나란히 유지한다. 둘은 같은 입력에서 같은 이벤트를 낸다.
+
+> **정정 (2026-08-04).** 이 문장은 원래 *"`create_agent` 위에"*였다. 그 엔진은 삭제됐고 직접
+> 조립한 `StateGraph`가 그 자리에 있다 — 적응 코드 165줄과 갈림 3개가 같이 사라졌다.
 
 ## 근거 1 — 도구 실행 순서 (정확성)
 
 [ADR-002](adr-002-retry-safety-needs-order-determinism.md): 재시도가 안전하려면 배치 순서가
-결정적이어야 하고, 그건 기본 순차를 뜻한다. `ToolNode`는 항상 `asyncio.gather`이고 옵트아웃이
-없다. `wrap_tool_call`의 공유 락으로 되돌릴 수는 있지만, 기본이 순차면 거의 모든 호출이 락을
-잡으므로 `ToolNode`의 병렬성은 쓰이지 않고 문서화되지 않은 동작에 대한 의존만 남는다.
+결정적이어야 하고, 그건 기본 순차를 뜻한다.
+
+> **정정 (2026-08-03).** 이 단락은 *"`ToolNode`는 항상 `asyncio.gather`이고 옵트아웃이 없다.
+> `wrap_tool_call`의 공유 락으로 되돌릴 수는 있다"*고 적혀 있었다. **둘 다 틀렸다.**
+> `create_agent` 경로는 `config={"max_concurrency": 1}`을 지키고, 공유 락은 순서만 사고
+> `execute_batch` 옵트인 병렬을 잃는다. 재측정 전문은
+> [ADR-003 §정정 기록](adr-003-no-langgraph.md#정정-기록-2026-08-03).
 
 이것이 유일한 **정확성** 근거다. 아래는 선호다.
 
@@ -44,8 +53,8 @@ react.ts의 규칙 하나 — *"도구 호출이 없으면 종료. 단 종료 �
 ```python
 if not requested:
     messages.append(AIMessage(turn_text))
-    if drain_steers and (steers := drain_steers()):
-        messages += steers
+    if drain_inputs and (late_inputs := await drain_inputs()):
+        carried_inputs = list(late_inputs)
         continue
     yield await _done(emit, turn_text, calls_made, "completed", spent)
     return
@@ -79,7 +88,7 @@ dataclass(`_Outcome`)가 붙는다.
 세 개 다 삭제했다. `AIMessageChunk` 덧셈이 조각난 인자를 조립하고, `bind_tools`가 스키마를
 넘긴다. 타입 자체는 우리가 가치를 더하던 부분이 아니었다.
 
-**우리 것으로 남는 것**: 훅 여섯 개(`aborted`/`before_tool_call`/`emit`/`drain_steers`/
+**우리 것으로 남는 것**: 훅 여섯 개(`aborted`/`pre_tool_use`/`emit`/`drain_inputs`/
 `should_stop_after_turn`/`on_suspend`), 이벤트 어휘, react.ts 시맨틱.
 
 ## 대가

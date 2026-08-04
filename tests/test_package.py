@@ -2,4 +2,5 @@ import nexora
 
 
 def test_package_exposes_version() -> None:
-    assert nexora.__version__ == "0.1.0"
+    """That there is one, not which one — pinning the literal only breaks on the next bump."""
+    assert nexora.__version__

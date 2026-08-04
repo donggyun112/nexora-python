@@ -7,11 +7,49 @@ Durable multi-agent runtime for Python.
 
 ## Direction
 
-The default agent loop is an ordinary `async while`: control flow — when to stop, when to
-inject a steer, when to hand a decision to a human — reads on the line where it happens. A
-second engine runs the same behavior on LangChain's `create_agent`, and a conformance suite
-holds the two to identical output, so "the loop is simpler this way" stays a measured claim
-rather than an opinion.
+Nexora is an **agent runtime with durable execution**, not a general-purpose workflow engine.
+Its public API speaks in agent concepts — models, tools, permissions, sessions and subagents.
+The orchestrator is an internal execution substrate that records and recovers agent effects; it
+is not a second product users have to assemble beside the SDK.
+
+```python
+from nexora import AgentRuntime
+
+runtime = AgentRuntime(store=steps, emit=events)
+outcome = await runtime.run("run-42", model, tools, "inspect this repository")
+```
+
+The runtime has one execution path. Its agent planner is an ordinary `async while`; every external
+effect crosses Nexora's durable `Orchestrator` before it runs:
+
+```python
+runtime = AgentRuntime(
+    store=steps,                 # effect ledger + durable input queue
+    emit=events,
+)
+```
+
+Every incremental model input uses that queue. `run(..., prompt)` is convenience syntax for
+enqueueing a `user_prompt` and then driving the run; asynchronous producers use the same boundary:
+
+```python
+from nexora import PendingInput
+from langchain_core.messages import HumanMessage
+
+await runtime.submit(
+    "run-42",
+    PendingInput("user_steer", HumanMessage("focus on auth"), "prompt-2"),
+)
+outcome = await runtime.run("run-42", model, tools)
+```
+
+Submitting emits the source event (`USER_PROMPT_SUBMIT` for user input). Admission into the model
+transcript separately emits `CONTEXT_INJECTED`. Reuse a stable `origin_id`/`prompt_id` when retrying
+the same submission.
+
+The loop keeps only planner control flow — model, delegated effect round, stop. Policy, durable
+intent, effect ordering, suspension and recovery live at the mediated execution boundary. There
+is no alternate graph engine and no graph checkpointer.
 
 Messages, tool calls and chat models are LangChain's — owning our own versions of those bought
 translation layers and little else.
@@ -20,6 +58,18 @@ What Nexora owns is everything the loop decides and everything around it: the co
 contract (hooks, event vocabulary, and the semantics ported from the TypeScript reference),
 tool execution and ordering, permission policy, authority attenuation, sandboxed workspaces,
 delegation, handraise, tenancy, transport, stores, and observability.
+
+Internally, those responsibilities split cleanly:
+
+- **Agent planner:** decides the next agent transition in a plain `async while`.
+- **Durable orchestrator:** records pending effects, runs gates, dispatches effects, suspends
+  without a worker, and reconstructs interrupted tool rounds.
+- **Effect ledger:** owns pending/running/done, call-id idempotency and fencing. It is the recovery
+  source of truth rather than a second durability mechanism beside a graph checkpointer.
+- **Input ledger:** owns pending/claimed/admitted input order. Initial prompts, steers, background
+  results and resume answers enter the planner through one queue contract.
+- **Effect executors:** perform model, tool, sandbox and delegation operations.
+- **Events:** expose the same lifecycle to audit, UI and monitoring consumers.
 
 ## Development
 
@@ -32,31 +82,38 @@ uv run mypy
 uv run pytest
 ```
 
+### Local OpenRouter test UI
+
+```bash
+uv sync --extra ui
+uv run --extra ui uvicorn nexora.ui.app:app --reload --port 8790
+```
+
+Then open <http://127.0.0.1:8790>. See `src/nexora/ui/README.md` for the chat, tool-effect and
+suspension/resume scenarios.
+
 ## Current scaffold
 
 ```text
 src/nexora/
+├── runtime.py        # public AgentRuntime facade
+├── orchestrator.py   # internal durable effect ledger and recovery
 ├── contracts/       # what everything agrees on
 │   ├── types.py     #   messages, tool calls, hook signatures
 │   └── events.py    #   event vocabulary and envelope
-├── engines/         # the interchangeable part
-│   ├── plain/       #   the loop as an `async while`
-│   └── langgraph/   #   the same loop on LangChain's `create_agent`
+├── engines/plain/   # the planner as an `async while`
 ├── tools.py         # the shared policy gate, tool execution, result rendering
-└── history.py       # suspension snapshots — shared by both engines
+└── history.py       # suspension snapshots and resume codec
 ```
 
-Both engines take the same inputs and emit the same events;
-`tests/test_engine_conformance.py` is what makes that a fact rather than a claim. The
-LangGraph one needs the `langgraph` extra:
+The runtime covers the reference's stop conditions, exclusive and terminating tools, steering,
+permission suspension/resume, durable tool effects, and interrupted-round reconstruction.
+Automatic transcript persistence, context compaction, and attachments are not ported yet; crash
+recovery currently accepts the durable transcript explicitly rather than hiding that missing store.
 
-```bash
-uv sync --extra langgraph
-```
-
-The loop covers the reference's stop conditions, exclusive and terminating tools, steering,
-suspension, and the permission gate. Transcript persistence, resume, context compaction, and
-attachments are not ported yet.
+Measured locally over 100 zero-I/O rounds (best of three), the direct durable path costs about
+260µs per round. ADR-005 records why the former graph path was removed despite equivalent effect
+safety.
 
 ## License
 

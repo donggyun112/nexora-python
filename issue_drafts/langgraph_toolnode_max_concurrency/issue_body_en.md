@@ -1,8 +1,4 @@
-# Title
-
-ToolNode.ainvoke ignores RunnableConfig.max_concurrency for multiple tool calls
-
-## Checked other resources
+### Checked other resources
 
 - [x] This is a bug, not a usage question.
 - [x] I added a clear and descriptive title that summarizes this issue.
@@ -12,13 +8,13 @@ ToolNode.ainvoke ignores RunnableConfig.max_concurrency for multiple tool calls
 - [x] This is not related to the langchain-community package.
 - [x] I posted a self-contained, minimal, reproducible example. A maintainer can copy it and run it AS IS.
 
-## Related Issues / PRs
+### Related Issues / PRs
 
 I did not find an existing Python LangGraph issue or pull request covering `ToolNode` ignoring `RunnableConfig.max_concurrency` in its async execution path.
 
 This is distinct from requests for a new deterministic tool-ordering option. `max_concurrency` is already a public `RunnableConfig` field. The issue is that the async `ToolNode` path does not enforce that existing concurrency limit.
 
-## Reproduction Steps / Example Code (Python)
+### Reproduction Steps / Example Code (Python)
 
 ```python
 import asyncio
@@ -148,7 +144,7 @@ assert async_probe.max_active == 1, (
 )
 ```
 
-## Error Message and Stack Trace
+### Error Message and Stack Trace
 
 ```text
 sync max_active: 1
@@ -162,11 +158,11 @@ Traceback (most recent call last):
 AssertionError: RunnableConfig.max_concurrency=1 was ignored by ToolNode.ainvoke
 ```
 
-## Description
+### Description
 
 I am using a `ToolNode` in a custom `StateGraph`. The input contains two tool calls, and I invoke the graph with `config={"max_concurrency": 1}`.
 
-`RunnableConfig.max_concurrency` is documented as the maximum number of parallel calls to make. I therefore expect both `graph.invoke(...)` and `graph.ainvoke(...)` to limit the number of concurrently executing tools to one.
+[`RunnableConfig.max_concurrency`](https://reference.langchain.com/python/langchain-core/runnables/config/RunnableConfig/max_concurrency) is documented as the maximum number of parallel calls to make. I therefore expect both `graph.invoke(...)` and `graph.ainvoke(...)` to limit the number of concurrently executing tools to one.
 
 The synchronous path behaves as expected: the measured maximum is one. The asynchronous path starts both tools concurrently and the measured maximum is two. No exception or warning indicates that the config was ignored.
 
@@ -196,7 +192,7 @@ A possible minimal fix would be to use LangChain Core's existing `gather_with_co
 
 Scope note: this reproduction directly places one `ToolNode` in a custom `StateGraph` and passes multiple calls to that node. In a separate control on the tested versions, `create_agent`'s `Send`-based path honored `max_concurrency=1`. This report is limited to direct multi-call `ToolNode` async execution.
 
-## System Info
+### System Info
 
 ```text
 System Information
@@ -226,6 +222,7 @@ Other Dependencies
 > httpx: 0.28.1
 > jsonpatch: 1.33
 > langgraph: 1.2.10
+> langgraph-prebuilt: 1.1.0
 > openai: 2.52.0
 > orjson: 3.11.9
 > packaging: 26.2

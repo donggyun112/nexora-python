@@ -16,3 +16,8 @@ htmlcov/
 # Local symlink to the TypeScript reference checkout — machine-specific.
 reference/
 
+# Local tool/editor state — machine-specific, never pushed.
+.claude/
+.codecanvas/
+.vscode/
+

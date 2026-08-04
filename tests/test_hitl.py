@@ -46,7 +46,6 @@ async def test_a_suspension_survives_the_process_and_the_run_continues() -> None
     waiting = decode_continuation(await Orchestrator("run-1", log).suspension("c2"))
     assert waiting is not None
     assert waiting.request["handle"] == "change-req-88"  # the tool's own handle survived
-    assert waiting.kind == "effect_approval"
     assert waiting.turn == 0
     assert [c["id"] for c in waiting.completed] == ["c1"]
     shape = [type(m).__name__ for m in waiting.messages]
@@ -88,7 +87,7 @@ async def test_runtime_resume_revalidates_the_latest_policy_before_the_effect() 
     model = scripted(says("blocked"))
     outcome = await runtime.resume(
         "run-policy-change",
-        "c1",
+        "approval-c1",
         {"type": "text", "text": "approved"},
         model,
         resumed,
@@ -171,6 +170,20 @@ async def test_the_resume_re_runs_the_rules_instead_of_trusting_the_approval() -
 async def test_nothing_parked_reads_as_nothing() -> None:
     o = Orchestrator("run-3", MemorySteps())
     assert decode_continuation(await o.suspension("never-suspended")) is None
+
+
+def test_a_legacy_tool_originated_suspension_cannot_be_replayed_as_permission() -> None:
+    payload = encode_continuation(
+        a_call("c1", DEPLOY),
+        {"type": "suspend", "pending_id": "p1"},
+        [],
+        [],
+    )
+    payload.pop("origin")
+    payload["kind"] = "elicitation"
+
+    with pytest.raises(ValueError, match="tool-originated legacy suspension"):
+        decode_continuation(payload)
 
 
 async def test_a_policy_context_is_one_owned_thing() -> None:

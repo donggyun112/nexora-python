@@ -20,11 +20,12 @@ being expressible. The control method and observation event use the same lifecyc
 | `on_inputs` | screens chain in order, each seeing the last one's output; any may halt |
 | `pre_tool_use` | a deny beats a suspend; an `allow` does not short-circuit |
 | `before_model` | steers accumulate in order; any gate may halt |
-| `after_tool_batch` | one stop is enough |
 | `after_tool_call` | every writer runs, and a raise stops the run — fail-closed |
+| `before_finish` | any verifier may veto completion and inject steering |
+| `on_resume` | the human answer is revalidated under current policy |
 | `on_suspend` | all must succeed before `suspended` is published |
 
-A `dict[name, list[callable]]` cannot hold those five rules. Adding a *gate* means registering it
+A `dict[name, list[callable]]` cannot hold those rules. Adding a *gate* means registering it
 in an existing pipeline; adding a *control point* means a new method here, a planner or
 orchestrator boundary that calls it, and a contract test.
 """
@@ -48,7 +49,6 @@ __all__ = [
     "Proceed",
     "ResumeInput",
     "Steering",
-    "StopPolicy",
     "Suspend",
     "Suspending",
     "ToolDecision",
@@ -134,24 +134,17 @@ class Controls(Protocol):
 
     async def before_model(self, ctx: Ctx) -> ModelAction: ...
 
-    async def before_tool_batch(self, ctx: Ctx, calls: list[ToolCall]) -> list[ToolCall]:
-        """Which of the requested calls this round may run. The rest are re-issued next round."""
-        ...
-
     async def pre_tool_use(self, ctx: Ctx, call: ToolCall) -> ToolDecision: ...
 
     async def after_tool_call(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         """Durable record and validation. **Raises through** — a run must not outlive its record."""
         ...
 
-    async def after_tool_batch(self, ctx: Ctx, resolved: list[Any]) -> TurnDecision: ...
-
     async def before_finish(self, ctx: Ctx, reason: StopReason) -> TurnDecision:
         """The last word before a run ends. `Proceed` vetoes the finish and goes around again.
 
-        A separate point from `after_tool_batch` because it fires somewhere else: that one after
-        every round, this one once, when the model asked for no tools. It is where a verifier says
-        "not done yet" and where a steer that landed while the turn was finishing cancels the stop.
+        It fires once when the model asked for no tools. It is where a verifier says "not done
+        yet" and where a steer that landed while the turn was finishing cancels the stop.
         """
         ...
 
@@ -274,33 +267,11 @@ class Journal:
             await write(ctx, call, result)
 
 
-class StopPolicy:
-    """Gates for `after_tool_batch`. One stop is enough, and every gate is still asked.
-
-    Asked even after another said stop, because this is where budget and verification accounting
-    lives — a gate that only hears about the rounds nobody else ended is a gate with wrong numbers.
-    """
-
-    def __init__(self, *gates: Callable[[Ctx, list[Any]], Awaitable[TurnDecision]]) -> None:
-        self._gates = gates
-
-    async def __call__(self, ctx: Ctx, resolved: list[Any]) -> TurnDecision:
-        halt: Halt | None = None
-        for gate in self._gates:
-            match await gate(ctx, resolved):
-                case Halt() as stop if halt is None:
-                    halt = stop
-                case _:
-                    pass
-        return halt or Proceed()
-
-
 class FinishPolicy:
     """Gates for `before_finish`. Any one of them may veto the ending; silence lets it end.
 
-    The mirror of `StopPolicy`, and deliberately not the same class: there, one stop is enough to
-    end a turn; here, one objection is enough to keep the run alive. Collapsing them would make the
-    default of an empty pipeline wrong in one of the two places.
+    Proceed steers from every verifier accumulate in registration order. Without an objection,
+    the original stop reason is returned as a Halt decision.
     """
 
     def __init__(
@@ -371,20 +342,16 @@ class ControlPlane:
         *,
         on_inputs: Any = None,
         before_model: Any = None,
-        before_tool_batch: Any = None,
         pre_tool_use: Any = None,
         after_tool_call: Any = None,
-        after_tool_batch: Any = None,
         before_finish: Any = None,
         on_resume: Any = None,
         on_suspend: Any = None,
     ) -> None:
         self._on_inputs = on_inputs
         self._before_model = before_model
-        self._before_tool_batch = before_tool_batch
         self._pre_tool_use = pre_tool_use
         self._after_tool_call = after_tool_call
-        self._after_tool_batch = after_tool_batch
         self._before_finish = before_finish
         self._on_resume = on_resume
         self._on_suspend = on_suspend
@@ -401,12 +368,6 @@ class ControlPlane:
         action: ModelAction = await self._before_model(ctx)
         return action
 
-    async def before_tool_batch(self, ctx: Ctx, calls: list[ToolCall]) -> list[ToolCall]:
-        if self._before_tool_batch is None:
-            return calls
-        kept: list[ToolCall] = await self._before_tool_batch(ctx, calls)
-        return kept
-
     async def pre_tool_use(self, ctx: Ctx, call: ToolCall) -> ToolDecision:
         if self._pre_tool_use is None:
             return Continue()
@@ -416,12 +377,6 @@ class ControlPlane:
     async def after_tool_call(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         if self._after_tool_call is not None:
             await self._after_tool_call(ctx, call, result)
-
-    async def after_tool_batch(self, ctx: Ctx, resolved: list[Any]) -> TurnDecision:
-        if self._after_tool_batch is None:
-            return Proceed()
-        decision: TurnDecision = await self._after_tool_batch(ctx, resolved)
-        return decision
 
     async def before_finish(self, ctx: Ctx, reason: StopReason) -> TurnDecision:
         if self._before_finish is None:

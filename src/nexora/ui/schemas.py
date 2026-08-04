@@ -14,6 +14,6 @@ class RunRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     run_id: str = Field(min_length=1)
-    tool_call_id: str = Field(min_length=1)
+    pending_id: str = Field(min_length=1)
     approved: bool
     model: str = Field(default=SETTINGS.default_model, min_length=1, max_length=200)

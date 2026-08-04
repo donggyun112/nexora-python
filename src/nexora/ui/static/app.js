@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { runId: null, callId: null, model: "", busy: false, rounds: new Set(), effectIds: new Set(), events: 0, assistant: null, toolCalls: new Map() };
+const state = { runId: null, callId: null, pendingId: null, model: "", busy: false, rounds: new Set(), effectIds: new Set(), events: 0, assistant: null, toolCalls: new Map() };
 
 function setStatus(value, label = value.toUpperCase()) {
   const el = $("status");
@@ -37,10 +37,10 @@ function toolCall(event) {
   const head = document.createElement("div");
   head.className = "tool-head";
   const title = document.createElement("strong");
-  title.textContent = `TOOL CALL · ${event.name || "unknown"}`;
+  title.textContent = `TOOL REQUEST · ${event.name || "unknown"}`;
   const status = document.createElement("span");
   status.className = "tool-status";
-  status.textContent = "RUNNING";
+  status.textContent = "REQUESTED";
   head.append(title, status);
 
   const id = document.createElement("div");
@@ -56,10 +56,10 @@ function toolCall(event) {
 
   const resultLabel = document.createElement("div");
   resultLabel.className = "tool-label result-label";
-  resultLabel.textContent = "RESULT";
+  resultLabel.textContent = "EXECUTION";
   const result = document.createElement("pre");
   result.className = "tool-payload tool-result";
-  result.textContent = "Waiting for execution…";
+  result.textContent = "Awaiting pre-tool gate…";
 
   card.append(head, id, inputLabel, input, resultLabel, result);
   $("messages").append(card);
@@ -72,13 +72,8 @@ function toolCall(event) {
 function toolResult(event) {
   const entry = state.toolCalls.get(event.id) || toolCall(event);
   entry.card.classList.remove("pending", "waiting", "success", "failure");
-  if (event.result?.type === "suspend") {
-    entry.card.classList.add("waiting");
-    entry.status.textContent = event.executed === false ? "WAITING FOR PERMISSION" : "WAITING FOR INPUT";
-  } else {
-    entry.card.classList.add(event.is_error ? "failure" : "success");
-    entry.status.textContent = event.is_error ? "FAILED" : "DONE";
-  }
+  entry.card.classList.add(event.is_error ? "failure" : "success");
+  entry.status.textContent = event.is_error ? "FAILED" : "DONE";
   entry.resultLabel.textContent = "RESULT";
   entry.result.textContent = json(event.result);
   $("messages").scrollTop = $("messages").scrollHeight;
@@ -112,6 +107,23 @@ function toolDenied(payload) {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
+function toolRequestCancelled(payload) {
+  const entry = state.toolCalls.get(payload.call_id) || toolCall({
+    id: payload.call_id,
+    name: payload.name,
+    input: payload.input,
+  });
+  entry.card.classList.remove("pending", "waiting", "success");
+  entry.card.classList.add("failure");
+  entry.status.textContent = "CANCELLED";
+  entry.resultLabel.textContent = "CONTROL DECISION";
+  entry.result.textContent = json(payload.reason);
+  state.callId = null;
+  state.pendingId = null;
+  $("approval").classList.add("hidden");
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
 function addEvent(name, detail = "", tone = "") {
   $("events").querySelector(".rail-empty")?.remove();
   const item = document.createElement("div");
@@ -137,6 +149,7 @@ function addEvent(name, detail = "", tone = "") {
 
 function resetRun(prompt) {
   state.callId = null;
+  state.pendingId = null;
   state.assistant = null;
   state.rounds = new Set();
   state.effectIds = new Set();
@@ -163,12 +176,13 @@ function handle(frame) {
       state.rounds.add(p.turn);
       $("round-count").textContent = state.rounds.size;
     }
-    if (frame.type === "pre_tool_use" && p.call_id) {
+    if ((frame.type === "post_tool_use" || frame.type === "post_tool_use_failure") && p.call_id) {
       state.effectIds.add(p.call_id);
       $("effect-count").textContent = state.effectIds.size;
     }
     if (frame.type === "permission_request" && p.source !== "tool_result") toolPermission(p);
     if (frame.type === "permission_denied") toolDenied(p);
+    if (frame.type === "tool_request_cancelled") toolRequestCancelled(p);
     const detail = p.name || p.call_id || p.reason || JSON.stringify(p);
     const tone = frame.type.includes("failure") || frame.type.includes("denied") ? "fail" : frame.type.includes("permission") ? "wait" : "";
     addEvent(frame.type, detail, tone);
@@ -187,11 +201,15 @@ function handle(frame) {
   }
   if (frame.kind === "suspended") {
     state.callId = frame.tool_call_id;
+    state.pendingId = frame.pending_id;
     $("approval").classList.remove("hidden");
     setStatus("suspended", "WAITING FOR SIGNAL");
     return;
   }
   if (frame.kind === "outcome") {
+    state.callId = null;
+    state.pendingId = null;
+    $("approval").classList.add("hidden");
     setStatus("idle", "COMPLETED");
     return;
   }
@@ -232,17 +250,31 @@ async function run() {
   const prompt = $("prompt").value.trim();
   if (!prompt || state.busy) return;
   state.model = $("model").value.trim();
-  resetRun(prompt);
+  const switching = Boolean(state.callId && state.runId);
+  const runId = switching ? state.runId : null;
+  if (switching) {
+    state.assistant = null;
+    $("approval").classList.add("hidden");
+    message("user", prompt);
+    setStatus("running", "CANCELLING & SWITCHING");
+  } else {
+    resetRun(prompt);
+  }
   $("prompt").value = "";
-  await consume("/api/run", { prompt, model: state.model, permission_gate: $("policy").value === "approval" });
+  await consume("/api/run", {
+    prompt,
+    model: state.model,
+    run_id: runId,
+    permission_gate: $("policy").value === "approval",
+  });
 }
 
 async function resume(approved) {
-  if (!state.runId || !state.callId || state.busy) return;
+  if (!state.runId || !state.pendingId || state.busy) return;
   $("approval").classList.add("hidden");
   state.assistant = null;
   setStatus("running", "RESUMING");
-  await consume("/api/resume", { run_id: state.runId, tool_call_id: state.callId, approved, model: state.model });
+  await consume("/api/resume", { run_id: state.runId, pending_id: state.pendingId, approved, model: state.model });
 }
 
 $("send").addEventListener("click", run);

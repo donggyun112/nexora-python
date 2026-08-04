@@ -73,7 +73,7 @@ async def resume_agent(request: ResumeRequest) -> StreamingResponse:
     ) -> dict[str, Any]:
         return await runtime.resume(
             request.run_id,
-            request.tool_call_id,
+            request.pending_id,
             answer,
             openrouter_model(request.model),
             tools,

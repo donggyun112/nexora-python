@@ -32,11 +32,11 @@ class EventType(StrEnum):
     PRE_TOOL_USE = "pre_tool_use"
     POST_TOOL_USE = "post_tool_use"
     POST_TOOL_USE_FAILURE = "post_tool_use_failure"
-    POST_TOOL_BATCH = "post_tool_batch"
 
     # Permission
     PERMISSION_REQUEST = "permission_request"
     PERMISSION_DENIED = "permission_denied"
+    TOOL_REQUEST_CANCELLED = "tool_request_cancelled"
 
     # Prompt
     USER_PROMPT_SUBMIT = "user_prompt_submit"

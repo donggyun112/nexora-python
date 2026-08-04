@@ -33,7 +33,6 @@ from .contracts.events import EventType, RuntimeEvents
 from .contracts.types import Aborted, BaseMessage, Emit, OnSuspend, PendingInput, ToolCall, Tools
 from .controls import Continue, Controls, Ctx, Deny, ResumeInput, Suspend
 from .history import (
-    SuspensionKind,
     decode_pending_input,
     encode_continuation,
     encode_pending_input,
@@ -46,7 +45,6 @@ from .tools import (
     Stepped,
     a_tool_result,
     absorb_round,
-    announce_batch,
     execute_calls,
     record_resolved,
     tool_payload,
@@ -345,6 +343,21 @@ class StepLog(Protocol):
 
     async def admit_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None: ...
 
+    async def commit_transition(
+        self,
+        run_id: str,
+        steps: dict[str, Any],
+        inputs: list[tuple[str, dict[str, Any]]],
+        token: int = 0,
+    ) -> set[str]:
+        """Atomically finish metadata steps and append ordered, idempotent inbox inputs.
+
+        This is for control-flow transitions, never for wrapping an external effect. It keeps a
+        cancellation ToolMessage ahead of the replacing HumanMessage across process failure.
+        The returned ids are the inputs newly inserted by this transaction.
+        """
+        ...
+
 
 class MemorySteps:
     """A `StepLog` in a dict. Correct semantics, no durability — it dies with the process.
@@ -422,6 +435,27 @@ class MemorySteps:
                     input_id, "admitted", record.value, record.sequence
                 )
 
+    async def commit_transition(
+        self,
+        run_id: str,
+        steps: dict[str, Any],
+        inputs: list[tuple[str, dict[str, Any]]],
+        token: int = 0,
+    ) -> set[str]:
+        self._fence(run_id, token)
+        inserted: set[str] = set()
+        for key, value in steps.items():
+            self._entries[run_id, key] = Step("done", value)
+        for input_id, value in inputs:
+            input_key = (run_id, input_id)
+            if input_key in self._inputs:
+                continue
+            sequence = self._input_sequence.get(run_id, 0)
+            self._input_sequence[run_id] = sequence + 1
+            self._inputs[input_key] = InputRecord(input_id, "pending", value, sequence)
+            inserted.add(input_id)
+        return inserted
+
     def _fence(self, run_id: str, token: int) -> None:
         """Refuse a write from a worker that has been replaced.
 
@@ -492,29 +526,144 @@ class Orchestrator:
 
     async def enqueue_input(self, item: PendingInput) -> PendingInput:
         """Append one external input and return its normalized, retry-stable envelope."""
-        input_id = item.origin_id or str(uuid4())
-        message = item.message.model_copy(update={"id": input_id})
-        normalized = PendingInput(item.kind, message, input_id)
+        normalized = self._normalize_input(item)
+        input_id = normalized.origin_id
+        assert input_id is not None
         inserted = await self._log.enqueue_input(
             self.run_id, input_id, encode_pending_input(normalized)
         )
-        if inserted and self._emit is not None and item.kind in {"user_prompt", "user_steer"}:
-            await self._emit(
-                EventType.USER_PROMPT_SUBMIT,
-                {"input_id": input_id, "prompt": message.content, "source": item.kind},
-            )
+        if inserted:
+            await self._announce_input(normalized)
         return normalized
 
+    async def commit_transition_inputs(
+        self,
+        items: list[PendingInput],
+        steps: dict[str, Any],
+    ) -> list[PendingInput]:
+        """Atomically order protocol-closing inputs before the user input replacing them."""
+        normalized = [self._normalize_input(item) for item in items]
+        encoded = [
+            (item.origin_id, encode_pending_input(item))
+            for item in normalized
+            if item.origin_id is not None
+        ]
+        inserted = await self._log.commit_transition(
+            self.run_id,
+            steps,
+            [(input_id, value) for input_id, value in encoded if input_id is not None],
+            self._token,
+        )
+        for item in normalized:
+            if item.origin_id in inserted:
+                await self._announce_input(item)
+        return normalized
+
+    async def active_continuation(self) -> dict[str, Any] | None:
+        """The one run-level continuation state, or None when the run is not parked."""
+        record = await self._log.read(self.run_id, _active_suspension_key())
+        return record.value if record.status == "done" and isinstance(record.value, dict) else None
+
+    async def cancel_and_switch(
+        self,
+        call: ToolCall,
+        continuation: dict[str, Any],
+        cancellation_result: dict[str, Any],
+        cancellations: list[PendingInput],
+        replacement: PendingInput,
+    ) -> list[PendingInput]:
+        """Close an unanswered model request and order the replacing user input after it."""
+        call_id = call["id"] or ""
+        steps: dict[str, Any] = {
+            _active_suspension_key(): {
+                "state": "switching",
+                "call_id": call_id,
+                "continuation": continuation,
+            }
+        }
+        # Every suspension is now a pre-effect permission wait. Finishing it as cancelled prevents
+        # a stale approval from executing it later with the same idempotency key.
+        effect = await self._log.read(self.run_id, call_id)
+        if effect.status == "absent":
+            steps[call_id] = cancellation_result
+        elif not (
+            effect.status == "done"
+            and isinstance(effect.value, dict)
+            and effect.value.get("code") == "cancelled"
+        ):
+            raise RuntimeError(f"cannot cancel effect {call_id!r}: ledger says {effect.status!r}")
+        return await self.commit_transition_inputs([*cancellations, replacement], steps)
+
+    async def continue_with_input(
+        self,
+        call_id: str,
+        continuation: dict[str, Any],
+        item: PendingInput,
+    ) -> PendingInput:
+        """Atomically bind a suspension answer to the continuation it will resume."""
+        [normalized] = await self.commit_transition_inputs(
+            [item],
+            {
+                _active_suspension_key(): {
+                    "state": "resuming",
+                    "call_id": call_id,
+                    "continuation": continuation,
+                }
+            },
+        )
+        return normalized
+
+    async def complete_continuation(self, call_id: str) -> None:
+        """Clear only the switching/resuming continuation this successful attempt consumed."""
+        active = await self.active_continuation()
+        if (
+            active is not None
+            and active.get("call_id") == call_id
+            and active.get("state") in {"switching", "resuming"}
+        ):
+            await self._log.finish(
+                self.run_id, _active_suspension_key(), None, self._token
+            )
+
+    def _normalize_input(self, item: PendingInput) -> PendingInput:
+        input_id = item.origin_id or str(uuid4())
+        message = item.message.model_copy(update={"id": input_id})
+        return PendingInput(item.kind, message, input_id)
+
+    async def _announce_input(self, item: PendingInput) -> None:
+        if self._emit is not None and item.kind in {"user_prompt", "user_steer"}:
+            await self._emit(
+                EventType.USER_PROMPT_SUBMIT,
+                {
+                    "input_id": item.origin_id,
+                    "prompt": item.message.content,
+                    "source": item.kind,
+                },
+            )
+
     async def claim_inputs(self, history: list[BaseMessage] | None = None) -> list[PendingInput]:
-        """Claim every queued input absent from this attempt's transcript, in arrival order."""
+        """Claim missing inputs in dependency order, preserving arrival order among peers."""
         represented = {message.id for message in history or [] if message.id is not None}
         claimed: list[PendingInput] = []
-        for record in await self._log.list_inputs(self.run_id):
+        decoded = [
+            (record, decode_pending_input(record.value))
+            for record in await self._log.list_inputs(self.run_id)
+        ]
+        # Protocol-closing answers must precede user input that arrived while a tool call was
+        # parked, even though that user input reached the inbox first. Preserve order within both
+        # groups; this is dependency ordering, not arbitrary priority.
+        decoded.sort(
+            key=lambda pair: (
+                pair[1].kind not in {"resume_result", "cancelled_tool_result"},
+                pair[0].sequence,
+            )
+        )
+        for record, item in decoded:
             if record.input_id in represented or record.input_id in self._seen_inputs:
                 continue
             await self._log.claim_input(self.run_id, record.input_id, self._token)
             self._seen_inputs.add(record.input_id)
-            claimed.append(decode_pending_input(record.value))
+            claimed.append(item)
         return claimed
 
     async def admit_inputs(self, inputs: list[PendingInput]) -> None:
@@ -672,7 +821,6 @@ class Orchestrator:
             await record_resolved(controls, publisher, context, call, resolved.result)
         items = [resolved]
         await self._terminate_if_suspended(tools, items, publisher, turn, controls, context)
-        await announce_batch(publisher, turn, items)
         if self._on_agent_event is not None:
             event = a_tool_result(call, resolved.result)
             event["executed"] = not resolved.refused
@@ -700,7 +848,8 @@ class Orchestrator:
             [str(completed["id"]) for completed in round_.completed],
         )
         suspended_result = next(item for item in resolved if item.call["id"] == call["id"])
-        kind: SuspensionKind = "effect_approval" if suspended_result.refused else "elicitation"
+        if not suspended_result.refused:
+            raise RuntimeError("only a pre_tool_use permission gate may suspend a tool request")
         if controls is not None:
             await controls.on_suspend(context, call, request, snapshot, round_.completed)
         await self.persist_suspension(
@@ -708,18 +857,8 @@ class Orchestrator:
             request,
             snapshot,
             round_.completed,
-            kind=kind,
             turn=turn,
         )
-
-        if emit is not None and not suspended_result.refused:
-            # A gate suspension already announced this while deciding. A tool-originated
-            # suspension reaches the same approval path, so announce it here after persistence.
-            await emit(
-                EventType.PERMISSION_REQUEST,
-                tool_payload(turn, call, request=request, source="tool_result"),
-            )
-        await announce_batch(emit, turn, resolved)
         if self._on_agent_event is not None:
             for item in resolved:
                 event = a_tool_result(item.call, item.result)
@@ -863,7 +1002,6 @@ class Orchestrator:
             controls,
             context,
         )
-        await announce_batch(publisher, recovery_turn, resolved)
         absorbed = absorb_round(tools, resolved)
         return RecoveredTools(
             [*history, *absorbed.answers],
@@ -920,7 +1058,6 @@ class Orchestrator:
         snapshot: list[BaseMessage],
         completed: list[dict[str, Any]],
         *,
-        kind: SuspensionKind,
         turn: int,
     ) -> None:
         """Commit the waiting record owned by this execution layer.
@@ -929,17 +1066,27 @@ class Orchestrator:
         generator or worker remains alive while approval is outstanding; only this durable
         record does.
         """
-        await self.suspend(
-            call["id"] or "",
-            encode_continuation(
-                call,
-                request,
-                snapshot,
-                completed,
-                self._rules_version,
-                kind=kind,
-                turn=turn,
-            ),
+        call_id = call["id"] or ""
+        continuation = encode_continuation(
+            call,
+            request,
+            snapshot,
+            completed,
+            self._rules_version,
+            turn=turn,
+        )
+        await self._log.commit_transition(
+            self.run_id,
+            {
+                _suspend_key(call_id): continuation,
+                _active_suspension_key(): {
+                    "state": "waiting",
+                    "call_id": call_id,
+                    "continuation": continuation,
+                },
+            },
+            [],
+            self._token,
         )
         if self._on_suspend is not None:
             await self._on_suspend(call, request, snapshot, completed)
@@ -973,6 +1120,10 @@ def _signal_key(name: str) -> str:
 
 def _suspend_key(call_id: str) -> str:
     return f"suspend:{call_id}"
+
+
+def _active_suspension_key() -> str:
+    return "agent:active-suspension"
 
 
 def _pending_round_key() -> str:

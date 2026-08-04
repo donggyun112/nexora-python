@@ -12,6 +12,9 @@ Its public API speaks in agent concepts — models, tools, permissions, sessions
 The orchestrator is an internal execution substrate that records and recovers agent effects; it
 is not a second product users have to assemble beside the SDK.
 
+See the [current architecture map](docs/architecture/structure.html) for the ownership, approval,
+recovery, and three-lane control/signal/event model.
+
 ```python
 from nexora import AgentRuntime
 
@@ -46,6 +49,13 @@ outcome = await runtime.run("run-42", model, tools)
 Submitting emits the source event (`USER_PROMPT_SUBMIT` for user input). Admission into the model
 transcript separately emits `CONTEXT_INJECTED`. Reuse a stable `origin_id`/`prompt_id` when retrying
 the same submission.
+
+An interactive input arriving during permission wait uses **cancel-and-switch**. The model's tool
+request is already part of its `AIMessage`, so the runtime first admits an error `ToolMessage`
+(`code=cancelled`) for every unanswered request and only then admits the newer `HumanMessage`.
+The tool never executes. `input_mode="headless"` keeps the input queued until the suspension is
+resolved instead. Answers are routed by the suspension's `pending_id`; run forking is not part of
+this mechanism.
 
 The loop keeps only planner control flow — model, delegated effect round, stop. Policy, durable
 intent, effect ordering, suspension and recovery live at the mediated execution boundary. There

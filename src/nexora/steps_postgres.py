@@ -246,3 +246,45 @@ class PostgresSteps:
                 (run_id, input_ids),
             )
         await self._connection.commit()
+
+    async def commit_transition(
+        self,
+        run_id: str,
+        steps: dict[str, Any],
+        inputs: list[tuple[str, dict[str, Any]]],
+        token: int = 0,
+    ) -> set[str]:
+        """Commit a control transition in one Postgres transaction."""
+        from psycopg.types.json import Jsonb
+
+        inserted: set[str] = set()
+        try:
+            await self._fence(run_id, token)
+            async with self._connection.cursor() as cursor:
+                for key, value in steps.items():
+                    await cursor.execute(
+                        """
+                        insert into nexora_step (run_id, key, status, value, finished_at)
+                        values (%s, %s, 'done', %s, now())
+                        on conflict (run_id, key) do update
+                            set status = 'done', value = excluded.value, finished_at = now()
+                        """,
+                        (run_id, key, Jsonb(value)),
+                    )
+                for input_id, value in inputs:
+                    await cursor.execute(
+                        """
+                        insert into nexora_input (run_id, input_id, status, value)
+                        values (%s, %s, 'pending', %s)
+                        on conflict (run_id, input_id) do nothing
+                        returning input_id
+                        """,
+                        (run_id, input_id, Jsonb(value)),
+                    )
+                    if await cursor.fetchone() is not None:
+                        inserted.add(input_id)
+            await self._connection.commit()
+        except BaseException:
+            await self._connection.rollback()
+            raise
+        return inserted

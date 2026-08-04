@@ -65,30 +65,6 @@ async def test_agent_stream_forwards_tool_call_and_result() -> None:
     assert agent_events[1]["result"] == {"type": "text", "text": "hi"}
 
 
-async def test_tool_originated_suspension_runs_the_tool_before_waiting() -> None:
-    tools = TrackingTools()
-    events: list[dict[str, Any]] = []
-    call = cast(
-        ToolCall,
-        {
-            "id": "ask-1",
-            "name": "request_approval",
-            "args": {"reason": "deploy?"},
-            "type": "tool_call",
-        },
-    )
-
-    async def collect(event: dict[str, Any]) -> None:
-        events.append(event)
-
-    async with Orchestrator("tool-waits", MemorySteps(), on_agent_event=collect) as owner:
-        with pytest.raises(AgentSuspended):
-            await owner.execute_round(tools, [call], lambda: False)
-
-    assert tools.executed == ["request_approval"]
-    assert next(event for event in events if event["type"] == "tool_result")["executed"] is True
-
-
 async def test_pre_tool_permission_suspends_before_effect_then_runs_on_approval() -> None:
     tools = TrackingTools()
     store = MemorySteps()

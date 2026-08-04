@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nexora · Durable Agent Lab</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=6" />
+    <link rel="stylesheet" href="/assets/styles.css?v=7" />
   </head>
   <body>
     <div class="noise"></div>
@@ -40,8 +40,7 @@
         <div class="composer">
           <div class="samples">
             <button data-policy="allow" data-prompt="짧게 자기소개해줘">Chat</button>
-            <button data-policy="allow" data-prompt="echo 도구로 'durable hello'를 실행하고 결과를 알려줘">Tool call</button>
-            <button data-policy="allow" data-prompt="배포 전에 request_approval 도구로 내 승인을 요청해줘">Tool waits</button>
+            <button data-policy="allow" data-prompt="echo 도구로 'durable hello'를 실행하고 결과를 알려줘">Tool request</button>
             <button data-policy="approval" data-prompt="remember_note 도구로 deploy 키에 ready 값을 저장해줘">Pre-tool gate</button>
           </div>
           <textarea id="prompt" rows="3" placeholder="에이전트에게 작업을 요청하세요…"></textarea>
@@ -65,7 +64,7 @@
         </div>
         <div class="metrics">
           <div><span>ROUNDS</span><strong id="round-count">0</strong></div>
-          <div><span>EFFECTS</span><strong id="effect-count">0</strong></div>
+          <div><span>EFFECTS EXECUTED</span><strong id="effect-count">0</strong></div>
           <div><span>EVENTS</span><strong id="event-count">0</strong></div>
         </div>
         <div class="rail-label"><span>CANONICAL EMIT RAIL</span><span>ONE EVENT · ONE ENTRY</span></div>
@@ -78,6 +77,6 @@
     <footer>
       <span>PLAIN ASYNC WHILE</span><i>→</i><span>MEDIATED EXECUTION</span><i>→</i><span>STEPLOG</span>
     </footer>
-    <script src="/assets/app.js?v=6"></script>
+    <script src="/assets/app.js?v=7"></script>
   </body>
 </html>

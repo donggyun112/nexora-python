@@ -182,14 +182,13 @@ class Permissions(Protocol):
 OnSuspend = Callable[
     [ToolCall, dict[str, Any], list[BaseMessage], list[dict[str, Any]]], Awaitable[None]
 ]
-"""Called with (call, suspend_result, history_snapshot, completed_results) when a tool suspends.
+"""Called when a pre-tool permission gate suspends an unexecuted tool request.
 
 Calls the round never reached are deliberately **not** listed here. They are steps — a tool call's
 id is its step name, so the ledger already knows which ones finished and which never started, and a
 second list of them would be a second answer to the same question. Wrap the executor in
 `nexora.tools.Stepped` and a resumed run re-executes exactly the ones that never ran.
 
-The whole suspend result is handed over, not just its `pending_id`: what a suspension record
-needs beyond the key — who suspended, and any external handle the tool minted — lives in
-fields the loop has no business naming. Persisting it is the caller's job.
+The whole permission request is handed over, not just its `pending_id`: any external approval
+handle lives in fields the loop has no business naming. Persisting it is the caller's job.
 """

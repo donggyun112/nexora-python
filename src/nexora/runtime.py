@@ -5,22 +5,28 @@ durable execution boundary: `StepLog`, permission suspension, recovery, and even
 """
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from .contracts import BaseMessage, PendingInput, RuntimeEvents, Tools
+from .contracts import BaseMessage, EventType, PendingInput, RuntimeEvents, Tools
 from .contracts.types import Aborted, Emit, OnSuspend
 from .controls import Ctx
 from .driver import drive
 from .engines.plain import react_loop
-from .history import decode_continuation, suspension_result_message
-from .orchestrator import MemorySteps, Orchestrator, StepLog
-from .tools import a_tool_result
+from .history import cancelled_tool_inputs, decode_continuation, suspension_result_message
+from .orchestrator import AgentSuspended, MemorySteps, Orchestrator, StepLog
 
 __all__ = ["AgentRuntime", "run"]
 
 OnAgentEvent = Callable[[dict[str, Any]], Awaitable[None]]
+InputMode = Literal["interactive", "headless"]
+
+_CANCELLED = {
+    "type": "error",
+    "message": "cancelled by a newer user request",
+    "code": "cancelled",
+}
 
 
 class AgentRuntime:
@@ -58,16 +64,50 @@ class AgentRuntime:
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
         prompt_id: str | None = None,
+        input_mode: InputMode = "interactive",
         **engine_options: Any,
     ) -> dict[str, Any]:
-        """Start or continue one agent turn on the configured engine."""
+        """Start or continue a turn; interactive input cancels a parked tool request."""
         async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
-            if prompt:
-                await orchestrator.enqueue_input(
-                    PendingInput("user_prompt", HumanMessage(prompt), prompt_id)
-                )
             history = engine_options.pop("history", None)
-            return await self._drive(
+            active = await orchestrator.active_continuation()
+            completing: str | None = None
+            if prompt:
+                incoming = PendingInput("user_prompt", HumanMessage(prompt), prompt_id)
+                if active is not None and active.get("state") == "waiting":
+                    waiting = decode_continuation(active.get("continuation"))
+                    if waiting is None:
+                        raise RuntimeError("active suspension has no continuation")
+                    if input_mode == "headless":
+                        await orchestrator.enqueue_input(incoming)
+                        raise AgentSuspended(
+                            str(waiting.request["pending_id"]), waiting.call["id"] or ""
+                        )
+                    await self._cancel_and_switch(orchestrator, active, waiting, incoming)
+                    history = list(waiting.messages)
+                    completing = waiting.call["id"] or ""
+                elif active is not None and active.get("state") in {"switching", "resuming"}:
+                    waiting = decode_continuation(active.get("continuation"))
+                    if waiting is None:
+                        raise RuntimeError("active continuation is corrupt")
+                    await orchestrator.enqueue_input(incoming)
+                    history = list(waiting.messages) if history is None else history
+                    completing = waiting.call["id"] or ""
+                else:
+                    await orchestrator.enqueue_input(incoming)
+            elif active is not None:
+                waiting = decode_continuation(active.get("continuation"))
+                if waiting is None:
+                    raise RuntimeError("active continuation is corrupt")
+                if active.get("state") == "waiting":
+                    raise AgentSuspended(
+                        str(waiting.request["pending_id"]), waiting.call["id"] or ""
+                    )
+                if active.get("state") in {"switching", "resuming"}:
+                    history = list(waiting.messages) if history is None else history
+                    completing = waiting.call["id"] or ""
+
+            outcome = await self._drive(
                 orchestrator,
                 model,
                 tools,
@@ -76,15 +116,36 @@ class AgentRuntime:
                 on_event=on_event,
                 **engine_options,
             )
+            if completing is not None:
+                await orchestrator.complete_continuation(completing)
+            return outcome
 
-    async def submit(self, run_id: str, item: PendingInput) -> PendingInput:
-        """Durably enqueue an asynchronous input without starting or holding a worker."""
-        return await self._orchestrator(run_id).enqueue_input(item)
+    async def submit(
+        self,
+        run_id: str,
+        item: PendingInput,
+        *,
+        input_mode: InputMode = "interactive",
+    ) -> PendingInput:
+        """Durably route input; user input cancels a parked request in interactive mode."""
+        async with self._orchestrator(run_id) as orchestrator:
+            active = await orchestrator.active_continuation()
+            if (
+                active is not None
+                and active.get("state") == "waiting"
+                and item.kind in {"user_prompt", "user_steer"}
+                and input_mode == "interactive"
+            ):
+                waiting = decode_continuation(active.get("continuation"))
+                if waiting is None:
+                    raise RuntimeError("active suspension has no continuation")
+                return await self._cancel_and_switch(orchestrator, active, waiting, item)
+            return await orchestrator.enqueue_input(item)
 
     async def resume(
         self,
         run_id: str,
-        tool_call_id: str,
+        pending_id: str,
         answer: dict[str, Any],
         model: Any,
         tools: Tools,
@@ -95,37 +156,40 @@ class AgentRuntime:
         rules_version: str = "",
         **engine_options: Any,
     ) -> dict[str, Any]:
-        """Resume a policy/human suspension without holding the original worker."""
+        """Route an answer by the suspension's external `pending_id` and resume its call."""
         async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
-            waiting = decode_continuation(await orchestrator.suspension(tool_call_id))
-            if waiting is None:
-                raise LookupError(f"no suspension for tool call {tool_call_id!r}")
-            result = answer
-            if waiting.kind == "effect_approval":
-                result = await orchestrator.resume_effect(
-                    tools,
-                    waiting.call,
-                    answer,
-                    waiting.request,
-                    waiting.rules_version,
-                    aborted=engine_options.get("aborted", lambda: False),
-                    turn=waiting.turn,
-                    controls=controls,
-                    ctx=Ctx(turn=waiting.turn, messages=list(waiting.messages)),
-                )
-            elif on_event is not None:
-                event = a_tool_result(waiting.call, result)
-                event["executed"] = True
-                await on_event(event)
+            active = await orchestrator.active_continuation()
+            waiting = decode_continuation(active.get("continuation")) if active else None
+            if (
+                waiting is None
+                or active is None
+                or active.get("state") not in {"waiting", "resuming"}
+                or str(waiting.request.get("pending_id")) != pending_id
+            ):
+                raise LookupError(f"no active suspension for pending id {pending_id!r}")
+            tool_call_id = waiting.call["id"] or ""
+            result = await orchestrator.resume_effect(
+                tools,
+                waiting.call,
+                answer,
+                waiting.request,
+                waiting.rules_version,
+                aborted=engine_options.get("aborted", lambda: False),
+                turn=waiting.turn,
+                controls=controls,
+                ctx=Ctx(turn=waiting.turn, messages=list(waiting.messages)),
+            )
             answer_message = suspension_result_message(
                 waiting.call["id"] or "",
                 result,
                 name=waiting.call.get("name", ""),
             )
-            await orchestrator.enqueue_input(
-                PendingInput("resume_result", answer_message, f"resume:{tool_call_id}")
+            await orchestrator.continue_with_input(
+                tool_call_id,
+                active["continuation"],
+                PendingInput("resume_result", answer_message, f"resume:{pending_id}")
             )
-            return await self._drive(
+            outcome = await self._drive(
                 orchestrator,
                 model,
                 tools,
@@ -134,6 +198,8 @@ class AgentRuntime:
                 on_event=on_event,
                 **engine_options,
             )
+            await orchestrator.complete_continuation(tool_call_id)
+            return outcome
 
     async def recover(
         self,
@@ -227,6 +293,34 @@ class AgentRuntime:
             on_agent_event=on_event,
             rules_version=rules_version,
         )
+
+    async def _cancel_and_switch(
+        self,
+        orchestrator: Orchestrator,
+        active: dict[str, Any],
+        waiting: Any,
+        incoming: PendingInput,
+    ) -> PendingInput:
+        cancellations = cancelled_tool_inputs(waiting.messages, reason=_CANCELLED["message"])
+        normalized = await orchestrator.cancel_and_switch(
+            waiting.call,
+            active["continuation"],
+            dict(_CANCELLED),
+            cancellations,
+            incoming,
+        )
+        await orchestrator.emit(
+            EventType.TOOL_REQUEST_CANCELLED,
+            {
+                "turn": waiting.turn,
+                "call_id": waiting.call["id"],
+                "name": waiting.call["name"],
+                "input": waiting.call["args"],
+                "reason": dict(_CANCELLED),
+                "replacement_input_id": normalized[-1].origin_id,
+            },
+        )
+        return normalized[-1]
 
 
 async def run(

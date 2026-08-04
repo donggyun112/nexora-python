@@ -13,6 +13,7 @@ from nexora import AgentRuntime, react_loop
 from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
 from nexora.controls import ControlPlane, Halt, Ingress, Journal, Permissions, gate, writer
 from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended, PermissionChain
+from nexora.tools import InvalidToolResult
 
 
 def a_call(cid: str, name: str, args: dict[str, Any] | None = None) -> ToolCall:
@@ -593,63 +594,14 @@ async def test_the_gate_suspends_instead_of_blocking_on_an_answer() -> None:
 # ── Suspension ───────────────────────────────────────────────────────────────
 
 
-async def test_a_suspending_tool_declares_exclusive_and_runs_alone() -> None:
-    """tool.ts:38 — exclusive runs apart, and on suspend the rest must not start."""
-    llm = scripted(says("", a_call("c1", "read"), a_call("c2", "ask")))
-    tools = Tools(
-        results={"ask": {"type": "suspend", "pending_id": "p1"}},
-        defs={"ask": {"is_exclusive": True}},
-        names=["read", "ask"],
-    )
+async def test_a_tool_cannot_suspend_after_crossing_the_effect_boundary() -> None:
+    tools = Tools(results={"ask": {"type": "suspend", "pending_id": "p1"}}, names=["ask"])
 
-    events = await run(llm, tools)
+    with pytest.raises(InvalidToolResult, match="pre_tool_use"):
+        async for _ in react_loop(scripted(says("", a_call("c1", "ask"))), tools):
+            pass
 
     assert tools.ran == ["ask"]
-    assert events[-1]["type"] == "suspended"
-
-
-async def test_suspend_keeps_completed_results_and_hands_over_the_whole_result() -> None:
-    """react.ts:232 — completed results survive; the caller names the record's fields."""
-    llm = scripted(says("", a_call("c1", "read"), a_call("c2", "ask")))
-    tools = Tools(
-        results={"ask": {"type": "suspend", "pending_id": "p1", "handle": "job-9"}},
-        names=["read", "ask"],
-    )
-    captured: list[Any] = []
-
-    async def on_suspend(
-        call: Any, result: dict[str, Any], msgs: list[BaseMessage], done: list[Any]
-    ) -> None:
-        captured.append((call, result, done))
-
-    events = await run(llm, tools, on_suspend=on_suspend)
-
-    assert tools.ran == ["read", "ask"]
-    assert events[-1]["type"] == "suspended"
-    call, result, done = captured[0]
-    assert (call["id"], call["name"]) == ("c2", "ask")
-    assert result == {"type": "suspend", "pending_id": "p1", "handle": "job-9"}
-    assert [d["id"] for d in done] == ["c1"]
-
-
-async def test_suspend_snapshot_drops_calls_that_never_ran() -> None:
-    """loop-helpers.ts:96 — an unanswerable tool call left in history makes the provider 400."""
-    llm = scripted(says("", a_call("c1", "read"), a_call("c2", "ask"), a_call("c3", "write")))
-    tools = Tools(
-        results={"ask": {"type": "suspend", "pending_id": "p1"}},
-        names=["read", "ask", "write"],
-    )
-    snapshots: list[list[BaseMessage]] = []
-
-    async def on_suspend(
-        call: Any, result: dict[str, Any], msgs: list[BaseMessage], done: list[Any]
-    ) -> None:
-        snapshots.append(msgs)
-
-    await run(llm, tools, on_suspend=on_suspend)
-
-    assistant = next(m for m in snapshots[0] if isinstance(m, AIMessage) and m.tool_calls)
-    assert [c["id"] for c in assistant.tool_calls] == ["c1", "c2"]  # c3 never ran
 
 
 # ── Batch execution ──────────────────────────────────────────────────────────

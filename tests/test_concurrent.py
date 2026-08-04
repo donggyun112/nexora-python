@@ -8,8 +8,7 @@ import pytest
 from nexora import AgentRuntime
 from nexora.contracts import BatchTools
 from nexora.engines.plain import react_loop
-from nexora.orchestrator import AgentSuspended
-from nexora.tools import Concurrent
+from nexora.tools import Concurrent, InvalidToolResult
 from tests.test_loop import Tools, a_call, says, scripted
 
 SAFE = {"is_concurrency_safe": True}
@@ -87,8 +86,7 @@ async def test_wrapping_keeps_the_batch_capability_declared() -> None:
     assert isinstance(Concurrent(Traced()), BatchTools)
 
 
-async def test_a_suspend_in_a_concurrent_batch_still_cuts_the_round() -> None:
-    """Concurrency does not change what a suspension means — the round is absorbed, then stops."""
+async def test_a_concurrent_tool_cannot_return_a_suspension() -> None:
 
     class Asking(Traced):
         async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
@@ -99,20 +97,10 @@ async def test_a_suspend_in_a_concurrent_batch_still_cuts_the_round() -> None:
 
     tools = Asking(defs={"read": SAFE, "ask": SAFE}, names=["read", "ask"])
     calls = [a_call("a", "read"), a_call("b", "ask"), a_call("c", "read")]
-    events: list[dict[str, Any]] = []
-
-    async def collect(event: dict[str, Any]) -> None:
-        events.append(event)
-
-    with pytest.raises(AgentSuspended):
+    with pytest.raises(InvalidToolResult, match="pre_tool_use"):
         await AgentRuntime().run(
-            "concurrent-suspend",
+            "concurrent-invalid-suspend",
             scripted(says("", *calls)),
             tools,
             "hi",
-            on_event=collect,
         )
-
-    assert events[-1]["type"] == "suspended"
-    # Every call ran — they were declared safe together — and all three are reported.
-    assert [e["id"] for e in events if e["type"] == "tool_result"] == ["a", "b", "c"]

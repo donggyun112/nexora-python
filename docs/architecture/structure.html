@@ -1,463 +1,601 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>nexora-python 구조도</title>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Nexora · Durable Agent Runtime Architecture</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --color-paper:  #f5f5f5;
-      --color-ink:    #2d3142;
-      --color-muted:  #4f5d75;
-      --color-soft:   #7a8399;
-      --color-rule:   rgba(45,49,66,0.12);
-      --color-accent: #eb6c36;
-      --font-sans:  'Geist', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
-      --font-serif: 'Instrument Serif', 'Apple SD Gothic Neo', serif;
-      --font-mono:  'Geist Mono', ui-monospace, Menlo, monospace;
+      --bg: #080b0a;
+      --panel: #0d1210;
+      --panel-2: #111815;
+      --line: #25312c;
+      --line-strong: #3b4b44;
+      --ink: #edf5f1;
+      --muted: #91a29a;
+      --soft: #65756e;
+      --green: #65f59a;
+      --green-dim: rgba(101, 245, 154, .11);
+      --cyan: #63d9ec;
+      --cyan-dim: rgba(99, 217, 236, .10);
+      --violet: #b5a0ff;
+      --violet-dim: rgba(181, 160, 255, .10);
+      --amber: #ffc96b;
+      --amber-dim: rgba(255, 201, 107, .10);
+      --red: #ff8080;
+      --red-dim: rgba(255, 128, 128, .10);
+      --sans: Inter, Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --radius: 14px;
     }
 
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
-      font-family: var(--font-sans);
-      background: var(--color-paper);
-      padding: 3rem 2rem;
-      color: var(--color-ink);
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% -10%, rgba(101, 245, 154, .08), transparent 34rem),
+        radial-gradient(circle at 96% 20%, rgba(99, 217, 236, .06), transparent 30rem),
+        var(--bg);
+      font-family: var(--sans);
+      line-height: 1.5;
     }
 
-    .container { max-width: 1200px; margin: 0 auto; }
-    .header { margin-bottom: 2.5rem; }
-
-    .header-eyebrow {
-      font-family: var(--font-mono);
-      font-size: 0.66rem;
-      font-weight: 500;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--color-muted);
-      margin-bottom: 0.75rem;
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      content: "";
+      opacity: .18;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: linear-gradient(to bottom, black, transparent 75%);
     }
 
-    h1 {
-      font-family: var(--font-serif);
-      font-size: clamp(1.75rem, 3vw + 1rem, 2.5rem);
-      font-weight: 400;
-      letter-spacing: -0.02em;
-      line-height: 1.1;
-      margin-bottom: 0.5rem;
+    a { color: inherit; }
+    code, .mono { font-family: var(--mono); }
+    code { color: #cfe0d8; font-size: .92em; }
+    strong { color: var(--ink); }
+
+    .shell { width: min(1440px, calc(100% - 40px)); margin: 0 auto; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid rgba(59, 75, 68, .6);
+      background: rgba(8, 11, 10, .84);
+      backdrop-filter: blur(16px);
     }
-
-    h2 { font-family: var(--font-serif); font-size: 1.375rem; font-weight: 400; margin-bottom: 0.25rem; }
-
-    .subtitle { font-size: 1rem; line-height: 1.55; color: var(--color-muted); max-width: 60ch; }
-    .section { margin-top: 3rem; }
-
-    .section-eyebrow {
-      font-family: var(--font-mono);
-      font-size: 0.62rem;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: var(--color-soft);
-      margin-bottom: 0.5rem;
+    .topbar-inner {
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
     }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.02em; }
+    .brand-mark { width: 9px; height: 9px; border-radius: 2px; background: var(--green); box-shadow: 0 0 18px rgba(101,245,154,.7); }
+    .top-meta { color: var(--soft); font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 
-    .section-note {
-      font-size: 0.875rem; color: var(--color-muted);
-      margin-bottom: 1.25rem; max-width: 68ch; line-height: 1.6;
+    .hero { padding: 76px 0 44px; }
+    .kicker { margin: 0 0 15px; color: var(--green); font: 12px var(--mono); letter-spacing: .15em; text-transform: uppercase; }
+    h1 { max-width: 980px; margin: 0; font-size: clamp(42px, 7vw, 88px); line-height: .98; letter-spacing: -.065em; }
+    .hero-copy { max-width: 850px; margin: 24px 0 0; color: var(--muted); font-size: clamp(16px, 1.7vw, 21px); line-height: 1.65; }
+    .hero-copy b { color: var(--ink); font-weight: 600; }
+
+    .decision-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      margin-top: 42px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: rgba(13,18,16,.78);
     }
+    .decision { min-height: 112px; padding: 20px; border-right: 1px solid var(--line); }
+    .decision:last-child { border-right: 0; }
+    .decision small { display: block; margin-bottom: 11px; color: var(--soft); font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    .decision b { display: block; font-size: 17px; letter-spacing: -.02em; }
+    .decision span { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
 
-    .diagram-container { overflow-x: auto; }
-    svg { width: 100%; min-width: 900px; display: block; }
+    main { padding-bottom: 80px; }
+    .section { padding: 58px 0; border-top: 1px solid var(--line); }
+    .section-head { display: grid; grid-template-columns: 170px 1fr; gap: 28px; margin-bottom: 28px; }
+    .section-no { color: var(--soft); font: 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+    h2 { margin: 0; font-size: clamp(27px, 3.5vw, 44px); line-height: 1.1; letter-spacing: -.045em; }
+    .section-intro { max-width: 780px; margin: 11px 0 0; color: var(--muted); font-size: 15px; }
 
-    .cards { display: grid; grid-template-columns: 1.1fr 1fr 0.95fr; gap: 1rem; margin-top: 2rem; }
-    @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } }
-
-    .card {
-      background: #ffffff; border-radius: 6px;
-      border: 1px solid var(--color-rule); padding: 1.25rem;
+    .architecture {
+      display: grid;
+      grid-template-columns: minmax(180px, .55fr) minmax(650px, 2.35fr) minmax(190px, .65fr);
+      gap: 16px;
+      align-items: stretch;
+      min-width: 1120px;
     }
-
-    .eyebrow {
-      font-family: var(--font-mono); font-size: 0.62rem;
-      letter-spacing: 0.16em; text-transform: uppercase;
-      color: var(--color-soft); margin-bottom: 0.6rem;
+    .scroll { overflow-x: auto; padding-bottom: 8px; }
+    .edge-column { display: grid; gap: 16px; }
+    .edge-card, .plane, .note-card, .flow-card, .ledger-card, .event-group, .code-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(17,24,21,.96), rgba(11,16,14,.96));
     }
+    .edge-card { min-height: 132px; padding: 18px; display: flex; flex-direction: column; justify-content: space-between; }
+    .edge-card .label, .plane-label, .tag { font: 10px var(--mono); letter-spacing: .11em; text-transform: uppercase; }
+    .edge-card .label { color: var(--soft); }
+    .edge-card h3 { margin: 25px 0 5px; font-size: 16px; }
+    .edge-card p { margin: 0; color: var(--muted); font-size: 12px; }
 
-    .card-header {
-      display: flex; align-items: center; gap: 0.6rem;
-      margin-bottom: 0.875rem; padding-bottom: 0.875rem;
-      border-bottom: 1px solid rgba(45,49,66,0.08);
+    .planes { display: grid; gap: 12px; }
+    .plane { position: relative; padding: 18px; }
+    .plane-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; color: var(--soft); }
+    .plane-label b { color: var(--ink); font-size: 11px; font-weight: 500; }
+    .nodes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 28px; align-items: center; }
+    .node { position: relative; min-height: 86px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 9px; background: #0a0f0d; }
+    .node:not(:last-child)::after {
+      position: absolute; top: 50%; right: -22px; width: 15px; height: 1px; content: ""; background: var(--line-strong);
     }
-
-    .card-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-    .card-dot.ink { background: var(--color-ink); }
-    .card-dot.coral { background: var(--color-accent); }
-    .card-dot.soft { background: var(--color-soft); }
-
-    .card h3 { font-size: 0.875rem; font-weight: 600; }
-    .card ul { list-style: none; color: var(--color-muted); font-size: 0.8125rem; line-height: 1.55; }
-    .card li { margin-bottom: 0.35rem; padding-left: 0.875rem; position: relative; }
-    .card li::before {
-      content: '—'; position: absolute; left: 0;
-      color: rgba(45,49,66,0.25); font-size: 0.75rem;
+    .node:not(:last-child)::before {
+      position: absolute; top: calc(50% - 3px); right: -24px; content: ""; border-width: 3px 0 3px 5px; border-style: solid; border-color: transparent transparent transparent var(--line-strong);
     }
-    .card code { font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-ink); }
+    .node.accent { border-color: rgba(101,245,154,.52); background: var(--green-dim); }
+    .node.cyan { border-color: rgba(99,217,236,.48); background: var(--cyan-dim); }
+    .node.violet { border-color: rgba(181,160,255,.45); background: var(--violet-dim); }
+    .node.amber { border-color: rgba(255,201,107,.5); background: var(--amber-dim); }
+    .node .tag { color: var(--soft); }
+    .node h4 { margin: 12px 0 3px; font-size: 14px; }
+    .node p { margin: 0; color: var(--muted); font: 10.5px/1.45 var(--mono); }
+    .plane-caption { margin: 12px 0 0; color: var(--soft); font-size: 11px; }
 
-    .aside {
-      font-family: var(--font-serif); font-style: italic;
-      font-size: 0.95rem; line-height: 1.5; color: var(--color-muted);
-      margin-top: 1.5rem; padding-left: 1rem;
-      border-left: 2px solid var(--color-accent); max-width: 72ch;
+    .ownership-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; }
+    .note-card { padding: 18px; }
+    .note-card .tag { color: var(--green); }
+    .note-card h3 { margin: 12px 0 7px; font-size: 15px; }
+    .note-card p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .equation {
+      margin: 8px 0 30px;
+      padding: 18px 22px;
+      border: 1px solid rgba(255,201,107,.38);
+      border-radius: var(--radius);
+      background: var(--amber-dim);
+      color: var(--amber);
+      font: clamp(14px, 1.7vw, 19px) var(--mono);
+      text-align: center;
     }
+    .equation b { color: var(--ink); }
 
-    .footer {
-      margin-top: 2.5rem; padding-top: 1.5rem;
-      border-top: 1px solid rgba(45,49,66,0.10);
-      font-family: var(--font-mono); font-size: 0.72rem;
-      letter-spacing: 0.06em; color: var(--color-soft);
-      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
+    .flow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .flow-card { padding: 20px; }
+    .flow-card .flow-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .flow-card h3 { margin: 0; font-size: 17px; }
+    .status { padding: 4px 8px; border-radius: 999px; font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .status.green { color: var(--green); background: var(--green-dim); }
+    .status.amber { color: var(--amber); background: var(--amber-dim); }
+    .status.red { color: var(--red); background: var(--red-dim); }
+    .steps { list-style: none; margin: 22px 0 0; padding: 0; counter-reset: flow; }
+    .steps li { position: relative; min-height: 58px; padding: 0 0 18px 38px; color: var(--muted); font-size: 12.5px; counter-increment: flow; }
+    .steps li::before { position: absolute; left: 0; top: -2px; display: grid; width: 23px; height: 23px; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; content: counter(flow); color: var(--ink); font: 10px var(--mono); background: var(--bg); }
+    .steps li:not(:last-child)::after { position: absolute; top: 22px; bottom: -1px; left: 11px; width: 1px; content: ""; background: var(--line); }
+    .steps li:last-child { min-height: 0; padding-bottom: 0; }
+    .steps code { display: block; margin-bottom: 2px; color: var(--ink); }
+
+    .durability-grid { display: grid; grid-template-columns: .8fr 1.2fr; gap: 14px; }
+    .ledger-card { padding: 20px; }
+    .state-row { display: grid; grid-template-columns: 105px 25px 1fr; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .state-row:last-child { border-bottom: 0; }
+    .state-name { padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; text-align: center; font: 10px var(--mono); }
+    .state-arrow { color: var(--soft); text-align: center; }
+    .state-copy { color: var(--muted); font-size: 12px; }
+    .state-copy strong { display: block; margin-bottom: 2px; font-size: 13px; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th { padding: 10px 12px; border-bottom: 1px solid var(--line-strong); color: var(--soft); font: 9px var(--mono); letter-spacing: .1em; text-align: left; text-transform: uppercase; }
+    td { padding: 13px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; vertical-align: top; }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child { width: 28%; color: var(--ink); }
+
+    .callout {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 16px;
+      margin-top: 14px;
+      padding: 18px 20px;
+      border: 1px solid rgba(181,160,255,.34);
+      border-radius: var(--radius);
+      background: var(--violet-dim);
+    }
+    .callout-mark { color: var(--violet); font: 18px var(--mono); }
+    .callout p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .event-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .control-map { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+    .control-lane { padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(17,24,21,.96), rgba(11,16,14,.96)); }
+    .control-lane.control { border-color: rgba(255,201,107,.35); }
+    .control-lane.signal { border-color: rgba(99,217,236,.32); }
+    .control-lane.observe { border-color: rgba(181,160,255,.30); }
+    .control-lane h3 { margin: 10px 0 6px; font-size: 17px; }
+    .control-lane > p { min-height: 58px; margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+    .lane-list { display: grid; gap: 7px; }
+    .lane-item { padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: rgba(0,0,0,.13); }
+    .lane-item code { display: block; color: var(--ink); font-size: 10px; }
+    .lane-item span { display: block; margin-top: 3px; color: var(--soft); font-size: 10.5px; }
+    .envelope { display: grid; grid-template-columns: .8fr 1.2fr; gap: 14px; margin: 14px 0; }
+    .envelope pre { margin: 0; color: #b7c8c0; font: 11px/1.7 var(--mono); white-space: pre-wrap; }
+    .scope-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .scope-item { padding: 10px; border: 1px solid var(--line); border-radius: 7px; }
+    .scope-item b { display: block; color: var(--cyan); font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .scope-item span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .event-group { padding: 18px; }
+    .event-group h3 { margin: 0 0 14px; font-size: 14px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+    .chip { padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: rgba(0,0,0,.15); font: 9.5px var(--mono); }
+    .chip.blocking { border-color: rgba(255,201,107,.4); color: var(--amber); }
+    .event-rule { margin-top: 16px; padding: 18px; border-left: 2px solid var(--cyan); background: var(--cyan-dim); color: var(--muted); font-size: 13px; }
+
+    .bottom-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 14px; }
+    .code-card { padding: 20px; }
+    .tree { margin: 0; overflow-x: auto; color: #b7c8c0; font: 11.5px/1.75 var(--mono); white-space: pre; }
+    .rules { display: grid; gap: 9px; }
+    .rule { display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; }
+    .rule b { color: var(--green); font: 11px var(--mono); }
+    .rule span { color: var(--muted); font-size: 12px; }
+    .roadmap { margin-top: 14px; padding-top: 15px; border-top: 1px solid var(--line); }
+    .roadmap h4 { margin: 0 0 9px; color: var(--soft); font: 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .roadmap p { margin: 0; color: var(--muted); font-size: 12px; }
+
+    footer { padding: 24px 0 40px; border-top: 1px solid var(--line); color: var(--soft); font: 10px var(--mono); }
+    footer .shell { display: flex; justify-content: space-between; gap: 20px; }
+
+    @media (max-width: 1000px) {
+      .decision-strip, .flow-grid, .event-grid, .control-map { grid-template-columns: repeat(2, 1fr); }
+      .decision:nth-child(2) { border-right: 0; }
+      .decision:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .durability-grid, .bottom-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      .shell { width: min(100% - 24px, 1440px); }
+      .top-meta { display: none; }
+      .hero { padding-top: 50px; }
+      .decision-strip, .flow-grid, .event-grid, .ownership-grid, .control-map, .envelope { grid-template-columns: 1fr; }
+      .decision { border-right: 0; border-bottom: 1px solid var(--line); }
+      .decision:last-child { border-bottom: 0; }
+      .section-head { grid-template-columns: 1fr; gap: 8px; }
+      footer .shell { flex-direction: column; }
+    }
+    @media print {
+      :root { --bg: #fff; --panel: #fff; --panel-2: #fff; --ink: #111; --muted: #444; --soft: #666; --line: #ccc; --line-strong: #999; }
+      body { background: #fff; }
+      body::before, .topbar { display: none; }
+      .shell { width: 100%; }
+      .section { break-inside: avoid; }
+      .edge-card, .plane, .note-card, .flow-card, .ledger-card, .event-group, .code-card { background: #fff; }
     }
   </style>
 </head>
 <body>
-  <div class="container">
-
-    <div class="header">
-      <p class="header-eyebrow">Architecture · 2026-08-03</p>
-      <h1>nexora-python 구조</h1>
-      <p class="subtitle">에이전트는 오케스트레이터의 스텝 하나다. 채널은 이벤트 하나뿐이고,
-        권한은 그 채널의 답이다. 점선은 아직 안 만든 것.</p>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand"><span class="brand-mark"></span>Nexora</div>
+      <div class="top-meta">Durable Agent Runtime · Architecture Record</div>
     </div>
+  </header>
 
-    <!-- ═══════════ 1 / 2 · 계층 ═══════════ -->
-    <div class="section">
-      <p class="section-eyebrow">1 / 2 · 계층</p>
-      <h2>누가 무엇을 소유하는가</h2>
-      <p class="section-note">아래로 흐른다. 거슬러 올라가는 것이 하나 있다 — 권한 답. 실행 계층이
-        <code>pre_tool_use</code>를 발행하고 제어 계층이 답한다. 그래서 게이트 객체도, 미들웨어 스택도
-        없다.</p>
+  <div class="shell">
+    <section class="hero">
+      <p class="kicker">Current architecture · 2026-08-05</p>
+      <h1>의도는 가볍게.<br>실행은 내구성 있게.</h1>
+      <p class="hero-copy">
+        Nexora는 <b>plain <code>async while</code> 에이전트 플래너</b>와
+        <b>중앙 Orchestrator 실행 경계</b>를 결합한다. 모델은 도구 실행을 요청하고,
+        Orchestrator는 정책·순서·멱등성·중단·복구를 소유한다. LangGraph 실행 경로와
+        도구 실행 후 suspension은 제거됐다.
+      </p>
 
-      <div class="diagram-container">
-        <svg viewBox="0 0 1000 780" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
-            </marker>
-            <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
-            </marker>
-          </defs>
-
-          <rect width="100%" height="100%" fill="#f5f5f5"/>
-
-          <rect x="40" y="72" width="920" height="160" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
-          <rect x="56" y="76" width="132" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="60" y="85" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">CONTROL · 제어</text>
-
-          <rect x="40" y="272" width="920" height="160" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
-          <rect x="56" y="276" width="132" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="60" y="285" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">AGENT · 에이전트</text>
-
-          <rect x="40" y="472" width="920" height="160" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
-          <rect x="56" y="476" width="144" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="60" y="485" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">EXECUTION · 실행</text>
-
-          <path d="M 208,168 V 196 Q 208,204 216,204 H 844 Q 852,204 852,196 V 172"
-                fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
-          <rect x="496" y="184" width="76" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="534" y="193" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">AFTER SIGNAL</text>
-
-          <line x1="136" y1="168" x2="136" y2="300" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
-          <rect x="148" y="228" width="32" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="152" y="237" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">STEP</text>
-
-          <line x1="272" y1="336" x2="344" y2="336" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
-          <rect x="288" y="316" width="40" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="308" y="325" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">DRAIN</text>
-
-          <line x1="552" y1="336" x2="744" y2="336" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
-          <rect x="624" y="316" width="44" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="646" y="325" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PUBLISH</text>
-
-          <line x1="452" y1="368" x2="452" y2="500" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
-          <rect x="464" y="428" width="40" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="468" y="437" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">ROUND</text>
-
-          <line x1="552" y1="536" x2="664" y2="536" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
-          <rect x="584" y="516" width="32" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="600" y="525" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RUN</text>
-
-          <path d="M 344,536 H 316 Q 308,536 308,528 V 144 Q 308,136 316,136 H 340"
-                fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
-          <rect x="208" y="390" width="92" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="300" y="399" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">PRE_TOOL_USE</text>
-          <rect x="208" y="410" width="92" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="300" y="419" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">답이 결정</text>
-
-          <rect x="72" y="104" width="200" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="72" y="104" width="200" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
-          <rect x="80" y="110" width="36" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
-          <text x="98" y="119" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CTRL</text>
-          <text x="172" y="138" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Orchestrator</text>
-          <text x="172" y="156" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">run() · signal()</text>
-
-          <rect x="344" y="104" width="208" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="344" y="104" width="208" height="64" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
-          <rect x="352" y="110" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.22)" stroke-width="0.8"/>
-          <text x="368" y="119" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">GAP</text>
-          <text x="448" y="138" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">권한 해석기</text>
-          <text x="448" y="156" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">아래 흐름도 참조</text>
-
-          <rect x="752" y="104" width="200" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="752" y="104" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-          <rect x="760" y="110" width="36" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
-          <text x="778" y="119" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">STEP</text>
-          <text x="852" y="138" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">쓰기 작업</text>
-          <text x="852" y="156" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">not agent tools</text>
-
-          <rect x="72" y="304" width="200" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="72" y="304" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-          <rect x="80" y="310" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
-          <text x="102" y="319" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ADAPT</text>
-          <text x="172" y="338" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">run_agent</text>
-          <text x="172" y="356" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">stream → value</text>
-
-          <rect x="344" y="304" width="208" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="344" y="304" width="208" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
-          <rect x="352" y="310" width="40" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
-          <text x="372" y="319" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">LOOP</text>
-          <text x="448" y="338" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">react_loop</text>
-          <text x="448" y="356" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">while · 훅 5개</text>
-
-          <rect x="744" y="304" width="208" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="744" y="304" width="208" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
-          <rect x="752" y="310" width="32" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
-          <text x="768" y="319" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">BUS</text>
-          <text x="848" y="338" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">EventStream</text>
-          <text x="848" y="356" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">blocking / observing</text>
-
-          <rect x="344" y="504" width="208" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="344" y="504" width="208" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-          <rect x="352" y="510" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
-          <text x="372" y="519" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ROUND</text>
-          <text x="448" y="538" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">execute_calls</text>
-          <text x="448" y="556" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">→ list[Resolved]</text>
-
-          <rect x="664" y="504" width="248" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="664" y="504" width="248" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
-          <rect x="672" y="510" width="36" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
-          <text x="690" y="519" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">EXEC</text>
-          <text x="788" y="538" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Tools</text>
-          <text x="788" y="556" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">호출자 소유 · 샌드박스</text>
-
-          <line x1="40" y1="668" x2="960" y2="668" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
-          <text x="40" y="688" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
-
-          <rect x="128" y="700" width="14" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
-          <text x="152" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">검토 대상 · 초점</text>
-
-          <rect x="304" y="700" width="14" height="10" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-          <text x="328" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">구현됨 · 테스트 있음</text>
-
-          <rect x="504" y="700" width="14" height="10" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
-          <text x="528" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">협력자 · 호출자 소유</text>
-
-          <rect x="704" y="700" width="14" height="10" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
-          <text x="728" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">미구현</text>
-
-          <line x1="128" y1="736" x2="142" y2="736" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
-          <text x="152" y="740" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">제어 흐름</text>
-
-          <line x1="304" y1="736" x2="318" y2="736" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
-          <text x="328" y="740" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">내부 호출</text>
-
-          <line x1="504" y1="736" x2="518" y2="736" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
-          <text x="528" y="740" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">미구현 경로</text>
-        </svg>
+      <div class="decision-strip">
+        <div class="decision"><small>Planner</small><b>Plain async while</b><span>model → delegated round → stop</span></div>
+        <div class="decision"><small>Execution owner</small><b>Orchestrator</b><span>gate · effect · suspend · recover</span></div>
+        <div class="decision"><small>Durability source</small><b>StepLog + Inbox</b><span>한 개의 복구 원장, graph PC 없음</span></div>
+        <div class="decision"><small>Approval</small><b>Pre-tool only</b><span>실행 전 대기, worker는 즉시 종료</span></div>
       </div>
-    </div>
+    </section>
 
-    <!-- ═══════════ 2 / 2 · 권한 해석 순서 ═══════════ -->
-    <div class="section">
-      <p class="section-eyebrow">2 / 2 · 권한 해석</p>
-      <h2>순서가 설계다</h2>
-      <p class="section-note">Claude Code의 <code>hasPermissionsToUseToolInner</code> 모델.
-        구독자 답은 <strong>입력이고 최종 권한이 아니다</strong> — <code>allow</code>를 받아도 규칙층을
-        다시 통과해야 한다. 그리고 bypass 진입점이 규칙층 <strong>아래</strong>에 있는 것이 불변식이다.
-        nexora에는 이 규칙층이 아직 없다.</p>
-
-      <div class="diagram-container">
-        <svg viewBox="0 0 1000 900" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <marker id="a2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
-            </marker>
-            <marker id="a2-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
-            </marker>
-          </defs>
-
-          <rect width="100%" height="100%" fill="#f5f5f5"/>
-
-          <rect x="292" y="232" width="416" height="200" rx="8" fill="rgba(235,108,54,0.05)" stroke="rgba(235,108,54,0.50)" stroke-width="1" stroke-dasharray="4,4"/>
-          <rect x="308" y="236" width="184" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="312" y="245" fill="rgba(235,108,54,0.75)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">BYPASS 면역 · 1a–1g</text>
-
-          <line x1="500" y1="84" x2="500" y2="124" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-
-          <line x1="500" y1="192" x2="500" y2="260" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#a2-accent)"/>
-          <rect x="512" y="212" width="60" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="516" y="221" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">항상 재검증</text>
-
-          <line x1="500" y1="408" x2="500" y2="464" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-
-          <path d="M 568,500 H 832 Q 840,500 840,508 V 636"
-                fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-          <rect x="676" y="480" width="28" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="690" y="489" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ASK</text>
-
-          <path d="M 432,500 H 248 Q 240,500 240,508 V 790 Q 240,798 248,798 H 396"
-                fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-          <rect x="192" y="630" width="40" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="228" y="639" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">DENY</text>
-
-          <line x1="500" y1="532" x2="500" y2="572" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-          <rect x="512" y="540" width="36" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="516" y="549" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">통과</text>
-
-          <line x1="500" y1="632" x2="500" y2="668" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-
-          <line x1="500" y1="728" x2="500" y2="772" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-          <rect x="512" y="736" width="40" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="516" y="745" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">ALLOW</text>
-
-          <path d="M 628,700 H 704 Q 712,700 712,692 V 680 Q 712,672 720,672"
-                fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#a2)"/>
-          <rect x="628" y="714" width="48" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="652" y="723" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">미매칭</text>
-
-          <path d="M 840,704 V 790 Q 840,798 832,798 H 604"
-                fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
-          <rect x="696" y="776" width="112" height="12" rx="2" fill="#f5f5f5"/>
-          <text x="804" y="785" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">승인 후 재개 / 거부</text>
-
-          <rect x="400" y="40" width="200" height="44" rx="20" fill="#f5f5f5"/>
-          <rect x="400" y="40" width="200" height="44" rx="20" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
-          <text x="500" y="67" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">tool_call 도착</text>
-
-          <rect x="372" y="128" width="256" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="372" y="128" width="256" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-          <rect x="380" y="134" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
-          <text x="392" y="143" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">0</text>
-          <text x="500" y="162" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">PRE_TOOL_USE 구독자</text>
-          <text x="500" y="180" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">allow / deny / ask / none</text>
-
-          <rect x="332" y="264" width="336" height="144" rx="6" fill="#f5f5f5"/>
-          <rect x="332" y="264" width="336" height="144" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
-          <rect x="340" y="270" width="48" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
-          <text x="364" y="279" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">미구현</text>
-          <text x="500" y="300" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">규칙층 — 순서대로 short-circuit</text>
-          <text x="356" y="326" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1a  deny 룰                   → deny</text>
-          <text x="356" y="342" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1b  ask 룰                    → ask</text>
-          <text x="356" y="358" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1c  tools.check_permissions()</text>
-          <text x="356" y="374" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1e  requires_user_interaction → ask</text>
-          <text x="356" y="390" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1g  safety check (.git 등)    → ask</text>
-
-          <path d="M 500,468 L 568,500 L 500,532 L 432,500 Z" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-          <text x="500" y="504" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">결정</text>
-
-          <rect x="372" y="576" width="256" height="56" rx="6" fill="#f5f5f5"/>
-          <rect x="372" y="576" width="256" height="56" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
-          <rect x="380" y="582" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.22)" stroke-width="0.8"/>
-          <text x="392" y="591" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">2a</text>
-          <text x="500" y="608" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">bypass 진입점</text>
-          <text x="500" y="624" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">여기서부터만 allow 가능</text>
-
-          <rect x="372" y="672" width="256" height="56" rx="6" fill="#f5f5f5"/>
-          <rect x="372" y="672" width="256" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-          <rect x="380" y="678" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
-          <text x="392" y="687" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">2b</text>
-          <text x="500" y="704" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">allow 룰</text>
-          <text x="500" y="720" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">미매칭은 passthrough → ask</text>
-
-          <rect x="720" y="640" width="240" height="64" rx="6" fill="#f5f5f5"/>
-          <rect x="720" y="640" width="240" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
-          <rect x="728" y="646" width="24" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
-          <text x="740" y="655" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">3</text>
-          <text x="840" y="674" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">ask → suspend</text>
-          <text x="840" y="692" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">사람을 기다리지 않고 중단</text>
-
-          <rect x="400" y="776" width="200" height="44" rx="20" fill="#f5f5f5"/>
-          <rect x="400" y="776" width="200" height="44" rx="20" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
-          <text x="500" y="803" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">실행 · 거부 · 중단</text>
-
-          <line x1="40" y1="848" x2="960" y2="848" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
-          <text x="40" y="868" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
-          <rect x="128" y="860" width="14" height="10" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="1" stroke-dasharray="3,3"/>
-          <text x="152" y="869" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">bypass로 못 뚫는 구간</text>
-          <text x="340" y="869" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">타원 = 시작·종단 · 사각 = 단계 · 다이아 = 분기</text>
-        </svg>
-      </div>
-    </div>
-
-    <div class="cards">
-      <div class="card">
-        <p class="eyebrow">있음 · 테스트 107개</p>
-        <div class="card-header">
-          <span class="card-dot ink"></span>
-          <h3>구현되고 고정된 것</h3>
+    <main>
+      <section class="section">
+        <div class="section-head">
+          <div class="section-no">01 · Ownership</div>
+          <div>
+            <h2>하나의 플래너, 하나의 실행 경계</h2>
+            <p class="section-intro">AgentRuntime이 제품 표면을 제공한다. 플래너는 다음 의도를 결정하고, 외부 세계를 바꾸는 모든 effect는 Orchestrator의 mediated execution을 통과한다.</p>
+          </div>
         </div>
-        <ul>
-          <li>채널 하나 — <code>Emit</code>이 답을 돌려주고, blocking이면 예외가 run을 멈춘다</li>
-          <li><code>PRE_TOOL_USE</code> 구독 답이 allow / deny / ask</li>
-          <li><code>Orchestrator</code> — 스텝 메모이제이션 · <code>signal</code></li>
-          <li><code>run_agent</code> — <code>done</code>만 값, error·suspended는 올림</li>
-          <li>순차 배치 · 재개 진입 · 발행자 하나</li>
-        </ul>
-      </div>
 
-      <div class="card">
-        <p class="eyebrow">미구현 · 최우선</p>
-        <div class="card-header">
-          <span class="card-dot coral"></span>
-          <h3>권한 해석기가 없다</h3>
+        <div class="scroll">
+          <div class="architecture">
+            <div class="edge-column">
+              <div class="edge-card"><span class="label">Ingress</span><div><h3>Client / UI / API</h3><p>prompt · signal · approval · background result</p></div></div>
+              <div class="edge-card"><span class="label">Public facade</span><div><h3>AgentRuntime</h3><p>run · submit · resume · recover</p></div></div>
+            </div>
+
+            <div class="planes">
+              <div class="plane">
+                <div class="plane-label"><span>Agent plane</span><b>의도 결정 · 교체 가능</b></div>
+                <div class="nodes">
+                  <div class="node cyan"><span class="tag">Input</span><h4>Durable inbox</h4><p>claim → admit</p></div>
+                  <div class="node accent"><span class="tag">Planner</span><h4>react_loop</h4><p>plain async while</p></div>
+                  <div class="node"><span class="tag">Reason</span><h4>Chat model</h4><p>AIMessage + tool_calls</p></div>
+                  <div class="node amber"><span class="tag">Intent</span><h4>Tool request</h4><p>아직 실행 아님</p></div>
+                </div>
+                <p class="plane-caption">플래너 안에는 persistence program counter가 없다. 모델 호출, round 위임, 종료 판단만 남긴다.</p>
+              </div>
+
+              <div class="plane">
+                <div class="plane-label"><span>Execution plane</span><b>정책 · 부작용 · 복구</b></div>
+                <div class="nodes">
+                  <div class="node violet"><span class="tag">Commit</span><h4>record_pending</h4><p>call order 먼저 기록</p></div>
+                  <div class="node amber"><span class="tag">Gate</span><h4>pre_tool_use</h4><p>Continue / Deny / Suspend</p></div>
+                  <div class="node accent"><span class="tag">Durable</span><h4>Stepped effect</h4><p>call_id = idempotency key</p></div>
+                  <div class="node"><span class="tag">Effect</span><h4>Tool executor</h4><p>sandbox / API / storage</p></div>
+                </div>
+                <p class="plane-caption">기본은 순차 실행. 배치의 모든 호출이 <code>is_concurrency_safe</code>를 선언할 때만 병렬 실행한다.</p>
+              </div>
+
+              <div class="plane">
+                <div class="plane-label"><span>State plane</span><b>성장하는 transcript와 작은 원장 분리</b></div>
+                <div class="nodes">
+                  <div class="node cyan"><span class="tag">Inputs</span><h4>Input ledger</h4><p>pending / claimed / admitted</p></div>
+                  <div class="node violet"><span class="tag">Effects</span><h4>StepLog</h4><p>absent / running / done</p></div>
+                  <div class="node amber"><span class="tag">Wait</span><h4>Continuation</h4><p>permission snapshot</p></div>
+                  <div class="node"><span class="tag">Audit</span><h4>Event stream</h4><p>UI / monitoring / journal</p></div>
+                </div>
+                <p class="plane-caption">StepLog는 외부 effect 원장이다. 전체 대화는 별도 transcript 경계이며 매 effect마다 복사하지 않는다.</p>
+              </div>
+            </div>
+
+            <div class="edge-column">
+              <div class="edge-card"><span class="label">Consumers</span><div><h3>Audit / UI</h3><p>typed lifecycle events · one emission point</p></div></div>
+              <div class="edge-card"><span class="label">External world</span><div><h3>Effects</h3><p>files · network · delegation · sandbox</p></div></div>
+            </div>
+          </div>
         </div>
-        <ul>
-          <li><strong>구독자 답이 최종이다</strong> — hook allow 재검증이 없다</li>
-          <li>규칙층 1a~1g 전체 · bypass 면역 개념 없음</li>
-          <li><code>tools.check_permissions()</code> — Protocol 문구만 있고 부르는 곳이 없다</li>
-          <li>모드 변환층(마지막 적용) · denial 한도</li>
-          <li>룰 매칭 — 툴 전체 vs 컨텐츠 단위, MCP 정규화</li>
-        </ul>
-      </div>
 
-      <div class="card">
-        <p class="eyebrow">그 외 미구현</p>
-        <div class="card-header">
-          <span class="card-dot soft"></span>
-          <h3>남은 것</h3>
+        <div class="ownership-grid">
+          <div class="note-card"><span class="tag">Agent owns</span><h3>다음 행동의 의도</h3><p>모델 입력 구성, tool request 발견, round 결과 흡수, continue/return.</p></div>
+          <div class="note-card"><span class="tag">Orchestrator owns</span><h3>실행과 내구성</h3><p>정책 판정, pending 기록, effect dispatch, suspension, resume, crash recovery.</p></div>
+          <div class="note-card"><span class="tag">Caller owns</span><h3>실제 권한과 환경</h3><p>도구 정의, 정책 규칙, authority, sandbox, provider와 transport.</p></div>
         </div>
-        <ul>
-          <li><code>StepLog</code> — Postgres · <strong>lease 없음</strong> → exactly-once 아님</li>
-          <li>suspend 스냅샷 저장소 → 라운드 중간 재개 불가</li>
-          <li>턴 내부 압축 · 이미지 블록 주입 · <code>thinking</code></li>
-          <li><code>parent_run_id</code> → 하위 에이전트 감사 트리</li>
-          <li>루프가 <code>terminates_loop</code> / <code>is_exclusive</code>를 아직 읽는다</li>
-        </ul>
-      </div>
-    </div>
+      </section>
 
-    <p class="aside">순서가 곧 불변식이다. <code>2a</code>가 <code>1g</code> 다음에 있다는 사실이
-      "bypass로는 deny 룰을 못 뚫는다"를 뜻하고, 모드 변환을 마지막에 두는 것이 "early return으로
-      우회 못 한다"를 뜻한다. 그래서 아래 흐름도는 그림이 아니라 명세다.</p>
+      <section class="section">
+        <div class="section-head">
+          <div class="section-no">02 · Tool semantics</div>
+          <div>
+            <h2>요청 기록과 실제 실행을 분리한다</h2>
+            <p class="section-intro">모델의 <code>AIMessage(tool_call=A)</code>는 실행 증거가 아니다. 권한 게이트는 요청과 executor 사이에 있고, 모든 요청은 최종적으로 대응하는 <code>ToolMessage</code>를 가져야 한다.</p>
+          </div>
+        </div>
 
-    <div class="footer">
-      <span>nexora-python · 구조 검토용</span>
-      <span>2026-08-03</span>
-    </div>
+        <div class="equation"><b>TOOL REQUEST</b> ≠ TOOL EXECUTION &nbsp;·&nbsp; <b>pre_tool_use</b> → decision → effect</div>
 
+        <div class="flow-grid">
+          <article class="flow-card">
+            <div class="flow-title"><h3>허용 경로</h3><span class="status green">executed</span></div>
+            <ol class="steps">
+              <li><code>AIMessage(tool_call)</code>모델의 실행 의도 기록</li>
+              <li><code>record_pending</code>호출 순서를 effect보다 먼저 커밋</li>
+              <li><code>pre_tool_use → Continue</code>정책과 권한을 실행 직전에 판정</li>
+              <li><code>running → executor → done</code>call id로 내구성 있게 실행</li>
+              <li><code>post_tool_use + ToolMessage</code>실제 결과를 transcript에 주입</li>
+            </ol>
+          </article>
+
+          <article class="flow-card">
+            <div class="flow-title"><h3>승인 대기</h3><span class="status amber">suspended</span></div>
+            <ol class="steps">
+              <li><code>pre_tool_use → Suspend</code>도구는 아직 실행되지 않음</li>
+              <li><code>persist continuation</code>call, request, snapshot, rules version 저장</li>
+              <li><code>AgentSuspended</code>worker를 종료하고 compute 0으로 대기</li>
+              <li><code>signal → on_resume</code>승인을 권한으로 믿지 않고 현재 규칙 재검증</li>
+              <li><code>execute or deny</code>허용된 경우에만 effect와 post event 발생</li>
+            </ol>
+          </article>
+
+          <article class="flow-card">
+            <div class="flow-title"><h3>새 요청 전환</h3><span class="status red">cancelled</span></div>
+            <ol class="steps">
+              <li><code>new HumanMessage</code>interactive wait 중 새 입력 도착</li>
+              <li><code>ToolMessage(code=cancelled)</code>답 없는 tool request를 먼저 닫음</li>
+              <li><code>effect step = done(cancelled)</code>늦은 승인이 실행하지 못하게 차단</li>
+              <li><code>HumanMessage admit</code>취소 결과 뒤에 새 요청을 원자적으로 정렬</li>
+              <li><code>same run resumes</code>run fork 없이 최신 지시로 전환</li>
+            </ol>
+          </article>
+        </div>
+
+        <div class="callout">
+          <div class="callout-mark">!</div>
+          <p><strong>도구 결과의 <code>type: suspend</code>는 금지된다.</strong> 승인은 실행 전 권한 개념이다. 일반 도구가 예약된 결과를 반환하면 <code>InvalidToolResult</code>로 실패하며 완료 effect로 기록되지 않는다. 과거 tool-originated suspension도 권한 승인으로 재해석하지 않고 fail-closed 한다.</p>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div class="section-no">03 · Durable recovery</div>
+          <div>
+            <h2>체크포인트가 아니라 effect 원장으로 복구한다</h2>
+            <p class="section-intro">외부 effect 성공과 상태 저장 사이의 장애창은 graph checkpointer도 제거하지 못한다. Nexora는 StepLog, call-id 멱등성, 순서 결정성, lease/fencing을 복구 계약으로 사용한다.</p>
+          </div>
+        </div>
+
+        <div class="durability-grid">
+          <div class="ledger-card">
+            <div class="state-row"><span class="state-name">ABSENT</span><span class="state-arrow">→</span><div class="state-copy"><strong>실행 가능</strong>아직 effect intent가 없음</div></div>
+            <div class="state-row"><span class="state-name">RUNNING</span><span class="state-arrow">→</span><div class="state-copy"><strong>불확정 구간</strong>재조정 또는 같은 idempotency key 필요</div></div>
+            <div class="state-row"><span class="state-name">DONE</span><span class="state-arrow">→</span><div class="state-copy"><strong>결과 재사용</strong>도구와 모델을 다시 실행하지 않음</div></div>
+            <div class="state-row"><span class="state-name">WAITING</span><span class="state-arrow">→</span><div class="state-copy"><strong>worker 없음</strong>승인 signal까지 continuation만 존속</div></div>
+          </div>
+
+          <div class="ledger-card">
+            <table>
+              <thead><tr><th>장애 시점</th><th>원장에 보이는 것</th><th>복구 행동</th></tr></thead>
+              <tbody>
+                <tr><td>모델이 호출을 낸 직후</td><td>pending round + ordered calls</td><td><code>recover_pending</code>이 모델 턴을 재호출하지 않고 호출별 상태를 조회</td></tr>
+                <tr><td>도구 실행 전</td><td>effect absent</td><td>정책을 다시 평가하고 순서대로 실행</td></tr>
+                <tr><td>도구 실행 도중</td><td>effect running</td><td>무작정 재실행하지 않고 <code>Indeterminate</code>; idempotency/reconciliation 필요</td></tr>
+                <tr><td>도구 결과 커밋 후</td><td>effect done + result</td><td>저장된 ToolMessage 결과를 복원하고 다음 호출로 이동</td></tr>
+                <tr><td>권한 대기 중</td><td>active continuation waiting</td><td><code>pending_id</code>로 답을 라우팅하고 현재 정책으로 재검증</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="callout">
+          <div class="callout-mark">×</div>
+          <p><strong>LangGraph 실행 경로는 ADR-005에서 철회됐다.</strong> StepLog와 recover_pending이 양쪽 모두 필요했기 때문에 graph program counter는 두 번째 내구성 추론만 추가했다. 현재 source of truth는 StepLog 하나이며 gate 재평가는 허용하되 완료 effect는 재실행하지 않는다.</p>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div class="section-no">04 · Event surface</div>
+          <div>
+            <h2>결정, 신호, 관측을 세 경로로 분리한다</h2>
+            <p class="section-intro">이벤트 subscriber의 반환값으로 실행을 제어하지 않는다. load-bearing 결정은 awaited typed ControlPlane, 외부 답은 durable inbox/signal, EventStream은 발생한 사실의 관측만 담당한다.</p>
+          </div>
+        </div>
+
+        <div class="control-map">
+          <div class="control-lane control">
+            <span class="status amber">Control · awaited</span>
+            <h3>흐름을 바꾸는 결정</h3>
+            <p>호출자가 반환값을 직접 받고 즉시 다음 transition을 선택한다. 각 지점은 서로 다른 reducer 규칙을 가진다.</p>
+            <div class="lane-list">
+              <div class="lane-item"><code>on_inputs → inputs | Halt</code><span>입력 mask/rewrite/drop 후 context admission</span></div>
+              <div class="lane-item"><code>before_model → Proceed | Halt</code><span>steer 누적 또는 모델 호출 중단</span></div>
+              <div class="lane-item"><code>pre_tool_use → Continue | Deny | Suspend</code><span>Deny 우선, Suspend 보존, allow는 short-circuit 아님</span></div>
+              <div class="lane-item"><code>after_tool_call → None / raise</code><span>모든 journal writer 실행, 실패는 fail-closed</span></div>
+              <div class="lane-item"><code>before_finish → Proceed | Halt</code><span>검증기가 완료를 취소하거나 종료를 확정</span></div>
+              <div class="lane-item"><code>on_resume → ToolDecision</code><span>승인 답을 현재 정책 아래 재검증</span></div>
+            </div>
+          </div>
+
+          <div class="control-lane signal">
+            <span class="status green">Signal · durable input</span>
+            <h3>실행을 다시 깨우는 입력</h3>
+            <p>프로세스 밖에서 도착하며 유실되면 안 된다. 먼저 durable inbox/continuation에 기록하고 planner가 순서대로 claim한다.</p>
+            <div class="lane-list">
+              <div class="lane-item"><code>user_prompt / user_steer</code><span>UserPromptSubmit → admission 시 ContextInjected</span></div>
+              <div class="lane-item"><code>approval(pending_id)</code><span>active continuation의 resolve로만 라우팅</span></div>
+              <div class="lane-item"><code>elicitation_result(request_id)</code><span>일반 사용자 입력 결과; permission과 별도 계약</span></div>
+              <div class="lane-item"><code>task / subagent result</code><span>background ToolMessage 또는 typed context input</span></div>
+              <div class="lane-item"><code>interactive replacement</code><span>cancel ToolMessage 뒤에 새 HumanMessage 원자 정렬</span></div>
+            </div>
+          </div>
+
+          <div class="control-lane observe">
+            <span class="status" style="color:var(--violet);background:var(--violet-dim)">Event · observe</span>
+            <h3>감사와 UI를 위한 사실</h3>
+            <p>결정 전후의 정확한 시점에 한 번 발행한다. sink 실패는 실행 권한을 바꾸지 않으며 stable event_id로 dedupe한다.</p>
+            <div class="lane-list">
+              <div class="lane-item"><code>PreToolUse</code><span>gate 지점 도달; 권한은 Controls가 결정</span></div>
+              <div class="lane-item"><code>PermissionRequest / Denied</code><span>결정 결과를 관측, subscriber 답은 무시</span></div>
+              <div class="lane-item"><code>PostToolUse / Failure</code><span>effect가 실제로 끝난 뒤에만 발행</span></div>
+              <div class="lane-item"><code>Session / Task / Worktree</code><span>해당 action의 실제 owner가 경계에서 발행</span></div>
+              <div class="lane-item"><code>Stop / StopFailure</code><span>attempt의 terminal observation</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="envelope">
+          <div class="ledger-card">
+<pre>// TARGET CONTRACT · scope fields are the next schema change
+EventEnvelope {
+  // identity — always present
+  session_id, thread_id, run_id,
+  sequence, event_id,
+
+  // execution scope — snapshotted
+  transcript_path, cwd,
+  permission_mode?,
+
+  // actor — subagent only
+  agent_id?, agent_type?,
+
+  // correlation
+  turn_id?, payload
+}</pre>
+          </div>
+          <div class="ledger-card">
+            <span class="status amber">Target EventScope</span>
+            <div class="scope-list">
+              <div class="scope-item"><b>Identity</b><span><code>session_id</code>는 세션, <code>thread_id</code>는 transcript 계보, <code>run_id</code>는 한 durable 실행을 식별한다.</span></div>
+              <div class="scope-item"><b>Snapshot · to add</b><span><code>cwd</code>, <code>permission_mode</code>, <code>transcript_path</code>는 emit 시점 값을 envelope에 고정한다.</span></div>
+              <div class="scope-item"><b>Actor</b><span>메인 스레드와 <code>--agent</code> 세션은 <code>agent_id=null</code>. 내부 subagent 호출에만 id/type을 넣는다.</span></div>
+              <div class="scope-item"><b>Correlation</b><span><code>call_id</code>, <code>task_id</code>, <code>request_id</code>는 event별 payload에 둔다. 모든 이벤트에 빈 필드를 반복하지 않는다.</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="event-grid">
+          <div class="event-group"><h3>Tool · Permission</h3><div class="chips"><span class="chip blocking">PreToolUse</span><span class="chip">PostToolUse</span><span class="chip">PostToolUseFailure</span><span class="chip blocking">PermissionRequest</span><span class="chip">PermissionDenied</span><span class="chip">ToolRequestCancelled</span></div></div>
+          <div class="event-group"><h3>Session · Turn</h3><div class="chips"><span class="chip">SessionStart</span><span class="chip">SessionEnd</span><span class="chip">Setup</span><span class="chip">UserPromptSubmit</span><span class="chip">Stop</span><span class="chip">StopFailure</span><span class="chip">Notification</span></div></div>
+          <div class="event-group"><h3>Context · Workspace</h3><div class="chips"><span class="chip">ConfigChange</span><span class="chip">CwdChanged</span><span class="chip">InstructionsLoaded</span><span class="chip">PreCompact</span><span class="chip">PostCompact</span><span class="chip">FileChanged</span><span class="chip">WorktreeCreate</span><span class="chip">WorktreeRemove</span></div></div>
+          <div class="event-group"><h3>Agent · Task · Input</h3><div class="chips"><span class="chip">SubagentStart</span><span class="chip">SubagentStop</span><span class="chip">TaskCreated</span><span class="chip">TaskCompleted</span><span class="chip">TeammateIdle</span><span class="chip blocking">Elicitation</span><span class="chip">ElicitationResult</span></div></div>
+        </div>
+        <div class="event-rule"><strong><code>BLOCKING</code>은 “이 이벤트를 await해서 답을 받는다”는 뜻이 아니다.</strong> 결정 지점과 대응하는 관측 이벤트라는 표시일 뿐이다. 이름은 장기적으로 <code>CONTROL_MIRRORS</code> 또는 event metadata의 <code>phase=decision_point</code>로 바꾸는 편이 정확하다. 일반 Elicitation도 permission이 아니며, 실행 차단은 typed control method와 durable suspension에서만 발생한다.</div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <div class="section-no">05 · Code map</div>
+          <div>
+            <h2>구현 위치와 고정 불변식</h2>
+            <p class="section-intro">파일 경계가 소유권 경계와 일치한다. 새 제어 지점은 loop를 graph로 바꾸는 대신 typed ControlPlane hook과 중앙 실행 경계에 추가한다.</p>
+          </div>
+        </div>
+
+        <div class="bottom-grid">
+          <div class="code-card">
+<pre class="tree">src/nexora/
+├── runtime.py             public AgentRuntime · input routing
+├── engines/plain/
+│   └── loop.py            model → execute_round → stop
+├── orchestrator.py        StepLog · lease/fencing · recover/resume
+├── steps_postgres.py      durable ledger transaction
+├── tools.py               pre-tool gate · Stepped · Concurrent
+├── controls.py            typed decisions and middleware composition
+├── history.py             continuation / ToolMessage protocol codec
+├── contracts/
+│   ├── types.py           hooks · messages · tool contracts
+│   └── events.py          lifecycle vocabulary
+└── ui/                    local OpenRouter verification console</pre>
+          </div>
+
+          <div class="code-card">
+            <div class="rules">
+              <div class="rule"><b>01</b><span>모든 외부 tool effect는 Orchestrator를 통과한다.</span></div>
+              <div class="rule"><b>02</b><span>권한 대기는 실행 전이며 worker를 붙잡지 않는다.</span></div>
+              <div class="rule"><b>03</b><span>모든 tool request는 결과·거부·취소 중 하나의 ToolMessage로 닫힌다.</span></div>
+              <div class="rule"><b>04</b><span>재시도 안전성은 call-id 멱등성과 배치 순서 결정성을 함께 요구한다.</span></div>
+              <div class="rule"><b>05</b><span>StepLog가 effect 복구의 유일한 source of truth다.</span></div>
+              <div class="rule"><b>06</b><span>planner에는 권한 정책과 별도 checkpointer를 넣지 않는다.</span></div>
+              <div class="rule"><b>07</b><span>batch는 실행 최적화 단위다. pre/post batch 이벤트와 control point를 만들지 않는다.</span></div>
+            </div>
+            <div class="roadmap">
+              <h4>Explicitly not hidden</h4>
+              <p>자동 transcript persistence, 실제 compaction 처리, attachments는 아직 별도 과제다. 현재 crash recovery는 durable transcript를 호출자가 명시적으로 제공한다.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
+
+  <footer>
+    <div class="shell"><span>NEXORA · DURABLE AGENT RUNTIME</span><span>ADR-002 · ADR-005 · ADR-006</span></div>
+  </footer>
 </body>
 </html>

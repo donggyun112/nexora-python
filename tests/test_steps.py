@@ -181,6 +181,26 @@ async def test_input_queue_reclaims_missing_transcript_but_skips_represented_inp
     assert await Orchestrator("input-run", log).claim_inputs([queued.message]) == []
 
 
+async def test_transition_commits_protocol_answer_before_replacing_user_input() -> None:
+    log = MemorySteps()
+    orchestrator = Orchestrator("switch-run", log)
+    cancelled = PendingInput("cancelled_tool_result", HumanMessage("cancelled"), "cancel-1")
+    replacement = PendingInput("user_prompt", HumanMessage("new request"), "prompt-2")
+
+    await orchestrator.commit_transition_inputs(
+        [cancelled, replacement],
+        {"agent:active-suspension": {"state": "switching"}},
+    )
+
+    assert (await log.read("switch-run", "agent:active-suspension")).value == {
+        "state": "switching"
+    }
+    assert [record.input_id for record in await log.list_inputs("switch-run")] == [
+        "cancel-1",
+        "prompt-2",
+    ]
+
+
 async def test_an_interruption_is_not_recorded_as_the_answer() -> None:
     """An aborted run is what a resume exists to get past; freezing it defeats the point.
 

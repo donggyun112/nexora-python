@@ -11,8 +11,10 @@ class DemoTools:
 
     def __init__(self) -> None:
         self.notes: dict[str, str] = {}
+        self.execution_counts: dict[str, int] = {}
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
+        self.execution_counts[call_id] = self.execution_counts.get(call_id, 0) + 1
         args = arguments if isinstance(arguments, dict) else {}
         if name == "echo":
             return {"type": "text", "text": str(args.get("text", ""))}
@@ -20,7 +22,11 @@ class DemoTools:
             key = str(args.get("key", "default"))
             value = str(args.get("value", ""))
             self.notes[key] = value
-            return {"type": "text", "text": f"remembered {key}={value}"}
+            return {
+                "type": "text",
+                "text": f"remembered {key}={value}",
+                "execution_count": self.execution_counts[call_id],
+            }
         if name == "recall_note":
             key = str(args.get("key", "default"))
             recalled = self.notes.get(key)
@@ -30,6 +36,13 @@ class DemoTools:
             }
         if name == "runtime_clock":
             return {"type": "text", "text": str(asyncio.get_running_loop().time())}
+        if name == "simulate_api_failure":
+            return {
+                "type": "error",
+                "message": "simulated upstream API failure: 503 Service Unavailable",
+                "code": "upstream_unavailable",
+                "retryable": False,
+            }
         return {"type": "error", "message": f"unknown tool: {name}"}
 
     def get(self, name: str) -> dict[str, Any] | None:
@@ -68,6 +81,14 @@ class DemoTools:
             {
                 "name": "runtime_clock",
                 "description": "Return the monotonic runtime clock through a durable effect.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "simulate_api_failure",
+                "description": (
+                    "Simulate one external tool API call that returns a known 503 failure. "
+                    "Never retry it automatically."
+                ),
                 "parameters": {"type": "object", "properties": {}},
             },
         ]

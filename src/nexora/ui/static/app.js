@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { runId: null, callId: null, pendingId: null, model: "", busy: false, rounds: new Set(), effectIds: new Set(), events: 0, assistant: null, toolCalls: new Map() };
+const state = { runId: null, callId: null, pendingId: null, model: "", busy: false, nextFault: false, recoverable: false, rounds: new Set(), effectIds: new Set(), events: 0, assistant: null, toolCalls: new Map() };
 
 function setStatus(value, label = value.toUpperCase()) {
   const el = $("status");
@@ -120,7 +120,9 @@ function toolRequestCancelled(payload) {
   entry.result.textContent = json(payload.reason);
   state.callId = null;
   state.pendingId = null;
+  state.recoverable = false;
   $("approval").classList.add("hidden");
+  $("recovery").classList.add("hidden");
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
@@ -150,6 +152,7 @@ function addEvent(name, detail = "", tone = "") {
 function resetRun(prompt) {
   state.callId = null;
   state.pendingId = null;
+  state.recoverable = false;
   state.assistant = null;
   state.rounds = new Set();
   state.effectIds = new Set();
@@ -160,6 +163,7 @@ function resetRun(prompt) {
   $("effect-count").textContent = "0";
   $("event-count").textContent = "0";
   $("approval").classList.add("hidden");
+  $("recovery").classList.add("hidden");
   message("user", prompt);
   setStatus("running");
 }
@@ -179,6 +183,7 @@ function handle(frame) {
     if ((frame.type === "post_tool_use" || frame.type === "post_tool_use_failure") && p.call_id) {
       state.effectIds.add(p.call_id);
       $("effect-count").textContent = state.effectIds.size;
+      toolResult({ id: p.call_id, name: p.name, result: p.result, is_error: frame.type === "post_tool_use_failure" });
     }
     if (frame.type === "permission_request" && p.source !== "tool_result") toolPermission(p);
     if (frame.type === "permission_denied") toolDenied(p);
@@ -210,7 +215,23 @@ function handle(frame) {
     state.callId = null;
     state.pendingId = null;
     $("approval").classList.add("hidden");
+    $("recovery").classList.add("hidden");
+    state.recoverable = false;
     setStatus("idle", "COMPLETED");
+    return;
+  }
+  if (frame.kind === "recoverable") {
+    state.recoverable = true;
+    const entry = state.toolCalls.get(frame.tool_call_id);
+    if (entry) {
+      entry.card.classList.remove("pending", "success", "failure");
+      entry.card.classList.add("waiting");
+      entry.status.textContent = "STEP DONE · WORKER CRASHED";
+      entry.resultLabel.textContent = "RECOVERY STATE";
+      entry.result.textContent = "Result committed in StepLog. ToolMessage was not appended.";
+    }
+    $("recovery").classList.remove("hidden");
+    setStatus("suspended", "RECOVERABLE CRASH");
     return;
   }
   if (frame.kind === "error") {
@@ -261,12 +282,23 @@ async function run() {
     resetRun(prompt);
   }
   $("prompt").value = "";
+  const faultAfterStepCommit = state.nextFault;
+  state.nextFault = false;
   await consume("/api/run", {
     prompt,
     model: state.model,
     run_id: runId,
     permission_gate: $("policy").value === "approval",
+    fault_after_step_commit: faultAfterStepCommit,
   });
+}
+
+async function recover() {
+  if (!state.runId || !state.recoverable || state.busy) return;
+  state.assistant = null;
+  $("recovery").classList.add("hidden");
+  setStatus("running", "RECOVERING FROM STEP");
+  await consume("/api/recover", { run_id: state.runId, model: state.model });
 }
 
 async function resume(approved) {
@@ -281,9 +313,11 @@ $("send").addEventListener("click", run);
 $("prompt").addEventListener("keydown", (event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") run(); });
 $("approve").addEventListener("click", () => resume(true));
 $("deny").addEventListener("click", () => resume(false));
+$("recover").addEventListener("click", recover);
 document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => {
   $("prompt").value = button.dataset.prompt;
   $("policy").value = button.dataset.policy || "allow";
+  state.nextFault = button.dataset.fault === "after-step";
   $("prompt").focus();
 }));
 

@@ -20,10 +20,11 @@ classifiers = [
 dependencies = [
   "langchain-core>=1,<2",
   "loguru>=0.7,<1",
+  "nexora-store",
 ]
 
 [project.optional-dependencies]
-postgres = ["psycopg[binary,pool]>=3.3,<4"]
+postgres = ["nexora-store-pg"]
 ui = [
     "fastapi>=0.116,<1",
     "langchain-openai>=0.3,<2",
@@ -33,6 +34,10 @@ ui = [
 
 [dependency-groups]
 dev = [
+  # The extras, so a plain `uv sync` gives an environment the checks can actually run in: without
+  # them mypy reports every FastAPI decorator as untyped and the Postgres store test skips — a
+  # green run that verified less than it looked like it did.
+  "nexora[postgres,ui]",
   "mypy>=1.19,<2",
   "pytest>=9,<10",
   "pytest-asyncio>=1.3,<2",
@@ -41,6 +46,13 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nexora"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+nexora-store = { workspace = true }
+nexora-store-pg = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -59,4 +71,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "packages"]

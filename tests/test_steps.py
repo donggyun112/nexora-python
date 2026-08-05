@@ -285,7 +285,7 @@ async def test_the_postgres_log_matches_the_protocol() -> None:
     when the store became substitutable, so a default install must not fail this file.
     """
     pytest.importorskip("psycopg")
-    from nexora.steps_postgres import SCHEMA, PostgresSteps
+    from nexora_store_pg import SCHEMA, PostgresSteps
 
     assert issubclass(PostgresSteps, object)
     assert isinstance(PostgresSteps(_NoConnection()), StepLog)  # type: ignore[arg-type]

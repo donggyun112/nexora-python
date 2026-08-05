@@ -5,6 +5,19 @@ documentation corrections belong in the commit log, not here.
 
 ## Unreleased
 
+### Packaging
+
+- **The step ledger is its own distribution: `nexora-store`, imported as `nexora_store`.** It has
+  no dependencies — not `nexora`, not langchain — because a `StepLog` stores opaque values under
+  opaque keys and needs no message type to do it. `nexora.orchestrator` re-exports `StepLog`,
+  `MemorySteps`, `Step`, `InputRecord`, `Fenced`, `Contended` and `Indeterminate`, so existing
+  imports are unaffected; use `nexora_store` directly when implementing a store.
+
+- **`nexora.steps_postgres` moved to the `nexora-store-pg` distribution, imported as
+  `nexora_store_pg`.** Install it with `nexora[postgres]`. This is the one import path that
+  changed: `from nexora.steps_postgres import PostgresSteps` becomes
+  `from nexora_store_pg import PostgresSteps`.
+
 ### Fixed
 
 - **`Controls.before_finish` is actually called now.** The protocol method, the `FinishPolicy`

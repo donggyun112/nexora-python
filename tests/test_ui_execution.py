@@ -4,13 +4,15 @@ import json
 from typing import Any, cast
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
 from nexora.contracts.types import ToolCall
+from nexora.controls import Ctx
 from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora.runtime import AgentRuntime
 from nexora.ui.execution import AgentEvent, stream_attempt
 from nexora.ui.policy import permission_controls
-from nexora.ui.state import RuntimeState
+from nexora.ui.state import FaultInjectingMemorySteps, RuntimeState, SimulatedWorkerCrash
 from nexora.ui.tools import DemoTools
 
 
@@ -65,6 +67,24 @@ async def test_agent_stream_forwards_tool_call_and_result() -> None:
     assert agent_events[1]["result"] == {"type": "text", "text": "hi"}
 
 
+async def test_agent_stream_marks_a_post_commit_worker_crash_as_recoverable() -> None:
+    async def attempt(
+        _runtime: AgentRuntime, _tools: DemoTools, _on_event: AgentEvent
+    ) -> dict[str, Any]:
+        raise SimulatedWorkerCrash("recoverable", "call-1")
+
+    frames = [
+        json.loads(line)
+        async for line in stream_attempt("recoverable", attempt, RuntimeState())
+    ]
+
+    assert frames[-1] == {
+        "kind": "recoverable",
+        "message": "simulated worker crash after committed step 'call-1'",
+        "tool_call_id": "call-1",
+    }
+
+
 async def test_pre_tool_permission_suspends_before_effect_then_runs_on_approval() -> None:
     tools = TrackingTools()
     store = MemorySteps()
@@ -101,6 +121,68 @@ async def test_pre_tool_permission_suspends_before_effect_then_runs_on_approval(
             controls=controls,
         )
 
-    assert result == {"type": "text", "text": "remembered deploy=ready"}
+    assert result == {
+        "type": "text",
+        "text": "remembered deploy=ready",
+        "execution_count": 1,
+    }
     assert tools.executed == ["remember_note"]
     assert tools.notes == {"deploy": "ready"}
+
+
+async def test_demo_tool_api_failure_is_structured_and_non_retryable() -> None:
+    result = await DemoTools().execute("simulate_api_failure", "failure-1", {})
+
+    assert result == {
+        "type": "error",
+        "message": "simulated upstream API failure: 503 Service Unavailable",
+        "code": "upstream_unavailable",
+        "retryable": False,
+    }
+
+
+async def test_step_recovery_reuses_committed_result_without_rerunning_tool() -> None:
+    store = FaultInjectingMemorySteps()
+    tools = TrackingTools()
+    call = cast(
+        ToolCall,
+        {
+            "id": "recover-1",
+            "name": "remember_note",
+            "args": {"key": "crash-demo", "value": "committed"},
+            "type": "tool_call",
+        },
+    )
+    history = [
+        HumanMessage("remember it", id="prompt-1"),
+        AIMessage(content="", tool_calls=[call]),
+    ]
+    store.arm("step-crash")
+
+    with pytest.raises(SimulatedWorkerCrash, match="recover-1"):
+        async with Orchestrator("step-crash", store) as owner:
+            await owner.execute_round(
+                tools,
+                [call],
+                lambda: False,
+                ctx=Ctx(turn=0, messages=history),
+            )
+
+    assert (await store.read("step-crash", "recover-1")).status == "done"
+    assert tools.executed == ["remember_note"]
+    assert tools.notes == {"crash-demo": "committed"}
+
+    async with Orchestrator("step-crash", store) as owner:
+        recovered = await owner.recover_pending(
+            history,
+            tools,
+            retry_running=False,
+        )
+
+    assert tools.executed == ["remember_note"]
+    assert recovered.resolved[0].result == {
+        "type": "text",
+        "text": "remembered crash-demo=committed",
+        "execution_count": 1,
+    }
+    assert tools.execution_counts == {"recover-1": 1}

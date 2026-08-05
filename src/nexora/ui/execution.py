@@ -9,7 +9,7 @@ from typing import Any
 
 from ..orchestrator import AgentAborted, AgentFailed, AgentSuspended
 from ..runtime import AgentRuntime
-from .state import STATE, RuntimeState
+from .state import STATE, RuntimeState, SimulatedWorkerCrash
 from .tools import DemoTools
 
 AgentEvent = Callable[[dict[str, Any]], Awaitable[None]]
@@ -56,6 +56,14 @@ async def stream_attempt(
                     "kind": "suspended",
                     "pending_id": stopped.pending_id,
                     "tool_call_id": stopped.tool_call_id,
+                }
+            )
+        except SimulatedWorkerCrash as failure:
+            await queue.put(
+                {
+                    "kind": "recoverable",
+                    "message": str(failure),
+                    "tool_call_id": failure.step,
                 }
             )
         except (AgentAborted, AgentFailed) as failure:

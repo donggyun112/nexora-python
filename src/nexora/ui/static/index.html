@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nexora · Durable Agent Lab</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=7" />
+    <link rel="stylesheet" href="/assets/styles.css?v=9" />
   </head>
   <body>
     <div class="noise"></div>
@@ -37,11 +37,17 @@
             <button id="approve">Approve & resume</button>
           </div>
         </div>
+        <div id="recovery" class="recovery hidden">
+          <div><span class="pulse"></span><strong>Worker crashed after Step commit</strong><small>Effect result is durable · tool must not run again</small></div>
+          <button id="recover">Recover from committed Step</button>
+        </div>
         <div class="composer">
           <div class="samples">
             <button data-policy="allow" data-prompt="짧게 자기소개해줘">Chat</button>
             <button data-policy="allow" data-prompt="echo 도구로 'durable hello'를 실행하고 결과를 알려줘">Tool request</button>
             <button data-policy="approval" data-prompt="remember_note 도구로 deploy 키에 ready 값을 저장해줘">Pre-tool gate</button>
+            <button data-policy="allow" data-prompt="simulate_api_failure 도구를 딱 한 번 호출하고 실패 결과를 설명해줘">Tool failure</button>
+            <button data-policy="allow" data-fault="after-step" data-prompt="remember_note 도구로 crash-demo 키에 committed 값을 저장하고 결과를 알려줘">Step recovery</button>
           </div>
           <textarea id="prompt" rows="3" placeholder="에이전트에게 작업을 요청하세요…"></textarea>
           <div class="composer-foot">
@@ -77,6 +83,6 @@
     <footer>
       <span>PLAIN ASYNC WHILE</span><i>→</i><span>MEDIATED EXECUTION</span><i>→</i><span>STEPLOG</span>
     </footer>
-    <script src="/assets/app.js?v=7"></script>
+    <script src="/assets/app.js?v=9"></script>
   </body>
 </html>

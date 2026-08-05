@@ -631,14 +631,18 @@ class Orchestrator:
         return PendingInput(item.kind, message, input_id)
 
     async def _announce_input(self, item: PendingInput) -> None:
+        """Announce that an input reached the inbox. Never its text.
+
+        This fires at submission, which is *before* the run's `on_inputs` screens can mask
+        anything, so any content here is the pre-mask original — and it would sit in the audit log
+        forever, which is exactly what `Controls.on_inputs` promises cannot happen. The admitted
+        text is published by `CONTEXT_INJECTED` after screening; a consumer that wants to show a
+        prompt reads it there, and gets the version the model actually saw.
+        """
         if self._emit is not None and item.kind in {"user_prompt", "user_steer"}:
             await self._emit(
                 EventType.USER_PROMPT_SUBMIT,
-                {
-                    "input_id": item.origin_id,
-                    "prompt": item.message.content,
-                    "source": item.kind,
-                },
+                {"input_id": item.origin_id, "source": item.kind},
             )
 
     async def claim_inputs(self, history: list[BaseMessage] | None = None) -> list[PendingInput]:

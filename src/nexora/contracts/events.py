@@ -4,24 +4,27 @@ Nothing here decides anything. A decision has to be a value the caller holds so 
 next step, and the order of those steps is the whole design — "the bypass entry sits *after* the
 deny rules" is an invariant you can only state in a call chain. Published events arrive whenever
 a subscriber gets around to them, so a permission answer cannot live on this channel; it lives in
-`nexora.orchestrator.Permissions`, which is an ordered chain of calls.
+`nexora.controls.Permissions`, which is an ordered chain of calls.
 
 What this channel is for: telling a UI what happened, and writing an audit trail. A failing sink
 is logged and skipped — an audit socket having a bad moment is not a reason to kill an agent
 mid-run. That rule is only safe *because* nothing load-bearing rides here.
 
-`BLOCKING` names the events that correspond to a decision point. The decision is made by a call,
-not by publishing these; the set exists so a subscriber can tell "you are being told about a
-gate" from "you are being told about a result".
+`BLOCKING` maps each event that announces a decision point to the `Controls` method that makes
+that decision. The decision is made by that call, never by publishing the event; the mapping
+exists so a subscriber can tell "you are being told about a gate" from "you are being told about
+a result" — and so a declared gate that no control point implements fails a test instead of
+reading as a guarantee.
 
 `EventEnvelope.event_id` is derived, never random. A run that crashes and resumes re-emits the
 events of rounds it had already finished; a derived id lets an outbox drop the duplicates.
 """
 
 import hashlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from loguru import logger
@@ -81,21 +84,26 @@ class EventType(StrEnum):
     NOTIFICATION = "notification"
 
 
-BLOCKING: frozenset[EventType] = frozenset(
+BLOCKING: Mapping[EventType, str] = MappingProxyType(
     {
-        EventType.PRE_TOOL_USE,
-        EventType.PERMISSION_REQUEST,
-        EventType.ELICITATION,
-        EventType.USER_PROMPT_SUBMIT,
-        EventType.PRE_COMPACT,
+        EventType.USER_PROMPT_SUBMIT: "on_inputs",
+        EventType.PRE_TOOL_USE: "pre_tool_use",
+        EventType.PERMISSION_REQUEST: "on_resume",
     }
 )
-"""Events that mark a decision point, published as a courtesy after the decision is made.
+"""Decision points: the announcing event, mapped to the `Controls` method that decides it.
 
-The decision itself is a call — `Permissions.resolve` for a tool, and the chain that follows it.
-Answering one of these on the event channel does nothing, on purpose: an ordered short-circuit
-cannot be expressed by subscribers, and a permission model whose precedence depends on dispatch
-order is not a permission model.
+The event is published as a courtesy — after the decision, or beside it when the decision is a
+park waiting on a person. Answering one of these on the event channel does nothing, on purpose: an
+ordered short-circuit cannot be expressed by subscribers, and a permission model whose precedence
+depends on dispatch order is not a permission model.
+
+A mapping and not a set, because membership was the only claim a set could make and it made a
+false one: `PRE_COMPACT` and `ELICITATION` were listed here while `Controls` had no method for
+either, so the contract advertised a gate that did not exist. Naming the control point makes the
+pairing checkable — `test_blocking_events_each_name_a_control_point_that_exists` resolves every
+value against the protocol. Compaction and elicitation come back to this table on the day their
+control point does.
 """
 
 
@@ -140,9 +148,10 @@ class RuntimeEvents:
     The component performing those actions calls this facade at the real boundary instead of
     pretending every agent loop invocation is a new session.
 
-    These methods publish observations. A load-bearing decision still uses `Controls`; for
-    example `PRE_COMPACT` announces the compaction gate, while the gate's return value determines
-    whether and how compaction proceeds.
+    These methods publish observations, and that is all they do. A load-bearing decision uses
+    `Controls`, so where no `Controls` method exists there is no decision point: `pre_compact` and
+    `elicitation` announce work this codebase has no gate for. Publishing them does not create one
+    — the control point and the `BLOCKING` entry do, together.
     """
 
     def __init__(self, emit: Publisher | None) -> None:

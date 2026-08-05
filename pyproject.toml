@@ -19,12 +19,14 @@ classifiers = [
 ]
 dependencies = [
   "langchain-core>=1,<2",
-  "nexora-contracts",
-  "nexora-engines",
-  "nexora-orchestrator",
+  "loguru>=0.7,<1",
+  "nexora-store",
 ]
-# The facade. It owns runtime.py and driver.py and re-exports the entry points, so
-# `from nexora import AgentRuntime` keeps meaning what it always did.
+# The runtime: contracts, controls, the orchestrator and the engine. Those are layers, not
+# products — they share one dependency footprint and nobody installs them separately, so they are
+# subpackages here rather than distributions. `tests/test_packaging.py` enforces the layering that
+# the manifests used to. What *is* split is what has its own dependency footprint: the store, its
+# Postgres backend, the optional rule table, and the console.
 
 [project.optional-dependencies]
 postgres = ["nexora-store-pg"]
@@ -50,9 +52,6 @@ packages = ["src/nexora"]
 members = ["packages/*"]
 
 [tool.uv.sources]
-nexora-contracts = { workspace = true }
-nexora-engines = { workspace = true }
-nexora-orchestrator = { workspace = true }
 nexora-permissions = { workspace = true }
 nexora-store = { workspace = true }
 nexora-store-pg = { workspace = true }

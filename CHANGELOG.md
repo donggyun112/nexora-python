@@ -7,30 +7,30 @@ documentation corrections belong in the commit log, not here.
 
 ### Packaging
 
-**`nexora` is now a uv workspace of seven distributions.** `from nexora import AgentRuntime` is
-unchanged — it is still the facade, and it still owns `runtime.py` and `driver.py`. Everything below
-it moved out and is imported by its own name, the way `langchain_core` is, rather than through
-re-export shims in `nexora`:
+**`nexora` is now a uv workspace of five distributions.** What was split out is what has its own
+dependency footprint or its own audience — the line the Python ecosystem draws for
+`langchain-openai`, `apache-airflow-providers-*`, `opentelemetry-exporter-*`. Layers sharing one
+footprint stay subpackages of `nexora`, the way `django.db` stays inside `django`, so
+`nexora.contracts`, `nexora.controls`, `nexora.tools`, `nexora.history`, `nexora.orchestrator` and
+`nexora.engines.plain` are all unchanged, as is `from nexora import AgentRuntime`.
 
 | was | is | install |
 |---|---|---|
-| `nexora.contracts`, `nexora.contracts.types/events` | `nexora_contracts`, `nexora_contracts.types/events` | with `nexora` |
-| `nexora.controls` | `nexora_contracts.controls` | with `nexora` |
-| `nexora.orchestrator` | `nexora_orchestrator` | with `nexora` |
-| `nexora.tools`, `nexora.history` | `nexora_orchestrator.tools`, `.history` | with `nexora` |
-| `nexora.engines.plain` | `nexora_engines.plain` | with `nexora` |
-| — | `nexora_store` (**no dependencies**) | with `nexora` |
+| part of `nexora.orchestrator` | `nexora_store` (**no dependencies**) | with `nexora` |
 | `nexora.steps_postgres` | `nexora_store_pg` | `nexora[postgres]` |
 | `nexora.permissions` | `nexora_permissions` | `nexora[permissions]` |
 | `nexora.ui` | `nexora_ui` | `nexora[ui]` |
 
-Two of those change what a default install contains. `nexora-permissions` is optional because
-nothing in the runtime imports it — it is a rule table a host opts into. `nexora-store-pg` is
-optional so the base install stops fetching a compiled database driver.
+Three of those change what a default install contains. `nexora-permissions` is optional because
+nothing in the runtime imports it — it is a rule table a host opts into. `nexora-store-pg` keeps a
+compiled database driver out of the base install, and `nexora-ui` keeps FastAPI and uvicorn out.
 
 `nexora_store` is the only distribution with an empty dependency list, and that is the point of it
 existing: a `StepLog` stores opaque values under opaque keys, so implementing one needs neither a
 message type nor `nexora` itself.
+
+`tests/test_packaging.py` checks both boundaries — each distribution against the dependencies it
+declares, and each layer inside `nexora` against what it is allowed to reach.
 
 ### Fixed
 

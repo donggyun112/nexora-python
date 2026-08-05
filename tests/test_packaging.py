@@ -1,9 +1,14 @@
-"""The workspace boundaries, checked against what each distribution declares it depends on.
+"""Two boundaries: between distributions, and between the layers inside `nexora`.
 
-Every other check in this repo runs in one virtualenv where all eight distributions are installed,
-so a module reaching across a boundary it never declared passes ruff, mypy and the whole suite —
-and then fails for whoever installs that distribution alone. These two tests are the only thing
-standing between a declared dependency list and a decorative one.
+The first exists because every other check here runs in one virtualenv where all five
+distributions are installed, so a module reaching across a boundary it never declared passes ruff,
+mypy and the whole suite — and then fails for whoever installs that distribution alone.
+
+The second exists because `contracts`, `controls`, `tools`, `history`, `orchestrator` and `engines`
+were briefly separate distributions and are now subpackages, on the grounds that they share one
+dependency footprint and nobody installs them apart. The manifests were enforcing their layering;
+`LAYERS` is what took that job over. Python's usual tool for this is `import-linter`; the rule set
+is small enough that a table and a walk cost less than a dependency.
 """
 
 import ast
@@ -70,7 +75,7 @@ def test_no_distribution_imports_beyond_what_it_declares() -> None:
     """An import the manifest does not cover works here and fails on a standalone install.
 
     `nexora-store` is the one this matters most for: its dependency list is empty on purpose, and
-    an accidental `nexora_contracts` import would make a store implementation drag in a model SDK
+    an accidental `nexora.contracts` import would make a store implementation drag in a model SDK
     without anything in the normal check loop noticing.
     """
     for dist in distributions():
@@ -92,4 +97,65 @@ def test_every_declared_workspace_dependency_is_actually_imported() -> None:
         for declared in dist.declared:
             assert declared in reached, (
                 f"{dist.name} declares {declared} and never imports it"
+            )
+
+
+LAYERS: dict[str, frozenset[str]] = {
+    "contracts": frozenset(),
+    "controls": frozenset({"contracts"}),
+    "tools": frozenset({"contracts", "controls"}),
+    "history": frozenset({"contracts", "tools"}),
+    "orchestrator": frozenset({"contracts", "controls", "history", "tools"}),
+    "engines": frozenset({"contracts", "controls", "tools"}),
+    "driver": frozenset({"contracts", "orchestrator"}),
+    "runtime": frozenset(
+        {"contracts", "controls", "driver", "engines", "history", "orchestrator"}
+    ),
+}
+"""What each subpackage of `nexora` may reach. Absent from a value means absent from the layer.
+
+`contracts` reaching nothing is the load-bearing entry — it is the hub every other layer imports,
+and a single import out of it would invert the whole thing.
+"""
+
+
+def _layer_of(path: Path, package: Path) -> str:
+    """The top-level name under `src/nexora` that owns this file."""
+    return path.relative_to(package).parts[0].removesuffix(".py")
+
+
+def test_no_layer_of_nexora_imports_above_itself() -> None:
+    """The rule the manifests used to enforce, now that these layers share one distribution.
+
+    Without it the merge would have quietly given up the one thing the split bought: `contracts`
+    could import `orchestrator`, and nothing — not ruff, not mypy, not any other test — would say
+    so, because they all live in the same package now.
+    """
+    package = ROOT / "src" / "nexora"
+    for path in sorted(package.rglob("*.py")):
+        layer = _layer_of(path, package)
+        if layer == "__init__":  # `nexora/__init__.py` is the facade and reaches by definition
+            continue
+        allowed = LAYERS[layer]
+        # 0 means this file sits directly in `nexora/`; 1 means one package down, and so on.
+        depth = len(path.relative_to(package).parts) - 1
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            if node.level:
+                # `from .x` resolves against the containing package; each extra dot climbs one.
+                # Anchored above `nexora` itself means the first name is a layer; anchored inside
+                # a layer means the import never left it.
+                if depth - (node.level - 1) != 0:
+                    continue
+                reached = node.module.split(".")[0]
+            elif node.module.startswith("nexora."):
+                reached = node.module.split(".")[1]
+            else:
+                continue
+            if reached == layer:
+                continue
+            assert reached in allowed, (
+                f"{path.relative_to(ROOT)} ({layer}) imports {reached}, "
+                f"which {layer} may not reach — allowed: {sorted(allowed) or 'nothing'}"
             )

@@ -13,7 +13,9 @@ The orchestrator is an internal execution substrate that records and recovers ag
 is not a second product users have to assemble beside the SDK.
 
 See the [current architecture map](docs/architecture/structure.html) for the ownership, approval,
-recovery, and three-lane control/signal/event model.
+recovery, and three-lane control/signal/event model, and [examples/](examples/) for four runnable
+scripts — a tool round, permission suspend/resume, crash recovery, and control-plane injection.
+They need no API key.
 
 ```python
 from nexora import AgentRuntime
@@ -112,34 +114,35 @@ suspension/resume scenarios.
 
 ## Current scaffold
 
-A uv workspace. `nexora` is the facade you install; the layers below it are separate distributions
-so a store implementation never pulls in a model SDK and a host with its own policy never installs
-a rule table it does not use.
+A uv workspace of five distributions. `nexora` is the runtime; what is split out is what has its
+own dependency footprint or its own audience, which is the line the Python ecosystem draws —
+`langchain-openai`, `apache-airflow-providers-*`, `opentelemetry-exporter-*`. Layers that share one
+footprint stay subpackages, the way Django keeps `django.db` inside `django`.
 
 ```text
-src/nexora/                 nexora                 the facade: runtime.py, driver.py
-                                                   deps: contracts, orchestrator, engines
+src/nexora/                 nexora                    deps: langchain-core, loguru, nexora-store
+├── contracts/              message types, the event vocabulary
+├── controls.py             the control points and what composes at each
+├── tools.py                tool execution, the policy gate, result rendering
+├── history.py              suspension snapshots and the resume codec
+├── orchestrator.py         durable rounds, suspension, recovery
+├── engines/plain/          the planner as an `async while`
+├── driver.py               engine stream → one outcome
+└── runtime.py              the public AgentRuntime facade
 
 packages/
-├── nexora-contracts/       nexora_contracts       the hub — message types, the event
-│                                                  vocabulary, the control points
-│                                                  deps: langchain-core, loguru
-├── nexora-store/           nexora_store           StepLog, MemorySteps
-│                                                  deps: none
-├── nexora-store-pg/        nexora_store_pg        Postgres StepLog · nexora[postgres]
-├── nexora-orchestrator/    nexora_orchestrator    durable rounds, suspension, recovery,
-│                                                  tool execution, resume codec
-├── nexora-engines/         nexora_engines.plain   the planner as an `async while`
-├── nexora-permissions/     nexora_permissions     the rule table · nexora[permissions]
-└── nexora-ui/              nexora_ui              local console · nexora[ui]
+├── nexora-store/           nexora_store         StepLog, MemorySteps.  deps: none
+├── nexora-store-pg/        nexora_store_pg      Postgres StepLog       nexora[postgres]
+├── nexora-permissions/     nexora_permissions   the rule table         nexora[permissions]
+└── nexora-ui/              nexora_ui            local console          nexora[ui]
 ```
 
-`from nexora import AgentRuntime` is unchanged. Everything below the facade is imported by its own
-name — `from nexora_contracts.controls import ControlPlane`, `from nexora_store import MemorySteps` —
-the way `langchain_core` is, rather than through a re-export shim in `nexora`.
+`nexora-store` having no dependencies at all is the point of it existing: a `StepLog` stores opaque
+values under opaque keys, so implementing one needs neither a message type nor `nexora` itself.
+`nexora-permissions` is optional because nothing in the runtime imports it.
 
-Only `nexora-store` has no dependencies at all, and that is deliberate: a `StepLog` stores opaque
-values under opaque keys, so implementing one requires nothing else in this list.
+The layering inside `nexora` is a rule, not a convention — `tests/test_packaging.py` fails if
+`contracts` reaches out of itself or a layer imports above its own.
 
 The runtime covers the reference's stop conditions, exclusive and terminating tools, steering,
 permission suspension/resume, durable tool effects, and interrupted-round reconstruction.

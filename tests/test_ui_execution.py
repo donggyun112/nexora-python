@@ -5,14 +5,14 @@ from typing import Any, cast
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from nexora_contracts.controls import Ctx
-from nexora_contracts.types import ToolCall
-from nexora_orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora_ui.execution import AgentEvent, stream_attempt
 from nexora_ui.policy import permission_controls
 from nexora_ui.state import FaultInjectingMemorySteps, RuntimeState, SimulatedWorkerCrash
 from nexora_ui.tools import DemoTools
 
+from nexora.contracts.types import ToolCall
+from nexora.controls import Ctx
+from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora.runtime import AgentRuntime
 
 

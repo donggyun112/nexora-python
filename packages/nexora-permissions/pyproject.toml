@@ -17,13 +17,13 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "nexora-contracts",
+  "nexora",
 ]
 # Optional by construction: nothing in the runtime imports this. A host that wants the
 # rule table installs it; a host with its own policy never sees it.
 
 [tool.uv.sources]
-nexora-contracts = { workspace = true }
+nexora = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nexora_permissions"]

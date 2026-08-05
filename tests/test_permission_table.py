@@ -12,8 +12,9 @@ Those two hold the whole model up. If either flips, the ordering has drifted.
 from typing import Any, cast
 
 import pytest
-from nexora_contracts import ToolCall
 from nexora_permissions import Mode, Rule, resolve_rules
+
+from nexora.contracts import ToolCall
 
 READ = cast(
     ToolCall,

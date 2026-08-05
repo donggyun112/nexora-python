@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from nexora_contracts.controls import ControlPlane, Permissions, gate
-from nexora_contracts.types import ToolCall
+from nexora.contracts.types import ToolCall
+from nexora.controls import ControlPlane, Permissions, gate
 
 
 async def require_note_write_approval(call: ToolCall) -> dict[str, Any] | None:

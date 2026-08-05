@@ -18,10 +18,10 @@ import time
 from typing import Any
 
 import pytest
-from nexora_contracts import EventEnvelope, EventStream, EventType
-from nexora_contracts.controls import ControlPlane, Permissions, gate
-from nexora_engines.plain import react_loop
 
+from nexora.contracts import EventEnvelope, EventStream, EventType
+from nexora.controls import ControlPlane, Permissions, gate
+from nexora.engines.plain import react_loop
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 
 pytestmark = pytest.mark.perf

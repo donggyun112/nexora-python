@@ -3,9 +3,9 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from nexora_contracts import BaseMessage
-from nexora_contracts.controls import Controls
-from nexora_orchestrator import MemorySteps
+from nexora.contracts import BaseMessage
+from nexora.controls import Controls
+from nexora.orchestrator import MemorySteps
 
 from .tools import DemoTools
 

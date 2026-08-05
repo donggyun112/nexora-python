@@ -4,10 +4,9 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
-from nexora.controls import Ctx
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import Indeterminate, MemorySteps, Orchestrator
+from nexora_contracts.controls import Ctx
+from nexora_engines.plain import react_loop
+from nexora_orchestrator import Indeterminate, MemorySteps, Orchestrator
 
 from .test_loop import Tools, a_call, says, scripted
 

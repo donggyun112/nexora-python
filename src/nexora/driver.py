@@ -7,8 +7,8 @@ only consumes the already-wired engine stream and returns its terminal value.
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .contracts.types import Tools
-from .orchestrator import run_agent
+from nexora_contracts.types import Tools
+from nexora_orchestrator import run_agent
 
 __all__ = ["drive"]
 

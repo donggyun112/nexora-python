@@ -7,16 +7,30 @@ documentation corrections belong in the commit log, not here.
 
 ### Packaging
 
-- **The step ledger is its own distribution: `nexora-store`, imported as `nexora_store`.** It has
-  no dependencies — not `nexora`, not langchain — because a `StepLog` stores opaque values under
-  opaque keys and needs no message type to do it. `nexora.orchestrator` re-exports `StepLog`,
-  `MemorySteps`, `Step`, `InputRecord`, `Fenced`, `Contended` and `Indeterminate`, so existing
-  imports are unaffected; use `nexora_store` directly when implementing a store.
+**`nexora` is now a uv workspace of seven distributions.** `from nexora import AgentRuntime` is
+unchanged — it is still the facade, and it still owns `runtime.py` and `driver.py`. Everything below
+it moved out and is imported by its own name, the way `langchain_core` is, rather than through
+re-export shims in `nexora`:
 
-- **`nexora.steps_postgres` moved to the `nexora-store-pg` distribution, imported as
-  `nexora_store_pg`.** Install it with `nexora[postgres]`. This is the one import path that
-  changed: `from nexora.steps_postgres import PostgresSteps` becomes
-  `from nexora_store_pg import PostgresSteps`.
+| was | is | install |
+|---|---|---|
+| `nexora.contracts`, `nexora.contracts.types/events` | `nexora_contracts`, `nexora_contracts.types/events` | with `nexora` |
+| `nexora.controls` | `nexora_contracts.controls` | with `nexora` |
+| `nexora.orchestrator` | `nexora_orchestrator` | with `nexora` |
+| `nexora.tools`, `nexora.history` | `nexora_orchestrator.tools`, `.history` | with `nexora` |
+| `nexora.engines.plain` | `nexora_engines.plain` | with `nexora` |
+| — | `nexora_store` (**no dependencies**) | with `nexora` |
+| `nexora.steps_postgres` | `nexora_store_pg` | `nexora[postgres]` |
+| `nexora.permissions` | `nexora_permissions` | `nexora[permissions]` |
+| `nexora.ui` | `nexora_ui` | `nexora[ui]` |
+
+Two of those change what a default install contains. `nexora-permissions` is optional because
+nothing in the runtime imports it — it is a rule table a host opts into. `nexora-store-pg` is
+optional so the base install stops fetching a compiled database driver.
+
+`nexora_store` is the only distribution with an empty dependency list, and that is the point of it
+existing: a `StepLog` stores opaque values under opaque keys, so implementing one needs neither a
+message type nor `nexora` itself.
 
 ### Fixed
 

@@ -29,9 +29,9 @@ from langchain_core.messages import (
     SystemMessage,
     messages_to_dict,
 )
-
-from ...contracts.events import EventType
-from ...contracts.types import (
+from nexora_contracts.controls import Controls, Ctx, Halt, Proceed
+from nexora_contracts.events import EventType
+from nexora_contracts.types import (
     Aborted,
     AdmitInputs,
     BaseMessage,
@@ -42,8 +42,7 @@ from ...contracts.types import (
     StopReason,
     Tools,
 )
-from ...controls import Controls, Ctx, Halt, Proceed
-from ...tools import (
+from nexora_orchestrator.tools import (
     ExecuteRound,
     a_tool_result,
     absorb_round,

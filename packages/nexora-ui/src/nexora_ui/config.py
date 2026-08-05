@@ -26,7 +26,7 @@ class Settings:
 
     def require_api_key(self) -> str:
         if not self.openrouter_api_key:
-            raise RuntimeError("OpenRouter API key is missing from src/nexora/ui/.env")
+            raise RuntimeError("OpenRouter API key is missing from packages/nexora-ui/.env")
         return self.openrouter_api_key
 
     @classmethod

@@ -15,8 +15,8 @@ are the same call. `tests/test_permission_table.py` is the spec.
 
 from typing import Any, Literal, NamedTuple
 
-from .contracts.types import ToolCall
-from .controls import Continue, Deny, ResumeInput, Suspend, ToolDecision
+from nexora_contracts.controls import Continue, Deny, ResumeInput, Suspend, ToolDecision
+from nexora_contracts.types import ToolCall
 
 __all__ = ["Mode", "PermissionBehavior", "PolicyContext", "Rule", "resolve_rules"]
 

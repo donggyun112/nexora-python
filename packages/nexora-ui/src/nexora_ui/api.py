@@ -8,9 +8,10 @@ from typing import Any, cast
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from nexora_contracts import ToolCall
 
-from ..contracts import ToolCall
-from ..runtime import AgentRuntime
+from nexora.runtime import AgentRuntime
+
 from .config import SETTINGS, SYSTEM_PROMPT
 from .execution import AgentEvent, capped, stream_attempt
 from .policy import permission_controls

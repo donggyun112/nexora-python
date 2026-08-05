@@ -104,36 +104,42 @@ check `ui/` and the Postgres store test skips itself without psycopg.
 ### Local OpenRouter test UI
 
 ```bash
-uv run uvicorn nexora.ui.app:app --reload --port 8790
+uv run uvicorn nexora_ui.app:app --reload --port 8790
 ```
 
-Then open <http://127.0.0.1:8790>. See `src/nexora/ui/README.md` for the chat, tool-effect and
+Then open <http://127.0.0.1:8790>. See `packages/nexora-ui/README.md` for the chat, tool-effect and
 suspension/resume scenarios.
 
 ## Current scaffold
 
-A uv workspace. `nexora` is what you install; the ledger is separate because it can be — it has no
-dependencies, so a store implementation never pulls in a model SDK.
+A uv workspace. `nexora` is the facade you install; the layers below it are separate distributions
+so a store implementation never pulls in a model SDK and a host with its own policy never installs
+a rule table it does not use.
 
 ```text
-src/nexora/                 # the nexora distribution
-├── runtime.py              # public AgentRuntime facade
-├── orchestrator.py         # durable execution, suspension, recovery
-├── contracts/              # what everything agrees on
-│   ├── types.py            #   messages, tool calls, hook signatures
-│   └── events.py           #   event vocabulary and envelope
-├── controls.py             # the control points and what composes at each
-├── engines/plain/          # the planner as an `async while`
-├── tools.py                # tool execution, the policy gate, result rendering
-└── history.py              # suspension snapshots and resume codec
+src/nexora/                 nexora                 the facade: runtime.py, driver.py
+                                                   deps: contracts, orchestrator, engines
 
 packages/
-├── nexora-store/           # nexora_store — StepLog, MemorySteps. dependencies: none
-└── nexora-store-pg/        # nexora_store_pg — Postgres StepLog. `nexora[postgres]`
+├── nexora-contracts/       nexora_contracts       the hub — message types, the event
+│                                                  vocabulary, the control points
+│                                                  deps: langchain-core, loguru
+├── nexora-store/           nexora_store           StepLog, MemorySteps
+│                                                  deps: none
+├── nexora-store-pg/        nexora_store_pg        Postgres StepLog · nexora[postgres]
+├── nexora-orchestrator/    nexora_orchestrator    durable rounds, suspension, recovery,
+│                                                  tool execution, resume codec
+├── nexora-engines/         nexora_engines.plain   the planner as an `async while`
+├── nexora-permissions/     nexora_permissions     the rule table · nexora[permissions]
+└── nexora-ui/              nexora_ui              local console · nexora[ui]
 ```
 
-`nexora.orchestrator` re-exports the ledger names, so `from nexora.orchestrator import MemorySteps`
-keeps working; `import nexora_store` is the direct path for anyone implementing a store.
+`from nexora import AgentRuntime` is unchanged. Everything below the facade is imported by its own
+name — `from nexora_contracts.controls import ControlPlane`, `from nexora_store import MemorySteps` —
+the way `langchain_core` is, rather than through a re-export shim in `nexora`.
+
+Only `nexora-store` has no dependencies at all, and that is deliberate: a `StepLog` stores opaque
+values under opaque keys, so implementing one requires nothing else in this list.
 
 The runtime covers the reference's stop conditions, exclusive and terminating tools, steering,
 permission suspension/resume, durable tool effects, and interrupted-round reconstruction.

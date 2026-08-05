@@ -25,7 +25,6 @@ __all__ = [
     "Emit",
     "OnSuspend",
     "PendingInput",
-    "Permissions",
     "PreToolUse",
     "ShouldStopAfterTurn",
     "StopReason",
@@ -150,34 +149,6 @@ Control and observation share lifecycle names but not transport semantics: `Cont
 returns the decision at the `PRE_TOOL_USE` point, while `Emit(PRE_TOOL_USE, ...)` tells UI and
 audit consumers that the point was reached. A published event never grants authority.
 """
-
-@runtime_checkable
-class Permissions(Protocol):
-    """What has to be true before a tool runs, and the record that it did.
-
-    A pair of calls rather than a subscription. `resolve` returns a decision the caller holds and
-    acts on — that is what lets the *order* of the stages behind it be the policy, which no
-    dispatch of published events can promise. `nexora.orchestrator.PermissionChain` is the
-    composition a supervisor builds; this is the shape an engine depends on.
-    """
-
-    async def resolve(self, call: ToolCall) -> dict[str, Any] | None:
-        """`None` to allow, an `error` result to deny, a `suspend` result to ask a human.
-
-        `ask` deliberately does not block waiting for a person. A resolver that awaits an answer
-        holds the worker for as long as the human takes, which caps approvals at whatever timeout
-        the transport allows. Suspending costs nothing while stopped, so an approval can take days.
-        """
-        ...
-
-    async def record(self, call: ToolCall, result: dict[str, Any]) -> None:
-        """Durably note that this call resolved. **Raises through** — fail-closed.
-
-        Not an event: `EventStream` logs a failing sink and carries on, and a run that outran its
-        own record cannot tell on resume which calls already ran.
-        """
-        ...
-
 
 OnSuspend = Callable[
     [ToolCall, dict[str, Any], list[BaseMessage], list[dict[str, Any]]], Awaitable[None]

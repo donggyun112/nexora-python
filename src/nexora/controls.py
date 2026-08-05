@@ -28,6 +28,37 @@ being expressible. The control method and observation event use the same lifecyc
 A `dict[name, list[callable]]` cannot hold those rules. Adding a *gate* means registering it
 in an existing pipeline; adding a *control point* means a new method here, a planner or
 orchestrator boundary that calls it, and a contract test.
+
+**A stage must be safe to run again.** Recovery re-enters every one of them. The two tool-boundary
+points are re-entered from the ledger — `Orchestrator.recover_pending` calls `after_tool_call`
+again for a result it restored from a completed step, deliberately, to close the crash window
+between committing a tool result and committing its journal entry. The rest are re-entered because
+the round itself runs again. So a stage that accumulates — a spend counter, a non-idempotent
+external write — double-counts on recovery. Derive from `ctx.messages` or the ledger instead of
+adding up, and key any write by the `call_id` the stage already receives.
+
+**A stage is not a durable boundary.** What it changes is what the model and the transcript see;
+the ledger was written first. The seams that do reach the durable copy:
+
+*A tool result whose PII must never reach the ledger* — wrap the executor, not the control plane:
+
+    await runtime.run(run_id, model, Masking(my_tools), prompt)
+
+`Masking` is any `Tools`, and the orchestrator wraps what you pass in `Concurrent(Stepped(...))`,
+so your executor runs *inside* the step and the recorded value is already the masked one.
+
+*A prompt whose PII must never reach the input ledger* — mask at your edge, before `submit()` or
+`run(prompt=...)`. `on_inputs` is the defence for inputs you could not pre-screen, such as results
+arriving from the background.
+
+*A journal entry exactly once* — make the writer idempotent on `call_id`; recovery calls it again
+by design. *A budget or verification count* — derive it, never accumulate. *A record that must not
+be lost* — `after_tool_call`, which raises through, and never the event channel, which logs a
+failing sink and carries on.
+
+What no seam gives you: making a side effect *inside* a control stage its own durable step. The
+`Orchestrator` holds the run's lease, so a stage cannot open a second one on the same run. Use
+your own store with your own idempotency key.
 """
 
 from collections.abc import Awaitable, Callable
@@ -124,11 +155,14 @@ class Controls(Protocol):
     async def on_inputs(self, ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput] | Halt:
         """Admission for everything about to enter model context: rewrite, drop, or halt.
 
-        The only point where what the model and the audit log will see can still be changed —
-        masking happens here, before the message is committed anywhere, so no original survives
-        to leak on a replay. Screens scope themselves by `kind`; dropping a `tool_result` input
-        breaks the transcript the model needs, so screens that only care about people should
-        leave other kinds untouched.
+        What a screen changes here is **what the model and the transcript see** — and only that.
+        It is not a redaction boundary for the durable stores: `Orchestrator.enqueue_input` has
+        already written the submitted text to the input ledger, and a tool result was recorded by
+        `Stepped` before this point exists. Masking the durable copy is a different seam; see the
+        recipes at the top of this module.
+
+        Screens scope themselves by `kind`; dropping a `tool_result` input breaks the transcript
+        the model needs, so screens that only care about people should leave other kinds untouched.
         """
         ...
 
@@ -177,12 +211,18 @@ def gate(
 
     Most gates are exactly that shape — look at the call, refuse or don't — and making each one
     take a context it ignores and build a decision type would be ceremony. The mapping is fixed:
-    `None` allows, a `suspend` result asks, anything else denies.
+    `None` and an `allow` result both let the chain continue, a `suspend` result asks, anything
+    else denies.
+
+    `allow` maps to `Continue` and not to a decision because that is `Permissions`' rule — a stage
+    saying yes is an opinion, and every stage after it still runs. A host wiring an external hook
+    that answers `{"type": "allow"}` would otherwise have its permissive answer silently inverted
+    into a refusal, which is the one direction a permission bug must never go.
     """
 
     async def stage(ctx: Ctx, call: ToolCall) -> ToolDecision:
         decision = await answer(call)
-        if decision is None:
+        if decision is None or decision.get("type") == "allow":
             return Continue()
         return Suspend(decision) if decision.get("type") == "suspend" else Deny(decision)
 

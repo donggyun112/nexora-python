@@ -59,7 +59,9 @@ class PolicyContext(NamedTuple):
     version: str = ""
 
     def stage(self, tools: Any) -> Any:
-        """This context as a stage for a `PermissionChain`, reading each tool's own say.
+        """This context as a `pre_tool_use` stage, reading each tool's own say.
+
+        Wrap it in `nexora.controls.gate` to put it in a `Permissions` chain.
 
         Placed after the hooks: a hook's `allow` does not end a chain, so the rules still run and
         re-validate it — the property Claude Code needs a second copy of its rule layer for. A

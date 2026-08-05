@@ -4,9 +4,9 @@ Control flow and nothing else: the model, the tools, and every policy hook are i
 loop runs until something tells it to stop — there is no built-in iteration cap, because how
 long an agent may run is the caller's decision (see `ShouldStopAfterTurn`).
 
-`permissions` is one object because it is one decision: an ordered chain of stages, composed by
-whoever supervises this run (`nexora.orchestrator.PermissionChain`). It is a call and not a
-subscription, because the order of those stages is the policy and no event dispatch can promise
+`controls` is one object because each control point is one decision: an ordered chain of stages,
+composed by whoever supervises this run (`nexora.controls.ControlPlane`). They are calls and not
+subscriptions, because the order of those stages is the policy and no event dispatch can promise
 an order. `emit` is the other side of that: observation, published after each decision, and
 dropped rather than raised if a sink is unwell.
 

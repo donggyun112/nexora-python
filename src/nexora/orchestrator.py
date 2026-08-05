@@ -60,73 +60,12 @@ __all__ = [
     "InputRecord",
     "MemorySteps",
     "Orchestrator",
-    "PermissionChain",
     "RecoveredTools",
     "Step",
     "StepLog",
     "Suspended",
     "run_agent",
 ]
-
-
-class PermissionChain:
-    """The stages a tool call passes to be allowed, in order. Where middleware lives.
-
-    Composed at this layer — a supervisor stacks as many stages as it wants — but it is a **call
-    chain, not a subscription**. `resolve` returns a decision the caller holds and acts on, and
-    the *position* of each stage is the policy:
-
-        PermissionChain(
-            hook,             # the caller's own opinion, first and not trusted
-            deny_rules,       # ↓ a deny here beats the hook's allow
-            tool_check,
-            safety_check,     # ↑ nothing below can lift a decision made above
-            bypass,           # only from here on may anything answer "allow"
-            allow_rules,
-        )
-
-    That ordering cannot be expressed with subscribers: published events arrive in whatever order
-    a dispatcher chooses, so "the bypass entry sits after the deny rules" — the invariant the
-    whole model rests on — would not be an invariant at all. Events are for telling a UI and an
-    audit log what happened, after the fact.
-
-    Precedence, so it is readable in one place:
-
-    * **deny short-circuits.** No later stage runs; nothing can lift it.
-    * **ask is remembered, and the chain keeps going.** A deny after an ask still wins, so a
-      stage that only wants confirmation cannot accidentally shield a call from a refusal.
-    * **allow does not end the chain.** A stage answering `allow` is an opinion, re-checked
-      against every stage after it. This is what stops a permissive hook from being the last word.
-    * **nothing matched → allow.** Fail-open at the *end* of the chain is a deliberate choice:
-      a caller that wants the opposite adds a final stage that asks.
-    """
-
-    def __init__(self, *stages: Callable[[ToolCall], Awaitable[Any]], record: Any = None) -> None:
-        self._stages = stages
-        self._record = record
-
-    async def resolve(self, call: ToolCall) -> dict[str, Any] | None:
-        """The decision: `None` to allow, an `error` result to deny, a `suspend` result to ask."""
-        asked: dict[str, Any] | None = None
-        for stage in self._stages:
-            answer = await stage(call)
-            if not isinstance(answer, dict):
-                continue
-            kind = answer.get("type")
-            if kind == "error":
-                return answer
-            if kind == "suspend" and asked is None:
-                asked = answer
-        return asked
-
-    async def record(self, call: ToolCall, result: dict[str, Any]) -> None:
-        """The durable note that this call resolved. Raises through — fail-closed.
-
-        Not an event: `EventStream` logs a failing sink and carries on, and a run that outran its
-        own record cannot tell on resume which calls already ran.
-        """
-        if self._record is not None:
-            await self._record(call, result)
 
 
 class AgentFailed(Exception):
@@ -645,9 +584,14 @@ class Orchestrator:
                 {"input_id": item.origin_id, "source": item.kind},
             )
 
-    async def claim_inputs(self, history: list[BaseMessage] | None = None) -> list[PendingInput]:
-        """Claim missing inputs in dependency order, preserving arrival order among peers."""
-        represented = {message.id for message in history or [] if message.id is not None}
+    async def claim_inputs(self, represented: set[str] | None = None) -> list[PendingInput]:
+        """Claim missing inputs in dependency order, preserving arrival order among peers.
+
+        `represented` is the set of input ids already present in the caller's transcript. Ids and
+        not messages: the queue has no business reading a conversation, and the one caller that
+        holds one is the agent-facing facade.
+        """
+        represented = represented or set()
         claimed: list[PendingInput] = []
         decoded = [
             (record, decode_pending_input(record.value))

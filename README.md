@@ -22,7 +22,7 @@ runtime = AgentRuntime(store=steps, emit=events)
 outcome = await runtime.run("run-42", model, tools, "inspect this repository")
 ```
 
-The runtime has one execution path. Its agent planner is an ordinary `async while`; every external
+The runtime has one execution path. Its agent planner is an ordinary `async while`; every tool
 effect crosses Nexora's durable `Orchestrator` before it runs:
 
 ```python
@@ -61,6 +61,11 @@ The loop keeps only planner control flow — model, delegated effect round, stop
 intent, effect ordering, suspension and recovery live at the mediated execution boundary. There
 is no alternate graph engine and no graph checkpointer.
 
+Model invocation is the current exception to that durable effect boundary: the planner streams the
+provider directly, and neither the model result nor the growing transcript is checkpointed by
+`StepLog`. Until the separate transcript store and a durable model-invocation contract exist, a
+caller recovering after that boundary must supply the committed transcript explicitly.
+
 Messages, tool calls and chat models are LangChain's — owning our own versions of those bought
 translation layers and little else.
 
@@ -78,7 +83,8 @@ Internally, those responsibilities split cleanly:
   source of truth rather than a second durability mechanism beside a graph checkpointer.
 - **Input ledger:** owns pending/claimed/admitted input order. Initial prompts, steers, background
   results and resume answers enter the planner through one queue contract.
-- **Effect executors:** perform model, tool, sandbox and delegation operations.
+- **Effect executors:** perform mediated tool, sandbox and delegation operations. Model invocation
+  is still direct planner I/O and is not yet a durable step.
 - **Events:** expose the same lifecycle to audit, UI and monitoring consumers.
 
 ## Development

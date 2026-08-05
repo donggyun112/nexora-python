@@ -85,5 +85,19 @@ StepLog + typed tool executor
 
 1. 라운드당 gate 수와 gate 재평가 비용이 운영상 유의미해진다.
 2. model invocation을 durable Effect로 만들면서 관리할 program counter가 크게 늘어난다.
-3. StepLog 의미를 보존하면서 실질적인 복구 코드 삭제가 가능하다.
-4. transcript checkpoint 쓰기 증폭을 해결한 저장 구조가 먼저 존재한다.
+3. nested subagent, 병렬 branch/join, selective retry 또는 tool gate 밖의 interrupt가 실제
+   제품 요구가 되어 부모·자식 control state를 별도로 복구해야 한다.
+4. StepLog 의미를 보존하면서 실질적인 복구 코드 삭제가 가능하다.
+5. transcript checkpoint 쓰기 증폭을 해결한 저장 구조가 먼저 존재한다.
+
+재검토는 기능 개수를 세어 자동으로 채택하지 않는다. 같은 장애 주입 시나리오를 현재 직접 경로,
+LangGraph Functional API, 필요하면 직접 조립한 `StateGraph`에 적용해 다음을 함께 측정한다.
+
+- 완료된 model/task와 병렬 branch의 재실행 횟수
+- transcript/checkpoint 쓰기 증폭
+- 삭제되는 Nexora 복구 코드와 새로 생기는 적응 코드
+- `StepLog`의 intent, call-id, lease, fencing 의미 보존 여부
+- checkpointer와 `StepLog` 사이에 중복된 replay source of truth가 생기는지 여부
+
+LangGraph는 이 비교에서 control-state durability를 맡아 기존 코드를 실제로 줄이고, 외부 effect의
+복구 권한은 `StepLog`에 남길 수 있을 때만 채택한다.

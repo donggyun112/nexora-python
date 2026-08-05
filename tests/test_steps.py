@@ -168,7 +168,7 @@ async def test_input_queue_reclaims_missing_transcript_but_skips_represented_inp
     )
 
     assert [record.status for record in await log.list_inputs("input-run")] == ["pending"]
-    claimed = await first.claim_inputs([])
+    claimed = await first.claim_inputs(set())
     assert claimed == [queued]
     assert [record.status for record in await log.list_inputs("input-run")] == ["claimed"]
 
@@ -176,9 +176,10 @@ async def test_input_queue_reclaims_missing_transcript_but_skips_represented_inp
     assert [record.status for record in await log.list_inputs("input-run")] == ["admitted"]
 
     # A fresh process with no transcript safely replays even an admitted input.
-    assert await Orchestrator("input-run", log).claim_inputs([]) == [queued]
+    assert await Orchestrator("input-run", log).claim_inputs(set()) == [queued]
     # Once the transcript carries the queue/message id, it is not injected twice.
-    assert await Orchestrator("input-run", log).claim_inputs([queued.message]) == []
+    represented = {queued.message.id} if queued.message.id else set()
+    assert await Orchestrator("input-run", log).claim_inputs(represented) == []
 
 
 async def test_transition_commits_protocol_answer_before_replacing_user_input() -> None:
@@ -199,6 +200,38 @@ async def test_transition_commits_protocol_answer_before_replacing_user_input() 
         "cancel-1",
         "prompt-2",
     ]
+
+
+async def test_a_tools_wrapper_runs_inside_the_step_so_the_ledger_records_what_it_returned() -> (
+    None
+):
+    """The seam `controls.py` sends people to when they need a *durable* copy redacted.
+
+    `on_inputs` cannot do it — the tool result reached the ledger before any control point exists.
+    A `Tools` wrapper can, because the orchestrator nests what the caller passes inside
+    `Stepped`. If that nesting ever inverts, the ledger keeps the raw value and the recipe in the
+    module docstring becomes another promise the code does not keep.
+    """
+    from nexora import AgentRuntime
+    from tests.test_loop import Tools, a_call, says, scripted
+
+    class Masking(Tools):
+        """A `Tools` that redacts what the real executor returned. Subclassed, per test rule 2."""
+
+        async def execute(self, name: str, call_id: str, args: Any) -> dict[str, Any]:
+            result = await super().execute(name, call_id, args)
+            return {**result, "text": str(result["text"]).replace("123-45", "***")}
+
+    log = MemorySteps()
+
+    await AgentRuntime(store=log).run(
+        "masked-step",
+        scripted(says("", a_call("c1", "read")), says("done")),
+        Masking(results={"read": {"type": "text", "text": "ssn is 123-45"}}),
+        "hi",
+    )
+
+    assert (await log.read("masked-step", "c1")).value == {"type": "text", "text": "ssn is ***"}
 
 
 async def test_an_interruption_is_not_recorded_as_the_answer() -> None:

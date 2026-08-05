@@ -259,8 +259,10 @@ class AgentRuntime:
         if "drain_inputs" in engine_options or "admit_inputs" in engine_options:
             raise TypeError("AgentRuntime owns drain_inputs and admit_inputs")
 
+        represented = {message.id for message in history or [] if message.id is not None}
+
         async def drain_inputs() -> list[PendingInput]:
-            return await orchestrator.claim_inputs(history)
+            return await orchestrator.claim_inputs(represented)
 
         return await drive(
             react_loop,

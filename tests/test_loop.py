@@ -11,7 +11,17 @@ from langchain_core.outputs import ChatGenerationChunk
 
 from nexora import AgentRuntime, react_loop
 from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
-from nexora.controls import ControlPlane, Halt, Ingress, Journal, Permissions, gate, writer
+from nexora.controls import (
+    ControlPlane,
+    FinishPolicy,
+    Halt,
+    Ingress,
+    Journal,
+    Permissions,
+    Proceed,
+    gate,
+    writer,
+)
 from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended
 from nexora.tools import InvalidToolResult
 
@@ -355,6 +365,48 @@ async def test_a_halting_screen_ends_the_run_before_the_model_is_called() -> Non
 
     assert events[-1]["stop_reason"] == "policy"
     assert llm.seen == []
+
+
+async def test_a_verifier_vetoes_the_finish_and_the_run_goes_around_again() -> None:
+    """`before_finish` had a protocol method, a composer and a `ControlPlane` slot, and no caller.
+
+    The property it exists for: a gate that answers `Proceed` on a round the model ended without
+    tools sends the loop back to the model, and its steers reach that next call.
+    """
+    llm = scripted(says("almost"), says("really done"))
+    asked: list[str] = []
+
+    async def verify(ctx: Any, reason: Any) -> Any:
+        asked.append(reason)
+        return Proceed([HumanMessage("keep going")]) if len(asked) == 1 else Halt(reason)
+
+    events = await run(
+        llm,
+        durable=False,
+        controls=ControlPlane(before_finish=FinishPolicy(verify)),
+    )
+
+    assert asked == ["completed", "completed"]  # asked per tool-free round, not once per run
+    assert [message.content for message in llm.seen[1][-1:]] == ["keep going"]
+    assert events[-1]["content"] == "really done"
+    assert events[-1]["stop_reason"] == "completed"
+
+
+async def test_a_gate_cannot_relabel_an_ending_it_did_not_object_to() -> None:
+    """`FinishPolicy` returns the engine's reason, not the gate's. A verifier decides whether the
+    run continues and nothing else — otherwise a gate could quietly file a completion as a policy
+    stop, and the terminal event is what an operator reads to tell those apart."""
+
+    async def relabel(ctx: Any, reason: Any) -> Halt:
+        return Halt("policy")
+
+    events = await run(
+        scripted(says("done")),
+        durable=False,
+        controls=ControlPlane(before_finish=FinishPolicy(relabel)),
+    )
+
+    assert events[-1]["stop_reason"] == "completed"
 
 
 async def test_abort_leaves_a_record_instead_of_a_stream_that_just_stops() -> None:

@@ -73,6 +73,7 @@ __all__ = [
     "Controls",
     "Ctx",
     "Deny",
+    "FinishPolicy",
     "Halt",
     "Ingress",
     "Journal",
@@ -177,8 +178,18 @@ class Controls(Protocol):
     async def before_finish(self, ctx: Ctx, reason: StopReason) -> TurnDecision:
         """The last word before a run ends. `Proceed` vetoes the finish and goes around again.
 
-        It fires once when the model asked for no tools. It is where a verifier says "not done
-        yet" and where a steer that landed while the turn was finishing cancels the stop.
+        Asked on a round where the model requested no tools, after the engine has checked for a
+        late steer — an arriving input and a policy objection are different reasons to continue.
+        This is where a verifier says "not done yet"; its `Proceed` steers are admitted beside the
+        next model call like any other input.
+
+        A gate cannot relabel an ending it did not object to: `FinishPolicy` returns the engine's
+        own reason, so the only thing a verifier decides is whether the run continues. Renaming
+        needs a `before_finish` implementation of your own, not a gate inside that one.
+
+        Nothing caps the vetoes. A gate that never lets go never ends, the same way a
+        `drain_inputs` that always yields never ends — bound it with `should_stop_after_turn`
+        accounting or with your own counter, which must be derived rather than accumulated.
         """
         ...
 

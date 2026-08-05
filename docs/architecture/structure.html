@@ -4,30 +4,22 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Nexora · Durable Agent Runtime Architecture</title>
+  <title>Nexora Architecture Diagrams</title>
   <style>
     :root {
-      --bg: #080b0a;
-      --panel: #0d1210;
-      --panel-2: #111815;
-      --line: #25312c;
-      --line-strong: #3b4b44;
-      --ink: #edf5f1;
-      --muted: #91a29a;
-      --soft: #65756e;
-      --green: #65f59a;
-      --green-dim: rgba(101, 245, 154, .11);
-      --cyan: #63d9ec;
-      --cyan-dim: rgba(99, 217, 236, .10);
-      --violet: #b5a0ff;
-      --violet-dim: rgba(181, 160, 255, .10);
-      --amber: #ffc96b;
-      --amber-dim: rgba(255, 201, 107, .10);
-      --red: #ff8080;
-      --red-dim: rgba(255, 128, 128, .10);
+      --bg: #090c0b;
+      --panel: #0f1412;
+      --panel-2: #121a16;
+      --line: #29362f;
+      --ink: #eef7f2;
+      --muted: #91a39a;
+      --green: #68f59c;
+      --cyan: #66ddec;
+      --amber: #ffcb72;
+      --violet: #b6a3ff;
+      --red: #ff8585;
       --sans: Inter, Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
       --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      --radius: 14px;
     }
 
     * { box-sizing: border-box; }
@@ -36,11 +28,10 @@
       margin: 0;
       color: var(--ink);
       background:
-        radial-gradient(circle at 15% -10%, rgba(101, 245, 154, .08), transparent 34rem),
-        radial-gradient(circle at 96% 20%, rgba(99, 217, 236, .06), transparent 30rem),
+        radial-gradient(circle at 8% 0%, rgba(104,245,156,.08), transparent 34rem),
+        radial-gradient(circle at 94% 28%, rgba(102,221,236,.06), transparent 34rem),
         var(--bg);
       font-family: var(--sans);
-      line-height: 1.5;
     }
 
     body::before {
@@ -48,554 +39,500 @@
       inset: 0;
       z-index: -1;
       content: "";
-      opacity: .18;
+      opacity: .16;
       background-image:
-        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+        linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px);
       background-size: 32px 32px;
-      mask-image: linear-gradient(to bottom, black, transparent 75%);
+      mask-image: linear-gradient(to bottom, #000, transparent 82%);
     }
 
-    a { color: inherit; }
-    code, .mono { font-family: var(--mono); }
-    code { color: #cfe0d8; font-size: .92em; }
-    strong { color: var(--ink); }
+    code { font-family: var(--mono); color: #cbe0d4; }
+    .shell { width: min(1500px, calc(100% - 36px)); margin: 0 auto; }
 
-    .shell { width: min(1440px, calc(100% - 40px)); margin: 0 auto; }
-    .topbar {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      border-bottom: 1px solid rgba(59, 75, 68, .6);
-      background: rgba(8, 11, 10, .84);
-      backdrop-filter: blur(16px);
+    header {
+      padding: 56px 0 34px;
+      border-bottom: 1px solid var(--line);
     }
-    .topbar-inner {
-      min-height: 54px;
+    .eyebrow { margin: 0 0 12px; color: var(--green); font: 11px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(36px, 6vw, 72px); line-height: 1; letter-spacing: -.055em; }
+    .lead { max-width: 820px; margin: 18px 0 0; color: var(--muted); font-size: 16px; line-height: 1.7; }
+    .decision {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 20px;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 24px;
     }
-    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.02em; }
-    .brand-mark { width: 9px; height: 9px; border-radius: 2px; background: var(--green); box-shadow: 0 0 18px rgba(101,245,154,.7); }
-    .top-meta { color: var(--soft); font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .pill { padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: rgba(15,20,18,.72); font: 10px var(--mono); }
+    .pill strong { color: var(--ink); }
 
-    .hero { padding: 76px 0 44px; }
-    .kicker { margin: 0 0 15px; color: var(--green); font: 12px var(--mono); letter-spacing: .15em; text-transform: uppercase; }
-    h1 { max-width: 980px; margin: 0; font-size: clamp(42px, 7vw, 88px); line-height: .98; letter-spacing: -.065em; }
-    .hero-copy { max-width: 850px; margin: 24px 0 0; color: var(--muted); font-size: clamp(16px, 1.7vw, 21px); line-height: 1.65; }
-    .hero-copy b { color: var(--ink); font-weight: 600; }
+    nav { position: sticky; top: 0; z-index: 10; border-bottom: 1px solid var(--line); background: rgba(9,12,11,.88); backdrop-filter: blur(14px); }
+    nav .shell { display: flex; gap: 22px; overflow-x: auto; }
+    nav a { padding: 15px 0; color: var(--muted); font: 10px var(--mono); letter-spacing: .08em; text-decoration: none; white-space: nowrap; }
+    nav a:hover { color: var(--green); }
 
-    .decision-strip {
+    main { padding: 16px 0 72px; }
+    section { padding: 46px 0; border-bottom: 1px solid var(--line); }
+    .section-head { display: grid; grid-template-columns: 150px 1fr; gap: 22px; margin-bottom: 20px; }
+    .number { color: #65776e; font: 10px var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+    h2 { margin: 0; font-size: clamp(25px, 3vw, 39px); letter-spacing: -.04em; }
+    .note { max-width: 820px; margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+
+    .diagram-frame {
+      position: relative;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(145deg, rgba(16,23,19,.98), rgba(10,14,12,.98));
+      box-shadow: 0 22px 70px rgba(0,0,0,.2);
+    }
+    .diagram-label {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      width: fit-content;
+      margin: 13px 0 0 14px;
+      padding: 5px 7px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: #6f8379;
+      background: var(--panel);
+      font: 9px var(--mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .mermaid { min-width: 1140px; margin: 0; padding: 12px 18px 30px; text-align: center; background: transparent; }
+    .sequence .mermaid { min-width: 1050px; }
+    .compact .mermaid { min-width: 900px; }
+    .mermaid svg { max-width: none !important; width: 100% !important; height: auto !important; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 12px; color: var(--muted); font-size: 11px; }
+    .legend span { display: flex; align-items: center; gap: 7px; }
+    .dot { width: 8px; height: 8px; border-radius: 2px; background: var(--green); }
+    .dot.cyan { background: var(--cyan); }
+    .dot.amber { background: var(--amber); }
+    .dot.violet { background: var(--violet); }
+    .dot.red { background: var(--red); }
+
+    .rules {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      margin-top: 42px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      overflow: hidden;
-      background: rgba(13,18,16,.78);
-    }
-    .decision { min-height: 112px; padding: 20px; border-right: 1px solid var(--line); }
-    .decision:last-child { border-right: 0; }
-    .decision small { display: block; margin-bottom: 11px; color: var(--soft); font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
-    .decision b { display: block; font-size: 17px; letter-spacing: -.02em; }
-    .decision span { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
-
-    main { padding-bottom: 80px; }
-    .section { padding: 58px 0; border-top: 1px solid var(--line); }
-    .section-head { display: grid; grid-template-columns: 170px 1fr; gap: 28px; margin-bottom: 28px; }
-    .section-no { color: var(--soft); font: 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
-    h2 { margin: 0; font-size: clamp(27px, 3.5vw, 44px); line-height: 1.1; letter-spacing: -.045em; }
-    .section-intro { max-width: 780px; margin: 11px 0 0; color: var(--muted); font-size: 15px; }
-
-    .architecture {
-      display: grid;
-      grid-template-columns: minmax(180px, .55fr) minmax(650px, 2.35fr) minmax(190px, .65fr);
-      gap: 16px;
-      align-items: stretch;
-      min-width: 1120px;
-    }
-    .scroll { overflow-x: auto; padding-bottom: 8px; }
-    .edge-column { display: grid; gap: 16px; }
-    .edge-card, .plane, .note-card, .flow-card, .ledger-card, .event-group, .code-card {
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: linear-gradient(145deg, rgba(17,24,21,.96), rgba(11,16,14,.96));
-    }
-    .edge-card { min-height: 132px; padding: 18px; display: flex; flex-direction: column; justify-content: space-between; }
-    .edge-card .label, .plane-label, .tag { font: 10px var(--mono); letter-spacing: .11em; text-transform: uppercase; }
-    .edge-card .label { color: var(--soft); }
-    .edge-card h3 { margin: 25px 0 5px; font-size: 16px; }
-    .edge-card p { margin: 0; color: var(--muted); font-size: 12px; }
-
-    .planes { display: grid; gap: 12px; }
-    .plane { position: relative; padding: 18px; }
-    .plane-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; color: var(--soft); }
-    .plane-label b { color: var(--ink); font-size: 11px; font-weight: 500; }
-    .nodes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 28px; align-items: center; }
-    .node { position: relative; min-height: 86px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 9px; background: #0a0f0d; }
-    .node:not(:last-child)::after {
-      position: absolute; top: 50%; right: -22px; width: 15px; height: 1px; content: ""; background: var(--line-strong);
-    }
-    .node:not(:last-child)::before {
-      position: absolute; top: calc(50% - 3px); right: -24px; content: ""; border-width: 3px 0 3px 5px; border-style: solid; border-color: transparent transparent transparent var(--line-strong);
-    }
-    .node.accent { border-color: rgba(101,245,154,.52); background: var(--green-dim); }
-    .node.cyan { border-color: rgba(99,217,236,.48); background: var(--cyan-dim); }
-    .node.violet { border-color: rgba(181,160,255,.45); background: var(--violet-dim); }
-    .node.amber { border-color: rgba(255,201,107,.5); background: var(--amber-dim); }
-    .node .tag { color: var(--soft); }
-    .node h4 { margin: 12px 0 3px; font-size: 14px; }
-    .node p { margin: 0; color: var(--muted); font: 10.5px/1.45 var(--mono); }
-    .plane-caption { margin: 12px 0 0; color: var(--soft); font-size: 11px; }
-
-    .ownership-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 16px; }
-    .note-card { padding: 18px; }
-    .note-card .tag { color: var(--green); }
-    .note-card h3 { margin: 12px 0 7px; font-size: 15px; }
-    .note-card p { margin: 0; color: var(--muted); font-size: 13px; }
-
-    .equation {
-      margin: 8px 0 30px;
-      padding: 18px 22px;
-      border: 1px solid rgba(255,201,107,.38);
-      border-radius: var(--radius);
-      background: var(--amber-dim);
-      color: var(--amber);
-      font: clamp(14px, 1.7vw, 19px) var(--mono);
-      text-align: center;
-    }
-    .equation b { color: var(--ink); }
-
-    .flow-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    .flow-card { padding: 20px; }
-    .flow-card .flow-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .flow-card h3 { margin: 0; font-size: 17px; }
-    .status { padding: 4px 8px; border-radius: 999px; font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
-    .status.green { color: var(--green); background: var(--green-dim); }
-    .status.amber { color: var(--amber); background: var(--amber-dim); }
-    .status.red { color: var(--red); background: var(--red-dim); }
-    .steps { list-style: none; margin: 22px 0 0; padding: 0; counter-reset: flow; }
-    .steps li { position: relative; min-height: 58px; padding: 0 0 18px 38px; color: var(--muted); font-size: 12.5px; counter-increment: flow; }
-    .steps li::before { position: absolute; left: 0; top: -2px; display: grid; width: 23px; height: 23px; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; content: counter(flow); color: var(--ink); font: 10px var(--mono); background: var(--bg); }
-    .steps li:not(:last-child)::after { position: absolute; top: 22px; bottom: -1px; left: 11px; width: 1px; content: ""; background: var(--line); }
-    .steps li:last-child { min-height: 0; padding-bottom: 0; }
-    .steps code { display: block; margin-bottom: 2px; color: var(--ink); }
-
-    .durability-grid { display: grid; grid-template-columns: .8fr 1.2fr; gap: 14px; }
-    .ledger-card { padding: 20px; }
-    .state-row { display: grid; grid-template-columns: 105px 25px 1fr; align-items: center; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-    .state-row:last-child { border-bottom: 0; }
-    .state-name { padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; text-align: center; font: 10px var(--mono); }
-    .state-arrow { color: var(--soft); text-align: center; }
-    .state-copy { color: var(--muted); font-size: 12px; }
-    .state-copy strong { display: block; margin-bottom: 2px; font-size: 13px; }
-
-    table { width: 100%; border-collapse: collapse; }
-    th { padding: 10px 12px; border-bottom: 1px solid var(--line-strong); color: var(--soft); font: 9px var(--mono); letter-spacing: .1em; text-align: left; text-transform: uppercase; }
-    td { padding: 13px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; vertical-align: top; }
-    tr:last-child td { border-bottom: 0; }
-    td:first-child { width: 28%; color: var(--ink); }
-
-    .callout {
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 16px;
+      gap: 10px;
       margin-top: 14px;
-      padding: 18px 20px;
-      border: 1px solid rgba(181,160,255,.34);
-      border-radius: var(--radius);
-      background: var(--violet-dim);
     }
-    .callout-mark { color: var(--violet); font: 18px var(--mono); }
-    .callout p { margin: 0; color: var(--muted); font-size: 13px; }
+    .rule { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(15,20,18,.7); }
+    .rule b { display: block; margin-bottom: 5px; color: var(--green); font: 10px var(--mono); }
+    .rule span { color: var(--muted); font-size: 11px; line-height: 1.5; }
 
-    .event-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-    .control-map { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
-    .control-lane { padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(17,24,21,.96), rgba(11,16,14,.96)); }
-    .control-lane.control { border-color: rgba(255,201,107,.35); }
-    .control-lane.signal { border-color: rgba(99,217,236,.32); }
-    .control-lane.observe { border-color: rgba(181,160,255,.30); }
-    .control-lane h3 { margin: 10px 0 6px; font-size: 17px; }
-    .control-lane > p { min-height: 58px; margin: 0 0 14px; color: var(--muted); font-size: 12px; }
-    .lane-list { display: grid; gap: 7px; }
-    .lane-item { padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; background: rgba(0,0,0,.13); }
-    .lane-item code { display: block; color: var(--ink); font-size: 10px; }
-    .lane-item span { display: block; margin-top: 3px; color: var(--soft); font-size: 10.5px; }
-    .envelope { display: grid; grid-template-columns: .8fr 1.2fr; gap: 14px; margin: 14px 0; }
-    .envelope pre { margin: 0; color: #b7c8c0; font: 11px/1.7 var(--mono); white-space: pre-wrap; }
-    .scope-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-    .scope-item { padding: 10px; border: 1px solid var(--line); border-radius: 7px; }
-    .scope-item b { display: block; color: var(--cyan); font: 9px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
-    .scope-item span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
-    .event-group { padding: 18px; }
-    .event-group h3 { margin: 0 0 14px; font-size: 14px; }
-    .chips { display: flex; flex-wrap: wrap; gap: 7px; }
-    .chip { padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: rgba(0,0,0,.15); font: 9.5px var(--mono); }
-    .chip.blocking { border-color: rgba(255,201,107,.4); color: var(--amber); }
-    .event-rule { margin-top: 16px; padding: 18px; border-left: 2px solid var(--cyan); background: var(--cyan-dim); color: var(--muted); font-size: 13px; }
-
-    .bottom-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 14px; }
-    .code-card { padding: 20px; }
-    .tree { margin: 0; overflow-x: auto; color: #b7c8c0; font: 11.5px/1.75 var(--mono); white-space: pre; }
-    .rules { display: grid; gap: 9px; }
-    .rule { display: grid; grid-template-columns: 28px 1fr; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; }
-    .rule b { color: var(--green); font: 11px var(--mono); }
-    .rule span { color: var(--muted); font-size: 12px; }
-    .roadmap { margin-top: 14px; padding-top: 15px; border-top: 1px solid var(--line); }
-    .roadmap h4 { margin: 0 0 9px; color: var(--soft); font: 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
-    .roadmap p { margin: 0; color: var(--muted); font-size: 12px; }
-
-    footer { padding: 24px 0 40px; border-top: 1px solid var(--line); color: var(--soft); font: 10px var(--mono); }
-    footer .shell { display: flex; justify-content: space-between; gap: 20px; }
-
-    @media (max-width: 1000px) {
-      .decision-strip, .flow-grid, .event-grid, .control-map { grid-template-columns: repeat(2, 1fr); }
-      .decision:nth-child(2) { border-right: 0; }
-      .decision:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-      .durability-grid, .bottom-grid { grid-template-columns: 1fr; }
+    .event-list {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 14px;
     }
-    @media (max-width: 680px) {
-      .shell { width: min(100% - 24px, 1440px); }
-      .top-meta { display: none; }
-      .hero { padding-top: 50px; }
-      .decision-strip, .flow-grid, .event-grid, .ownership-grid, .control-map, .envelope { grid-template-columns: 1fr; }
-      .decision { border-right: 0; border-bottom: 1px solid var(--line); }
-      .decision:last-child { border-bottom: 0; }
-      .section-head { grid-template-columns: 1fr; gap: 8px; }
+    .event-group { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(15,20,18,.7); }
+    .event-group h3 { margin: 0 0 10px; color: var(--ink); font-size: 12px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 9px var(--mono); }
+    .chip.control { border-color: rgba(255,203,114,.45); color: var(--amber); }
+
+    .warning { margin-top: 14px; padding: 13px 15px; border-left: 2px solid var(--amber); color: var(--muted); background: rgba(255,203,114,.07); font-size: 12px; line-height: 1.6; }
+    .warning strong { color: var(--ink); }
+
+    footer { padding: 24px 0 40px; color: #62746b; font: 10px var(--mono); }
+    footer .shell { display: flex; justify-content: space-between; gap: 16px; }
+
+    noscript { display: block; padding: 20px; color: var(--red); }
+
+    @media (max-width: 900px) {
+      .section-head { grid-template-columns: 1fr; gap: 7px; }
+      .rules, .event-list { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .shell { width: min(100% - 22px, 1500px); }
+      header { padding-top: 38px; }
+      .rules, .event-list { grid-template-columns: 1fr; }
       footer .shell { flex-direction: column; }
     }
     @media print {
-      :root { --bg: #fff; --panel: #fff; --panel-2: #fff; --ink: #111; --muted: #444; --soft: #666; --line: #ccc; --line-strong: #999; }
-      body { background: #fff; }
-      body::before, .topbar { display: none; }
-      .shell { width: 100%; }
-      .section { break-inside: avoid; }
-      .edge-card, .plane, .note-card, .flow-card, .ledger-card, .event-group, .code-card { background: #fff; }
+      :root { --bg:#fff; --panel:#fff; --panel-2:#fff; --line:#bbb; --ink:#111; --muted:#444; }
+      body { background:#fff; }
+      body::before, nav { display:none; }
+      .shell { width:100%; }
+      section { break-inside:avoid; }
+      .diagram-frame, .rule, .event-group { background:#fff; box-shadow:none; }
     }
   </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="shell topbar-inner">
-      <div class="brand"><span class="brand-mark"></span>Nexora</div>
-      <div class="top-meta">Durable Agent Runtime · Architecture Record</div>
+  <header>
+    <div class="shell">
+      <p class="eyebrow">Nexora · Architecture diagrams · 2026-08-05</p>
+      <h1>Durable Agent Runtime</h1>
+      <p class="lead">plain while 플래너와 중앙 Orchestrator 실행 경계의 실제 노드·엣지 구조도. 권한은 실행 전 <code>pre_tool_use</code>에서만 결정되고, batch는 이벤트나 control point가 아닌 실행 최적화 단위로만 존재한다.</p>
+      <div class="decision">
+        <span class="pill"><strong>Planner</strong> · plain async while</span>
+        <span class="pill"><strong>Durability</strong> · StepLog + durable inbox</span>
+        <span class="pill"><strong>Approval</strong> · pre-tool only</span>
+        <span class="pill"><strong>LangGraph</strong> · withdrawn</span>
+        <span class="pill"><strong>Batch gates/events</strong> · none</span>
+      </div>
     </div>
   </header>
 
-  <div class="shell">
-    <section class="hero">
-      <p class="kicker">Current architecture · 2026-08-05</p>
-      <h1>의도는 가볍게.<br>실행은 내구성 있게.</h1>
-      <p class="hero-copy">
-        Nexora는 <b>plain <code>async while</code> 에이전트 플래너</b>와
-        <b>중앙 Orchestrator 실행 경계</b>를 결합한다. 모델은 도구 실행을 요청하고,
-        Orchestrator는 정책·순서·멱등성·중단·복구를 소유한다. LangGraph 실행 경로와
-        도구 실행 후 suspension은 제거됐다.
-      </p>
+  <nav>
+    <div class="shell">
+      <a href="#system">01 · System flow</a>
+      <a href="#approval">02 · Approval sequence</a>
+      <a href="#control">03 · Control / Signal / Event</a>
+      <a href="#recovery">04 · Recovery state</a>
+    </div>
+  </nav>
 
-      <div class="decision-strip">
-        <div class="decision"><small>Planner</small><b>Plain async while</b><span>model → delegated round → stop</span></div>
-        <div class="decision"><small>Execution owner</small><b>Orchestrator</b><span>gate · effect · suspend · recover</span></div>
-        <div class="decision"><small>Durability source</small><b>StepLog + Inbox</b><span>한 개의 복구 원장, graph PC 없음</span></div>
-        <div class="decision"><small>Approval</small><b>Pre-tool only</b><span>실행 전 대기, worker는 즉시 종료</span></div>
+  <main class="shell">
+    <section id="system">
+      <div class="section-head">
+        <div class="number">01 · System flow</div>
+        <div>
+          <h2>전체 런타임 구조</h2>
+          <p class="note">모델은 effect를 요청할 뿐 실행하지 않는다. 모든 tool effect는 Orchestrator의 pending 기록, 호출별 권한 게이트, StepLog를 거쳐 외부 세계에 도달한다.</p>
+        </div>
+      </div>
+      <div class="diagram-frame">
+        <div class="diagram-label">flowchart · ownership and execution</div>
+        <pre class="mermaid">
+flowchart LR
+  classDef entry fill:#12251b,stroke:#68f59c,color:#eef7f2,stroke-width:1.4px
+  classDef planner fill:#102129,stroke:#66ddec,color:#eef7f2,stroke-width:1.4px
+  classDef control fill:#292315,stroke:#ffcb72,color:#eef7f2,stroke-width:1.4px
+  classDef durable fill:#201d31,stroke:#b6a3ff,color:#eef7f2,stroke-width:1.4px
+  classDef effect fill:#151b18,stroke:#7e9187,color:#eef7f2
+  classDef stop fill:#2c1717,stroke:#ff8585,color:#eef7f2
+  classDef observe fill:#161e1a,stroke:#567166,color:#c8d8d0,stroke-dasharray: 4 3
+
+  subgraph IN["INGRESS"]
+    C["Client / UI / API"]:::entry
+    A["approval signal<br/>pending_id"]:::entry
+    B["background result<br/>user steer"]:::entry
+  end
+
+  subgraph AR["AGENT RUNTIME · public facade"]
+    R["AgentRuntime<br/>run · submit · resume · recover"]:::entry
+    IQ[("Durable Inbox<br/>pending · claimed · admitted")]:::durable
+  end
+
+  subgraph AP["AGENT PLANE · intent only"]
+    L["react_loop<br/>plain async while"]:::planner
+    M["Chat Model"]:::planner
+    BF{"before_finish"}:::control
+    DONE(["done / stop"]):::stop
+  end
+
+  subgraph OR["ORCHESTRATOR · mediated execution"]
+    ER["execute_round"]:::control
+    RP["record_pending<br/>ordered tool requests"]:::durable
+    G{"pre_tool_use<br/>per call"}:::control
+    S["Stepped effect<br/>call_id = idempotency key"]:::durable
+    RV["on_resume<br/>current-policy revalidation"]:::control
+    TM["ToolMessage<br/>result · denied · cancelled"]:::planner
+    P[("Permission continuation<br/>worker = 0")]:::durable
+    X(["AgentSuspended<br/>worker exits"]):::stop
+  end
+
+  subgraph EX["EXECUTION PLANE"]
+    T["Tool executor<br/>sandbox · API · files"]:::effect
+  end
+
+  subgraph ST["DURABLE STATE"]
+    SL[("StepLog<br/>absent · running · done")]:::durable
+    RC["recover_pending<br/>reconstruct without model replay"]:::durable
+  end
+
+  subgraph OB["OBSERVABILITY"]
+    EV["EventStream<br/>observation only"]:::observe
+    AU["Audit · UI · Monitoring"]:::observe
+  end
+
+  C -->|"prompt"| R
+  B -->|"durable input"| R
+  R --> IQ
+  IQ -->|"claim + admit"| L
+  L --> M
+  M -->|"text only"| BF
+  BF -->|"Halt"| DONE
+  BF -->|"Proceed + steer"| IQ
+  M -->|"AIMessage(tool_calls)<br/>request ≠ execution"| ER
+  ER --> RP --> G
+  G -->|"Continue"| S
+  G -->|"Deny"| TM
+  G -->|"Suspend"| P --> X
+  A --> RV
+  P -. "stored request" .-> RV
+  RV -->|"Continue"| S
+  RV -->|"Deny"| TM
+  RV -->|"Suspend again"| P
+  S -->|"start"| SL
+  S --> T
+  T -->|"result"| SL
+  SL -->|"done result"| TM
+  TM --> IQ
+  RC -->|"read ordered calls"| RP
+  RC -->|"reuse done / inspect running"| SL
+  RP -.-> EV
+  G -.-> EV
+  T -.-> EV
+  DONE -.-> EV
+  EV --> AU
+        </pre>
+        <noscript>Mermaid 렌더링에는 JavaScript가 필요합니다.</noscript>
+      </div>
+      <div class="legend">
+        <span><i class="dot"></i>Public/runtime entry</span>
+        <span><i class="dot cyan"></i>Planner/model</span>
+        <span><i class="dot amber"></i>Typed control</span>
+        <span><i class="dot violet"></i>Durable state</span>
+        <span><i class="dot red"></i>Terminal attempt state</span>
+      </div>
+      <div class="rules">
+        <div class="rule"><b>NO SECOND ENGINE</b><span>LangGraph 실행 경로와 graph checkpointer가 없다.</span></div>
+        <div class="rule"><b>NO BATCH GATE</b><span>batch는 순서·동시성 실행 메커니즘일 뿐 lifecycle이 아니다.</span></div>
+        <div class="rule"><b>PER-CALL POLICY</b><span>각 tool request가 독립적으로 pre_tool_use를 통과한다.</span></div>
+        <div class="rule"><b>ONE EFFECT LEDGER</b><span>StepLog가 effect 복구의 단일 source of truth다.</span></div>
       </div>
     </section>
 
-    <main>
-      <section class="section">
-        <div class="section-head">
-          <div class="section-no">01 · Ownership</div>
-          <div>
-            <h2>하나의 플래너, 하나의 실행 경계</h2>
-            <p class="section-intro">AgentRuntime이 제품 표면을 제공한다. 플래너는 다음 의도를 결정하고, 외부 세계를 바꾸는 모든 effect는 Orchestrator의 mediated execution을 통과한다.</p>
-          </div>
+    <section id="approval" class="sequence">
+      <div class="section-head">
+        <div class="number">02 · Approval</div>
+        <div>
+          <h2>실행 전 승인과 worker 없는 재개</h2>
+          <p class="note"><code>PermissionRequest</code> 이벤트가 권한을 결정하지 않는다. awaited <code>pre_tool_use</code>가 Suspend를 반환하고, Orchestrator가 continuation을 저장한 뒤 attempt를 종료한다.</p>
         </div>
+      </div>
+      <div class="diagram-frame">
+        <div class="diagram-label">sequence · permission suspension and resume</div>
+        <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor U as User / Operator
+  participant M as Chat Model
+  participant L as react_loop
+  participant O as Orchestrator
+  participant C as ControlPlane
+  participant S as StepLog
+  participant T as Tool Executor
 
-        <div class="scroll">
-          <div class="architecture">
-            <div class="edge-column">
-              <div class="edge-card"><span class="label">Ingress</span><div><h3>Client / UI / API</h3><p>prompt · signal · approval · background result</p></div></div>
-              <div class="edge-card"><span class="label">Public facade</span><div><h3>AgentRuntime</h3><p>run · submit · resume · recover</p></div></div>
-            </div>
+  M->>L: AIMessage(tool_call=A)
+  Note over M,L: TOOL REQUEST — 아직 실행 아님
+  L->>O: execute_round(A)
+  O->>S: record_pending(A)
+  O->>C: pre_tool_use(ctx, A)
 
-            <div class="planes">
-              <div class="plane">
-                <div class="plane-label"><span>Agent plane</span><b>의도 결정 · 교체 가능</b></div>
-                <div class="nodes">
-                  <div class="node cyan"><span class="tag">Input</span><h4>Durable inbox</h4><p>claim → admit</p></div>
-                  <div class="node accent"><span class="tag">Planner</span><h4>react_loop</h4><p>plain async while</p></div>
-                  <div class="node"><span class="tag">Reason</span><h4>Chat model</h4><p>AIMessage + tool_calls</p></div>
-                  <div class="node amber"><span class="tag">Intent</span><h4>Tool request</h4><p>아직 실행 아님</p></div>
-                </div>
-                <p class="plane-caption">플래너 안에는 persistence program counter가 없다. 모델 호출, round 위임, 종료 판단만 남긴다.</p>
-              </div>
+  alt Continue
+    C-->>O: Continue
+    O->>S: start(call_id)
+    O->>T: execute(A)
+    T-->>O: normal text/error result
+    O->>S: finish(call_id, result)
+    O-->>L: ToolMessage(result)
+  else Deny
+    C-->>O: Deny(error)
+    O-->>L: ToolMessage(denied)
+  else Suspend
+    C-->>O: Suspend(permission request)
+    O->>S: persist continuation + active waiting
+    O-->>L: AgentSuspended
+    Note over L,O: worker 종료 · compute 0
+    U->>O: resolve(pending_id, answer)
+    O->>C: on_resume(answer + current rules)
+    alt approved under current policy
+      C-->>O: Continue
+      O->>S: start(call_id)
+      O->>T: execute(A)
+      T-->>O: normal result
+      O->>S: finish(call_id, result)
+      O-->>L: ToolMessage(result)
+    else denied or rules changed
+      C-->>O: Deny(error)
+      O-->>L: ToolMessage(denied)
+    end
+  end
 
-              <div class="plane">
-                <div class="plane-label"><span>Execution plane</span><b>정책 · 부작용 · 복구</b></div>
-                <div class="nodes">
-                  <div class="node violet"><span class="tag">Commit</span><h4>record_pending</h4><p>call order 먼저 기록</p></div>
-                  <div class="node amber"><span class="tag">Gate</span><h4>pre_tool_use</h4><p>Continue / Deny / Suspend</p></div>
-                  <div class="node accent"><span class="tag">Durable</span><h4>Stepped effect</h4><p>call_id = idempotency key</p></div>
-                  <div class="node"><span class="tag">Effect</span><h4>Tool executor</h4><p>sandbox / API / storage</p></div>
-                </div>
-                <p class="plane-caption">기본은 순차 실행. 배치의 모든 호출이 <code>is_concurrency_safe</code>를 선언할 때만 병렬 실행한다.</p>
-              </div>
+  Note over O,T: 도구가 type=suspend를 반환하는 것은 InvalidToolResult
+        </pre>
+      </div>
+    </section>
 
-              <div class="plane">
-                <div class="plane-label"><span>State plane</span><b>성장하는 transcript와 작은 원장 분리</b></div>
-                <div class="nodes">
-                  <div class="node cyan"><span class="tag">Inputs</span><h4>Input ledger</h4><p>pending / claimed / admitted</p></div>
-                  <div class="node violet"><span class="tag">Effects</span><h4>StepLog</h4><p>absent / running / done</p></div>
-                  <div class="node amber"><span class="tag">Wait</span><h4>Continuation</h4><p>permission snapshot</p></div>
-                  <div class="node"><span class="tag">Audit</span><h4>Event stream</h4><p>UI / monitoring / journal</p></div>
-                </div>
-                <p class="plane-caption">StepLog는 외부 effect 원장이다. 전체 대화는 별도 transcript 경계이며 매 effect마다 복사하지 않는다.</p>
-              </div>
-            </div>
-
-            <div class="edge-column">
-              <div class="edge-card"><span class="label">Consumers</span><div><h3>Audit / UI</h3><p>typed lifecycle events · one emission point</p></div></div>
-              <div class="edge-card"><span class="label">External world</span><div><h3>Effects</h3><p>files · network · delegation · sandbox</p></div></div>
-            </div>
-          </div>
+    <section id="control">
+      <div class="section-head">
+        <div class="number">03 · Control plane</div>
+        <div>
+          <h2>Control, Signal, Event는 서로 다른 채널이다</h2>
+          <p class="note">같은 lifecycle 시점을 공유해도 운반하는 의미가 다르다. 결정은 typed return, 외부 답은 durable input, 이벤트는 감사 가능한 observation이다.</p>
         </div>
+      </div>
+      <div class="diagram-frame">
+        <div class="diagram-label">flowchart · three-lane runtime contract</div>
+        <pre class="mermaid">
+flowchart TB
+  classDef source fill:#12251b,stroke:#68f59c,color:#eef7f2
+  classDef signal fill:#102129,stroke:#66ddec,color:#eef7f2,stroke-width:1.4px
+  classDef control fill:#292315,stroke:#ffcb72,color:#eef7f2,stroke-width:1.4px
+  classDef event fill:#201d31,stroke:#b6a3ff,color:#eef7f2,stroke-width:1.4px
+  classDef sink fill:#151b18,stroke:#71847a,color:#cbd9d2
+  classDef deny fill:#2c1717,stroke:#ff8585,color:#eef7f2
 
-        <div class="ownership-grid">
-          <div class="note-card"><span class="tag">Agent owns</span><h3>다음 행동의 의도</h3><p>모델 입력 구성, tool request 발견, round 결과 흡수, continue/return.</p></div>
-          <div class="note-card"><span class="tag">Orchestrator owns</span><h3>실행과 내구성</h3><p>정책 판정, pending 기록, effect dispatch, suspension, resume, crash recovery.</p></div>
-          <div class="note-card"><span class="tag">Caller owns</span><h3>실제 권한과 환경</h3><p>도구 정의, 정책 규칙, authority, sandbox, provider와 transport.</p></div>
+  SRC["External sources<br/>user · approval · task · subagent · webhook"]:::source
+  BOUND["Runtime boundary<br/>the real action owner"]:::source
+
+  subgraph SIG["SIGNAL LANE · durable external input"]
+    SI["submit(input_id)<br/>prompt · steer · background result"]:::signal
+    RS["resolve(pending_id)<br/>approval · elicitation result"]:::signal
+    IN[("Inbox / Continuation")]:::signal
+  end
+
+  subgraph CTL["CONTROL LANE · awaited typed return"]
+    OI["on_inputs<br/>inputs | Halt"]:::control
+    BM["before_model<br/>Proceed | Halt"]:::control
+    PT["pre_tool_use<br/>Continue | Deny | Suspend"]:::control
+    AT["after_tool_call<br/>None / raise"]:::control
+    BF2["before_finish<br/>Proceed | Halt"]:::control
+    OR2["on_resume<br/>ToolDecision"]:::control
+  end
+
+  subgraph EVT["EVENT LANE · observation only"]
+    ES["EventStream<br/>stable event_id · sequence"]:::event
+    SCOPE["Event scope<br/>session · thread · run · turn · actor"]:::event
+    SINK["UI · Audit · Monitoring · Outbox"]:::sink
+    VOID["subscriber return ignored"]:::deny
+  end
+
+  SRC --> SI --> IN
+  SRC --> RS --> IN
+  IN --> OI --> BM
+  BOUND --> PT
+  BOUND --> AT
+  BOUND --> BF2
+  IN --> OR2
+
+  OI -->|"decision"| BOUND
+  BM -->|"decision"| BOUND
+  PT -->|"decision"| BOUND
+  AT -->|"journal complete"| BOUND
+  BF2 -->|"decision"| BOUND
+  OR2 -->|"decision"| BOUND
+
+  BOUND -. "publish fact after/beside decision" .-> ES
+  SCOPE --> ES --> SINK --> VOID
+  VOID -. "NO authority path" .-x BOUND
+        </pre>
+      </div>
+
+      <div class="event-list">
+        <div class="event-group"><h3>Tool · Permission</h3><div class="chips"><span class="chip control">PreToolUse</span><span class="chip">PostToolUse</span><span class="chip">PostToolUseFailure</span><span class="chip">PermissionRequest</span><span class="chip">PermissionDenied</span></div></div>
+        <div class="event-group"><h3>Session · Turn</h3><div class="chips"><span class="chip">SessionStart</span><span class="chip">SessionEnd</span><span class="chip">Setup</span><span class="chip">UserPromptSubmit</span><span class="chip">Stop</span><span class="chip">StopFailure</span><span class="chip">Notification</span></div></div>
+        <div class="event-group"><h3>Context · Workspace</h3><div class="chips"><span class="chip">ConfigChange</span><span class="chip">CwdChanged</span><span class="chip">InstructionsLoaded</span><span class="chip control">PreCompact</span><span class="chip">PostCompact</span><span class="chip">FileChanged</span><span class="chip">WorktreeCreate</span><span class="chip">WorktreeRemove</span></div></div>
+        <div class="event-group"><h3>Agent · Task · Input</h3><div class="chips"><span class="chip">SubagentStart</span><span class="chip">SubagentStop</span><span class="chip">TaskCreated</span><span class="chip">TaskCompleted</span><span class="chip">TeammateIdle</span><span class="chip control">Elicitation</span><span class="chip">ElicitationResult</span></div></div>
+      </div>
+      <div class="warning"><strong>Batch 전용 이벤트와 control point는 없다.</strong> 여러 호출은 각각 <code>PreToolUse → PostToolUse/PostToolUseFailure</code>를 가진다. call order는 pending round와 StepLog가 보존하고, 동시성은 <code>Concurrent</code>가 모든 호출의 <code>is_concurrency_safe</code> 선언을 보고 결정한다.</div>
+    </section>
+
+    <section id="recovery" class="compact">
+      <div class="section-head">
+        <div class="number">04 · Recovery</div>
+        <div>
+          <h2>Effect 상태와 복구 결정</h2>
+          <p class="note">graph program counter 대신 호출별 effect 상태를 읽는다. 완료 결과는 재사용하고, 실행 중 장애창은 정확히 모른다고 표시하며, 승인 대기는 worker 없이 continuation으로 남는다.</p>
         </div>
-      </section>
+      </div>
+      <div class="diagram-frame">
+        <div class="diagram-label">flowchart · durable effect states</div>
+        <pre class="mermaid">
+flowchart LR
+  classDef idle fill:#151b18,stroke:#71847a,color:#eef7f2
+  classDef active fill:#292315,stroke:#ffcb72,color:#eef7f2,stroke-width:1.4px
+  classDef durable fill:#201d31,stroke:#b6a3ff,color:#eef7f2,stroke-width:1.4px
+  classDef success fill:#12251b,stroke:#68f59c,color:#eef7f2,stroke-width:1.4px
+  classDef failure fill:#2c1717,stroke:#ff8585,color:#eef7f2
+  classDef note fill:#102129,stroke:#66ddec,color:#d7eef2,stroke-dasharray:4 3
 
-      <section class="section">
-        <div class="section-head">
-          <div class="section-no">02 · Tool semantics</div>
-          <div>
-            <h2>요청 기록과 실제 실행을 분리한다</h2>
-            <p class="section-intro">모델의 <code>AIMessage(tool_call=A)</code>는 실행 증거가 아니다. 권한 게이트는 요청과 executor 사이에 있고, 모든 요청은 최종적으로 대응하는 <code>ToolMessage</code>를 가져야 한다.</p>
-          </div>
-        </div>
+  START(("model request")):::idle --> ABSENT["ABSENT<br/>safe to execute"]:::idle
+  ABSENT -->|"StepLog.start(call_id)"| RUNNING["RUNNING<br/>effect intent recorded"]:::active
+  RUNNING -->|"result committed"| DONE["DONE<br/>durable result"]:::success
+  DONE -->|"recover_pending"| RESTORED["RESTORED<br/>ToolMessage reconstructed"]:::success
+  RESTORED --> END(("continue agent")):::idle
 
-        <div class="equation"><b>TOOL REQUEST</b> ≠ TOOL EXECUTION &nbsp;·&nbsp; <b>pre_tool_use</b> → decision → effect</div>
+  RUNNING -->|"worker dies before commit"| INDET["INDETERMINATE<br/>do not blindly retry"]:::failure
+  INDET -->|"reconcile / same idempotency key"| RUNNING
+  INDET -.-> WINDOW["External effect success ↔ result commit<br/>checkpointer도 증명하지 못하는 장애창"]:::note
 
-        <div class="flow-grid">
-          <article class="flow-card">
-            <div class="flow-title"><h3>허용 경로</h3><span class="status green">executed</span></div>
-            <ol class="steps">
-              <li><code>AIMessage(tool_call)</code>모델의 실행 의도 기록</li>
-              <li><code>record_pending</code>호출 순서를 effect보다 먼저 커밋</li>
-              <li><code>pre_tool_use → Continue</code>정책과 권한을 실행 직전에 판정</li>
-              <li><code>running → executor → done</code>call id로 내구성 있게 실행</li>
-              <li><code>post_tool_use + ToolMessage</code>실제 결과를 transcript에 주입</li>
-            </ol>
-          </article>
-
-          <article class="flow-card">
-            <div class="flow-title"><h3>승인 대기</h3><span class="status amber">suspended</span></div>
-            <ol class="steps">
-              <li><code>pre_tool_use → Suspend</code>도구는 아직 실행되지 않음</li>
-              <li><code>persist continuation</code>call, request, snapshot, rules version 저장</li>
-              <li><code>AgentSuspended</code>worker를 종료하고 compute 0으로 대기</li>
-              <li><code>signal → on_resume</code>승인을 권한으로 믿지 않고 현재 규칙 재검증</li>
-              <li><code>execute or deny</code>허용된 경우에만 effect와 post event 발생</li>
-            </ol>
-          </article>
-
-          <article class="flow-card">
-            <div class="flow-title"><h3>새 요청 전환</h3><span class="status red">cancelled</span></div>
-            <ol class="steps">
-              <li><code>new HumanMessage</code>interactive wait 중 새 입력 도착</li>
-              <li><code>ToolMessage(code=cancelled)</code>답 없는 tool request를 먼저 닫음</li>
-              <li><code>effect step = done(cancelled)</code>늦은 승인이 실행하지 못하게 차단</li>
-              <li><code>HumanMessage admit</code>취소 결과 뒤에 새 요청을 원자적으로 정렬</li>
-              <li><code>same run resumes</code>run fork 없이 최신 지시로 전환</li>
-            </ol>
-          </article>
-        </div>
-
-        <div class="callout">
-          <div class="callout-mark">!</div>
-          <p><strong>도구 결과의 <code>type: suspend</code>는 금지된다.</strong> 승인은 실행 전 권한 개념이다. 일반 도구가 예약된 결과를 반환하면 <code>InvalidToolResult</code>로 실패하며 완료 effect로 기록되지 않는다. 과거 tool-originated suspension도 권한 승인으로 재해석하지 않고 fail-closed 한다.</p>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head">
-          <div class="section-no">03 · Durable recovery</div>
-          <div>
-            <h2>체크포인트가 아니라 effect 원장으로 복구한다</h2>
-            <p class="section-intro">외부 effect 성공과 상태 저장 사이의 장애창은 graph checkpointer도 제거하지 못한다. Nexora는 StepLog, call-id 멱등성, 순서 결정성, lease/fencing을 복구 계약으로 사용한다.</p>
-          </div>
-        </div>
-
-        <div class="durability-grid">
-          <div class="ledger-card">
-            <div class="state-row"><span class="state-name">ABSENT</span><span class="state-arrow">→</span><div class="state-copy"><strong>실행 가능</strong>아직 effect intent가 없음</div></div>
-            <div class="state-row"><span class="state-name">RUNNING</span><span class="state-arrow">→</span><div class="state-copy"><strong>불확정 구간</strong>재조정 또는 같은 idempotency key 필요</div></div>
-            <div class="state-row"><span class="state-name">DONE</span><span class="state-arrow">→</span><div class="state-copy"><strong>결과 재사용</strong>도구와 모델을 다시 실행하지 않음</div></div>
-            <div class="state-row"><span class="state-name">WAITING</span><span class="state-arrow">→</span><div class="state-copy"><strong>worker 없음</strong>승인 signal까지 continuation만 존속</div></div>
-          </div>
-
-          <div class="ledger-card">
-            <table>
-              <thead><tr><th>장애 시점</th><th>원장에 보이는 것</th><th>복구 행동</th></tr></thead>
-              <tbody>
-                <tr><td>모델이 호출을 낸 직후</td><td>pending round + ordered calls</td><td><code>recover_pending</code>이 모델 턴을 재호출하지 않고 호출별 상태를 조회</td></tr>
-                <tr><td>도구 실행 전</td><td>effect absent</td><td>정책을 다시 평가하고 순서대로 실행</td></tr>
-                <tr><td>도구 실행 도중</td><td>effect running</td><td>무작정 재실행하지 않고 <code>Indeterminate</code>; idempotency/reconciliation 필요</td></tr>
-                <tr><td>도구 결과 커밋 후</td><td>effect done + result</td><td>저장된 ToolMessage 결과를 복원하고 다음 호출로 이동</td></tr>
-                <tr><td>권한 대기 중</td><td>active continuation waiting</td><td><code>pending_id</code>로 답을 라우팅하고 현재 정책으로 재검증</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="callout">
-          <div class="callout-mark">×</div>
-          <p><strong>LangGraph 실행 경로는 ADR-005에서 철회됐다.</strong> StepLog와 recover_pending이 양쪽 모두 필요했기 때문에 graph program counter는 두 번째 내구성 추론만 추가했다. 현재 source of truth는 StepLog 하나이며 gate 재평가는 허용하되 완료 effect는 재실행하지 않는다.</p>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-head">
-          <div class="section-no">04 · Event surface</div>
-          <div>
-            <h2>결정, 신호, 관측을 세 경로로 분리한다</h2>
-            <p class="section-intro">이벤트 subscriber의 반환값으로 실행을 제어하지 않는다. load-bearing 결정은 awaited typed ControlPlane, 외부 답은 durable inbox/signal, EventStream은 발생한 사실의 관측만 담당한다.</p>
-          </div>
-        </div>
-
-        <div class="control-map">
-          <div class="control-lane control">
-            <span class="status amber">Control · awaited</span>
-            <h3>흐름을 바꾸는 결정</h3>
-            <p>호출자가 반환값을 직접 받고 즉시 다음 transition을 선택한다. 각 지점은 서로 다른 reducer 규칙을 가진다.</p>
-            <div class="lane-list">
-              <div class="lane-item"><code>on_inputs → inputs | Halt</code><span>입력 mask/rewrite/drop 후 context admission</span></div>
-              <div class="lane-item"><code>before_model → Proceed | Halt</code><span>steer 누적 또는 모델 호출 중단</span></div>
-              <div class="lane-item"><code>pre_tool_use → Continue | Deny | Suspend</code><span>Deny 우선, Suspend 보존, allow는 short-circuit 아님</span></div>
-              <div class="lane-item"><code>after_tool_call → None / raise</code><span>모든 journal writer 실행, 실패는 fail-closed</span></div>
-              <div class="lane-item"><code>before_finish → Proceed | Halt</code><span>검증기가 완료를 취소하거나 종료를 확정</span></div>
-              <div class="lane-item"><code>on_resume → ToolDecision</code><span>승인 답을 현재 정책 아래 재검증</span></div>
-            </div>
-          </div>
-
-          <div class="control-lane signal">
-            <span class="status green">Signal · durable input</span>
-            <h3>실행을 다시 깨우는 입력</h3>
-            <p>프로세스 밖에서 도착하며 유실되면 안 된다. 먼저 durable inbox/continuation에 기록하고 planner가 순서대로 claim한다.</p>
-            <div class="lane-list">
-              <div class="lane-item"><code>user_prompt / user_steer</code><span>UserPromptSubmit → admission 시 ContextInjected</span></div>
-              <div class="lane-item"><code>approval(pending_id)</code><span>active continuation의 resolve로만 라우팅</span></div>
-              <div class="lane-item"><code>elicitation_result(request_id)</code><span>일반 사용자 입력 결과; permission과 별도 계약</span></div>
-              <div class="lane-item"><code>task / subagent result</code><span>background ToolMessage 또는 typed context input</span></div>
-              <div class="lane-item"><code>interactive replacement</code><span>cancel ToolMessage 뒤에 새 HumanMessage 원자 정렬</span></div>
-            </div>
-          </div>
-
-          <div class="control-lane observe">
-            <span class="status" style="color:var(--violet);background:var(--violet-dim)">Event · observe</span>
-            <h3>감사와 UI를 위한 사실</h3>
-            <p>결정 전후의 정확한 시점에 한 번 발행한다. sink 실패는 실행 권한을 바꾸지 않으며 stable event_id로 dedupe한다.</p>
-            <div class="lane-list">
-              <div class="lane-item"><code>PreToolUse</code><span>gate 지점 도달; 권한은 Controls가 결정</span></div>
-              <div class="lane-item"><code>PermissionRequest / Denied</code><span>결정 결과를 관측, subscriber 답은 무시</span></div>
-              <div class="lane-item"><code>PostToolUse / Failure</code><span>effect가 실제로 끝난 뒤에만 발행</span></div>
-              <div class="lane-item"><code>Session / Task / Worktree</code><span>해당 action의 실제 owner가 경계에서 발행</span></div>
-              <div class="lane-item"><code>Stop / StopFailure</code><span>attempt의 terminal observation</span></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="envelope">
-          <div class="ledger-card">
-<pre>// TARGET CONTRACT · scope fields are the next schema change
-EventEnvelope {
-  // identity — always present
-  session_id, thread_id, run_id,
-  sequence, event_id,
-
-  // execution scope — snapshotted
-  transcript_path, cwd,
-  permission_mode?,
-
-  // actor — subagent only
-  agent_id?, agent_type?,
-
-  // correlation
-  turn_id?, payload
-}</pre>
-          </div>
-          <div class="ledger-card">
-            <span class="status amber">Target EventScope</span>
-            <div class="scope-list">
-              <div class="scope-item"><b>Identity</b><span><code>session_id</code>는 세션, <code>thread_id</code>는 transcript 계보, <code>run_id</code>는 한 durable 실행을 식별한다.</span></div>
-              <div class="scope-item"><b>Snapshot · to add</b><span><code>cwd</code>, <code>permission_mode</code>, <code>transcript_path</code>는 emit 시점 값을 envelope에 고정한다.</span></div>
-              <div class="scope-item"><b>Actor</b><span>메인 스레드와 <code>--agent</code> 세션은 <code>agent_id=null</code>. 내부 subagent 호출에만 id/type을 넣는다.</span></div>
-              <div class="scope-item"><b>Correlation</b><span><code>call_id</code>, <code>task_id</code>, <code>request_id</code>는 event별 payload에 둔다. 모든 이벤트에 빈 필드를 반복하지 않는다.</span></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="event-grid">
-          <div class="event-group"><h3>Tool · Permission</h3><div class="chips"><span class="chip blocking">PreToolUse</span><span class="chip">PostToolUse</span><span class="chip">PostToolUseFailure</span><span class="chip blocking">PermissionRequest</span><span class="chip">PermissionDenied</span><span class="chip">ToolRequestCancelled</span></div></div>
-          <div class="event-group"><h3>Session · Turn</h3><div class="chips"><span class="chip">SessionStart</span><span class="chip">SessionEnd</span><span class="chip">Setup</span><span class="chip">UserPromptSubmit</span><span class="chip">Stop</span><span class="chip">StopFailure</span><span class="chip">Notification</span></div></div>
-          <div class="event-group"><h3>Context · Workspace</h3><div class="chips"><span class="chip">ConfigChange</span><span class="chip">CwdChanged</span><span class="chip">InstructionsLoaded</span><span class="chip">PreCompact</span><span class="chip">PostCompact</span><span class="chip">FileChanged</span><span class="chip">WorktreeCreate</span><span class="chip">WorktreeRemove</span></div></div>
-          <div class="event-group"><h3>Agent · Task · Input</h3><div class="chips"><span class="chip">SubagentStart</span><span class="chip">SubagentStop</span><span class="chip">TaskCreated</span><span class="chip">TaskCompleted</span><span class="chip">TeammateIdle</span><span class="chip blocking">Elicitation</span><span class="chip">ElicitationResult</span></div></div>
-        </div>
-        <div class="event-rule"><strong><code>BLOCKING</code>은 “이 이벤트를 await해서 답을 받는다”는 뜻이 아니다.</strong> 결정 지점과 대응하는 관측 이벤트라는 표시일 뿐이다. 이름은 장기적으로 <code>CONTROL_MIRRORS</code> 또는 event metadata의 <code>phase=decision_point</code>로 바꾸는 편이 정확하다. 일반 Elicitation도 permission이 아니며, 실행 차단은 typed control method와 durable suspension에서만 발생한다.</div>
-      </section>
-
-      <section class="section">
-        <div class="section-head">
-          <div class="section-no">05 · Code map</div>
-          <div>
-            <h2>구현 위치와 고정 불변식</h2>
-            <p class="section-intro">파일 경계가 소유권 경계와 일치한다. 새 제어 지점은 loop를 graph로 바꾸는 대신 typed ControlPlane hook과 중앙 실행 경계에 추가한다.</p>
-          </div>
-        </div>
-
-        <div class="bottom-grid">
-          <div class="code-card">
-<pre class="tree">src/nexora/
-├── runtime.py             public AgentRuntime · input routing
-├── engines/plain/
-│   └── loop.py            model → execute_round → stop
-├── orchestrator.py        StepLog · lease/fencing · recover/resume
-├── steps_postgres.py      durable ledger transaction
-├── tools.py               pre-tool gate · Stepped · Concurrent
-├── controls.py            typed decisions and middleware composition
-├── history.py             continuation / ToolMessage protocol codec
-├── contracts/
-│   ├── types.py           hooks · messages · tool contracts
-│   └── events.py          lifecycle vocabulary
-└── ui/                    local OpenRouter verification console</pre>
-          </div>
-
-          <div class="code-card">
-            <div class="rules">
-              <div class="rule"><b>01</b><span>모든 외부 tool effect는 Orchestrator를 통과한다.</span></div>
-              <div class="rule"><b>02</b><span>권한 대기는 실행 전이며 worker를 붙잡지 않는다.</span></div>
-              <div class="rule"><b>03</b><span>모든 tool request는 결과·거부·취소 중 하나의 ToolMessage로 닫힌다.</span></div>
-              <div class="rule"><b>04</b><span>재시도 안전성은 call-id 멱등성과 배치 순서 결정성을 함께 요구한다.</span></div>
-              <div class="rule"><b>05</b><span>StepLog가 effect 복구의 유일한 source of truth다.</span></div>
-              <div class="rule"><b>06</b><span>planner에는 권한 정책과 별도 checkpointer를 넣지 않는다.</span></div>
-              <div class="rule"><b>07</b><span>batch는 실행 최적화 단위다. pre/post batch 이벤트와 control point를 만들지 않는다.</span></div>
-            </div>
-            <div class="roadmap">
-              <h4>Explicitly not hidden</h4>
-              <p>자동 transcript persistence, 실제 compaction 처리, attachments는 아직 별도 과제다. 현재 crash recovery는 durable transcript를 호출자가 명시적으로 제공한다.</p>
-            </div>
-          </div>
-        </div>
-      </section>
-    </main>
-  </div>
+  ABSENT -->|"pre_tool_use = Suspend"| WAITING["WAITING<br/>continuation persisted"]:::durable
+  WAITING -->|"approved + current policy Continue"| ABSENT
+  WAITING -->|"new interactive input"| CANCELLED["CANCELLED<br/>ToolMessage(code=cancelled)"]:::failure
+  WAITING -->|"answer / rules deny"| DENIED["DENIED<br/>ToolMessage(error)"]:::failure
+  WAITING -.-> ZERO["Worker / compute = 0"]:::note
+  CANCELLED --> CLOSED(("closed")):::idle
+  DENIED --> CLOSED
+        </pre>
+      </div>
+    </section>
+  </main>
 
   <footer>
     <div class="shell"><span>NEXORA · DURABLE AGENT RUNTIME</span><span>ADR-002 · ADR-005 · ADR-006</span></div>
   </footer>
+
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: "Inter, Pretendard, Apple SD Gothic Neo, sans-serif",
+      themeVariables: {
+        darkMode: true,
+        background: "#0f1412",
+        primaryColor: "#151b18",
+        primaryTextColor: "#eef7f2",
+        primaryBorderColor: "#4b6156",
+        lineColor: "#71847a",
+        secondaryColor: "#102129",
+        tertiaryColor: "#201d31",
+        clusterBkg: "#0c110f",
+        clusterBorder: "#29362f",
+        noteBkgColor: "#292315",
+        noteBorderColor: "#ffcb72",
+        noteTextColor: "#eef7f2",
+        actorBkg: "#151b18",
+        actorBorder: "#4b6156",
+        actorTextColor: "#eef7f2",
+        signalColor: "#91a39a",
+        signalTextColor: "#eef7f2",
+        labelBoxBkgColor: "#0f1412",
+        labelBoxBorderColor: "#4b6156",
+        labelTextColor: "#eef7f2",
+        loopTextColor: "#eef7f2",
+        activationBkgColor: "#201d31",
+        activationBorderColor: "#b6a3ff",
+        sequenceNumberColor: "#090c0b"
+      },
+      flowchart: { curve: "basis", htmlLabels: true, nodeSpacing: 34, rankSpacing: 52, useMaxWidth: false },
+      sequence: { useMaxWidth: false, wrap: true, diagramMarginX: 30, actorMargin: 52 },
+      state: { useMaxWidth: false }
+    });
+
+    // Render each DSL into its own SVG. `mermaid.run()` can reuse the flowchart database across
+    // multiple mixed diagrams; the explicit render API gives every graph a fresh unique id.
+    const diagrams = [...document.querySelectorAll(".mermaid")];
+    for (const [index, diagram] of diagrams.entries()) {
+      const source = diagram.textContent.trim();
+      const renderId = `nexora-diagram-svg-${index + 1}`;
+      const { svg, bindFunctions } = await mermaid.render(renderId, source);
+      diagram.id = `nexora-diagram-${index + 1}`;
+      diagram.innerHTML = svg;
+      bindFunctions?.(diagram);
+    }
+  </script>
 </body>
 </html>

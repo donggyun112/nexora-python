@@ -20,10 +20,10 @@ classifiers = [
 dependencies = [
   "langchain-core>=1,<2",
   "loguru>=0.7,<1",
-  "psycopg[binary,pool]>=3.3,<4",
 ]
 
 [project.optional-dependencies]
+postgres = ["psycopg[binary,pool]>=3.3,<4"]
 ui = [
     "fastapi>=0.116,<1",
     "langchain-openai>=0.3,<2",

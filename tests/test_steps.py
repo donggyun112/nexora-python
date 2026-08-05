@@ -279,7 +279,12 @@ async def test_a_signal_is_a_step_that_only_an_outsider_can_finish() -> None:
 
 
 async def test_the_postgres_log_matches_the_protocol() -> None:
-    """Shape only. No test here connects to a database — see the module docstring."""
+    """Shape only. No test here connects to a database — see the module docstring.
+
+    Skipped when the `postgres` extra is not installed: psycopg stopped being a hard dependency
+    when the store became substitutable, so a default install must not fail this file.
+    """
+    pytest.importorskip("psycopg")
     from nexora.steps_postgres import SCHEMA, PostgresSteps
 
     assert issubclass(PostgresSteps, object)

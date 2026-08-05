@@ -50,34 +50,57 @@
 - **호출별 멱등성** — 같은 `tool_call.id`로 두 번 실행돼도 한 번의 효과
 - **배치 순서 결정성** — 재시도가 같은 순서로 실행
 
+## 추가 근거 — durable replay의 전제조건이기도 하다 (2026-08-03)
+
+루프가 durable orchestrator의 스텝이 되면([ADR-003 §5](adr-003-no-langgraph.md)), 리플레이는
+**스텝 시퀀스가 동일해야** 성립한다. 배치 순서가 실행마다 달라지면 스텝 호출 순서가 달라지고
+리플레이가 깨진다.
+
+그래서 순서 결정성은 재시도 안전성 하나가 아니라 **둘**을 위한 요건이다. 이 ADR의 논거가
+`is_concurrency_safe` 구현 여부와 무관하게 성립하는 이유이기도 하다 — 지금 순차인 것은 미구현의
+결과가 아니라 요건이다.
+
 ## ADR-001에 주는 영향
 
 이것이 `engines/plain`을 남기는 첫 번째 **정확성** 근거다. 그전까지의 근거는 가독성뿐이었다.
 
-LangGraph의 `ToolNode`는 배치를 **항상** `asyncio.gather`로 돌리고
-([tool_node.py:858](https://github.com/langchain-ai/langgraph/blob/main/libs/prebuilt/langgraph/prebuilt/tool_node.py))
-순차 옵션이 없다. Python 저장소에 해당 이슈조차 없고, JS 쪽에만
-[#303](https://github.com/langchain-ai/langgraphjs/issues/303) ·
-[#861](https://github.com/langchain-ai/langgraphjs/issues/861)이 열려 있다.
+> **정정 (2026-08-03).** 이 절은 *"`ToolNode`에 순차 옵션이 없다"*와 *"공유 락으로 순차가 된다"*로
+> 적혀 있었다. **둘 다 틀렸다.** 재측정 전문은
+> [ADR-003 §정정 기록](adr-003-no-langgraph.md#정정-기록-2026-08-03).
 
-`wrap_tool_call`에서 공유 `asyncio.Lock`을 잡으면 순차가 되는 것은 실측으로 확인했다
-(`start a / end a / SUSPEND b / BLOCKED c`). 하지만:
+직접 `ToolNode`의 async 경로가 `RunnableConfig.max_concurrency`를 무시하는 것은 사실이고
+([langgraph#8517](https://github.com/langchain-ai/langgraph/issues/8517)), 그건 우리가 올린
+버그다. 하지만 `create_agent`는 라운드를 호출당 하나의 `Send`로 팬아웃하고 그래프 실행기가
+세마포어로 게이팅하므로 **그 경로는 `max_concurrency=1`을 지킨다** — 실측. 순차는 config 한 줄로
+얻는다.
 
-- 기본값이 순차라면 **거의 모든 호출이 락을 잡는다.** `ToolNode`의 병렬성은 실질적으로 안 쓰인다.
-- 그러면서 `ToolNode`가 `gather`를 쓰고 `wrap_tool_call`이 그 안에서 불린다는 **문서화되지 않은
-  구현 세부**에 의존하게 된다.
+공유 락은 대안이 아니다. 순서는 복구하지만 `execute_batch`가 안 불려 **배치 단위 옵트인 병렬을
+잃고**, 게이트-먼저 불변식도 복구하지 못한다. 플래그 조건부 락은 직렬화 자체가 안 된다 — safe
+도구가 락을 안 잡으므로 unsafe가 경합 없이 획득해 그냥 병렬로 돈다.
 
-즉 프레임워크의 기본값을 매 호출 뒤집으면서, 그 대가로 아무것도 얻지 않는다.
+남는 진짜 문제는 `gather`가 아니라 **팬아웃 위치**다. 배치가 노드에 닿기 전에 엣지에서 해체되어
+`ToolNode._afunc`가 호출을 하나씩 받는다(실측: 3개 라운드에서 1개씩 3번). 그래서 배치 단위 정책이
+들어갈 자리가 없다. [ADR-003 §4](adr-003-no-langgraph.md) 참조.
 
 ## 대가
 
 - 순차가 기본이면 **느리다.** 읽기 전용 도구 여러 개를 동시에 돌리는 흔한 이득을 놓친다.
   → 완화: `is_concurrency_safe`를 선언한 도구들끼리는 묶어서 병렬로.
-- `is_concurrency_safe`가 아직 구현돼 있지 않다. 현재 `tools.execute_calls`는 `execute_batch`가
-  없으면 무조건 순차이며, 이 ADR은 그 기본값을 정당화할 뿐 병렬 경로를 아직 만들지 않았다.
+- ~~`is_concurrency_safe`가 아직 구현돼 있지 않다.~~ **구현됐다 (2026-08-04)** —
+  `tools.Concurrent`가 그 실행기다. 도구 정의를 감싸 배치를 받고, 그 배치의 **모든** 호출이
+  선언했을 때만 `gather`로 돌린다.
+
+  전부-아니면-전무로 만든 것이 결정이다. 그래야 플래그가 도구 저자가 실제로 판단할 수 있는
+  주장이 된다 — *"같이 선언한 다른 것 옆에서 안전"*이지, 가능한 모든 이웃에 대한 주장이 아니다.
+  그리고 단항 플래그로 표현할 수 없는 경우를 비켜간다: 같은 쓰기 도구를 두 번 부르는 배치는
+  각각은 괜찮고 둘이 같이는 안 괜찮다.
+
+  남은 것: 그루핑이 없다. safe 읽기 다섯 + 쓰기 하나면 여섯 개가 다 하나씩 돈다. `Concurrent`가
+  그 이음매고, 혼합 배치가 흔하다는 게 실측되면 그때 넣는다.
 
 ## 뒤집힐 조건
 
-- `ToolNode`에 순차/동시성 정책 옵션이 생기면, LangGraph 채택의 이 걸림돌이 사라진다.
+- `create_agent`의 model→tools 엣지가 **배치 그룹**을 받게 되면 이 걸림돌이 사라진다. `ToolNode`에
+  옵션이 생기는 것으로는 부족하다 — 배치가 노드에 오지 않는다.
 - 배치 안에서 자원 충돌을 정적으로 판정할 수 있게 되면(도구가 접근 범위를 선언한다든지), 순서
   결정성 없이도 안전한 병렬이 가능해진다.

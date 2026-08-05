@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nexora-python 구조도</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --color-paper:  #f5f5f5;
+      --color-ink:    #2d3142;
+      --color-muted:  #4f5d75;
+      --color-soft:   #7a8399;
+      --color-rule:   rgba(45,49,66,0.12);
+      --color-accent: #eb6c36;
+      --font-sans:  'Geist', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
+      --font-serif: 'Instrument Serif', 'Apple SD Gothic Neo', serif;
+      --font-mono:  'Geist Mono', ui-monospace, Menlo, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      padding: 3rem 2rem;
+      color: var(--color-ink);
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2.5rem; }
+
+    .header-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.75rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.75rem, 3vw + 1rem, 2.5rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+      margin-bottom: 0.5rem;
+    }
+
+    h2 { font-family: var(--font-serif); font-size: 1.375rem; font-weight: 400; margin-bottom: 0.25rem; }
+
+    .subtitle { font-size: 1rem; line-height: 1.55; color: var(--color-muted); max-width: 60ch; }
+    .section { margin-top: 3rem; }
+
+    .section-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--color-soft);
+      margin-bottom: 0.5rem;
+    }
+
+    .section-note {
+      font-size: 0.875rem; color: var(--color-muted);
+      margin-bottom: 1.25rem; max-width: 68ch; line-height: 1.6;
+    }
+
+    .diagram-container { overflow-x: auto; }
+    svg { width: 100%; min-width: 900px; display: block; }
+
+    .cards { display: grid; grid-template-columns: 1.1fr 1fr 0.95fr; gap: 1rem; margin-top: 2rem; }
+    @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } }
+
+    .card {
+      background: #ffffff; border-radius: 6px;
+      border: 1px solid var(--color-rule); padding: 1.25rem;
+    }
+
+    .eyebrow {
+      font-family: var(--font-mono); font-size: 0.62rem;
+      letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--color-soft); margin-bottom: 0.6rem;
+    }
+
+    .card-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      margin-bottom: 0.875rem; padding-bottom: 0.875rem;
+      border-bottom: 1px solid rgba(45,49,66,0.08);
+    }
+
+    .card-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .card-dot.ink { background: var(--color-ink); }
+    .card-dot.coral { background: var(--color-accent); }
+    .card-dot.soft { background: var(--color-soft); }
+
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: var(--color-muted); font-size: 0.8125rem; line-height: 1.55; }
+    .card li { margin-bottom: 0.35rem; padding-left: 0.875rem; position: relative; }
+    .card li::before {
+      content: '—'; position: absolute; left: 0;
+      color: rgba(45,49,66,0.25); font-size: 0.75rem;
+    }
+    .card code { font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-ink); }
+
+    .aside {
+      font-family: var(--font-serif); font-style: italic;
+      font-size: 0.95rem; line-height: 1.5; color: var(--color-muted);
+      margin-top: 1.5rem; padding-left: 1rem;
+      border-left: 2px solid var(--color-accent); max-width: 72ch;
+    }
+
+    .footer {
+      margin-top: 2.5rem; padding-top: 1.5rem;
+      border-top: 1px solid rgba(45,49,66,0.10);
+      font-family: var(--font-mono); font-size: 0.72rem;
+      letter-spacing: 0.06em; color: var(--color-soft);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="header">
+      <p class="header-eyebrow">Architecture · 2026-08-03</p>
+      <h1>nexora-python 구조</h1>
+      <p class="subtitle">에이전트는 오케스트레이터의 스텝 하나다. 채널은 이벤트 하나뿐이고,
+        권한은 그 채널의 답이다. 점선은 아직 안 만든 것.</p>
+    </div>
+
+    <!-- ═══════════ 1 / 2 · 계층 ═══════════ -->
+    <div class="section">
+      <p class="section-eyebrow">1 / 2 · 계층</p>
+      <h2>누가 무엇을 소유하는가</h2>
+      <p class="section-note">아래로 흐른다. 거슬러 올라가는 것이 하나 있다 — 권한 답. 실행 계층이
+        <code>pre_tool_use</code>를 발행하고 제어 계층이 답한다. 그래서 게이트 객체도, 미들웨어 스택도
+        없다.</p>
+
+      <div class="diagram-container">
+        <svg viewBox="0 0 1000 780" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+            </marker>
+            <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
+            </marker>
+          </defs>
+
+          <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+          <rect x="40" y="72" width="920" height="160" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+          <rect x="56" y="76" width="132" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="60" y="85" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">CONTROL · 제어</text>
+
+          <rect x="40" y="272" width="920" height="160" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+          <rect x="56" y="276" width="132" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="60" y="285" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">AGENT · 에이전트</text>
+
+          <rect x="40" y="472" width="920" height="160" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+          <rect x="56" y="476" width="144" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="60" y="485" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">EXECUTION · 실행</text>
+
+          <path d="M 208,168 V 196 Q 208,204 216,204 H 844 Q 852,204 852,196 V 172"
+                fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+          <rect x="496" y="184" width="76" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="534" y="193" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">AFTER SIGNAL</text>
+
+          <line x1="136" y1="168" x2="136" y2="300" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+          <rect x="148" y="228" width="32" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="152" y="237" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">STEP</text>
+
+          <line x1="272" y1="336" x2="344" y2="336" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+          <rect x="288" y="316" width="40" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="308" y="325" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">DRAIN</text>
+
+          <line x1="552" y1="336" x2="744" y2="336" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+          <rect x="624" y="316" width="44" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="646" y="325" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PUBLISH</text>
+
+          <line x1="452" y1="368" x2="452" y2="500" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+          <rect x="464" y="428" width="40" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="468" y="437" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">ROUND</text>
+
+          <line x1="552" y1="536" x2="664" y2="536" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+          <rect x="584" y="516" width="32" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="600" y="525" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RUN</text>
+
+          <path d="M 344,536 H 316 Q 308,536 308,528 V 144 Q 308,136 316,136 H 340"
+                fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+          <rect x="208" y="390" width="92" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="300" y="399" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">PRE_TOOL_USE</text>
+          <rect x="208" y="410" width="92" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="300" y="419" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">답이 결정</text>
+
+          <rect x="72" y="104" width="200" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="72" y="104" width="200" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+          <rect x="80" y="110" width="36" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+          <text x="98" y="119" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CTRL</text>
+          <text x="172" y="138" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Orchestrator</text>
+          <text x="172" y="156" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">run() · signal()</text>
+
+          <rect x="344" y="104" width="208" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="344" y="104" width="208" height="64" rx="6" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+          <rect x="352" y="110" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.22)" stroke-width="0.8"/>
+          <text x="368" y="119" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">GAP</text>
+          <text x="448" y="138" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">권한 해석기</text>
+          <text x="448" y="156" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">아래 흐름도 참조</text>
+
+          <rect x="752" y="104" width="200" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="752" y="104" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <rect x="760" y="110" width="36" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+          <text x="778" y="119" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">STEP</text>
+          <text x="852" y="138" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">쓰기 작업</text>
+          <text x="852" y="156" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">not agent tools</text>
+
+          <rect x="72" y="304" width="200" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="72" y="304" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <rect x="80" y="310" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+          <text x="102" y="319" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ADAPT</text>
+          <text x="172" y="338" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">run_agent</text>
+          <text x="172" y="356" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">stream → value</text>
+
+          <rect x="344" y="304" width="208" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="344" y="304" width="208" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+          <rect x="352" y="310" width="40" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+          <text x="372" y="319" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">LOOP</text>
+          <text x="448" y="338" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">react_loop</text>
+          <text x="448" y="356" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">while · 훅 5개</text>
+
+          <rect x="744" y="304" width="208" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="744" y="304" width="208" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+          <rect x="752" y="310" width="32" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
+          <text x="768" y="319" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">BUS</text>
+          <text x="848" y="338" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">EventStream</text>
+          <text x="848" y="356" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">blocking / observing</text>
+
+          <rect x="344" y="504" width="208" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="344" y="504" width="208" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <rect x="352" y="510" width="40" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+          <text x="372" y="519" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ROUND</text>
+          <text x="448" y="538" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">execute_calls</text>
+          <text x="448" y="556" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">→ list[Resolved]</text>
+
+          <rect x="664" y="504" width="248" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="664" y="504" width="248" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+          <rect x="672" y="510" width="36" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
+          <text x="690" y="519" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">EXEC</text>
+          <text x="788" y="538" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Tools</text>
+          <text x="788" y="556" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">호출자 소유 · 샌드박스</text>
+
+          <line x1="40" y1="668" x2="960" y2="668" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+          <text x="40" y="688" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+          <rect x="128" y="700" width="14" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+          <text x="152" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">검토 대상 · 초점</text>
+
+          <rect x="304" y="700" width="14" height="10" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <text x="328" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">구현됨 · 테스트 있음</text>
+
+          <rect x="504" y="700" width="14" height="10" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+          <text x="528" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">협력자 · 호출자 소유</text>
+
+          <rect x="704" y="700" width="14" height="10" rx="2" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="728" y="709" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">미구현</text>
+
+          <line x1="128" y1="736" x2="142" y2="736" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+          <text x="152" y="740" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">제어 흐름</text>
+
+          <line x1="304" y1="736" x2="318" y2="736" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+          <text x="328" y="740" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">내부 호출</text>
+
+          <line x1="504" y1="736" x2="518" y2="736" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+          <text x="528" y="740" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">미구현 경로</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- ═══════════ 2 / 2 · 권한 해석 순서 ═══════════ -->
+    <div class="section">
+      <p class="section-eyebrow">2 / 2 · 권한 해석</p>
+      <h2>순서가 설계다</h2>
+      <p class="section-note">Claude Code의 <code>hasPermissionsToUseToolInner</code> 모델.
+        구독자 답은 <strong>입력이고 최종 권한이 아니다</strong> — <code>allow</code>를 받아도 규칙층을
+        다시 통과해야 한다. 그리고 bypass 진입점이 규칙층 <strong>아래</strong>에 있는 것이 불변식이다.
+        nexora에는 이 규칙층이 아직 없다.</p>
+
+      <div class="diagram-container">
+        <svg viewBox="0 0 1000 900" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="a2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+            </marker>
+            <marker id="a2-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
+            </marker>
+          </defs>
+
+          <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+          <rect x="292" y="232" width="416" height="200" rx="8" fill="rgba(235,108,54,0.05)" stroke="rgba(235,108,54,0.50)" stroke-width="1" stroke-dasharray="4,4"/>
+          <rect x="308" y="236" width="184" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="312" y="245" fill="rgba(235,108,54,0.75)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">BYPASS 면역 · 1a–1g</text>
+
+          <line x1="500" y1="84" x2="500" y2="124" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+
+          <line x1="500" y1="192" x2="500" y2="260" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#a2-accent)"/>
+          <rect x="512" y="212" width="60" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="516" y="221" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">항상 재검증</text>
+
+          <line x1="500" y1="408" x2="500" y2="464" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+
+          <path d="M 568,500 H 832 Q 840,500 840,508 V 636"
+                fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+          <rect x="676" y="480" width="28" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="690" y="489" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ASK</text>
+
+          <path d="M 432,500 H 248 Q 240,500 240,508 V 790 Q 240,798 248,798 H 396"
+                fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+          <rect x="192" y="630" width="40" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="228" y="639" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">DENY</text>
+
+          <line x1="500" y1="532" x2="500" y2="572" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+          <rect x="512" y="540" width="36" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="516" y="549" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">통과</text>
+
+          <line x1="500" y1="632" x2="500" y2="668" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+
+          <line x1="500" y1="728" x2="500" y2="772" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+          <rect x="512" y="736" width="40" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="516" y="745" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">ALLOW</text>
+
+          <path d="M 628,700 H 704 Q 712,700 712,692 V 680 Q 712,672 720,672"
+                fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#a2)"/>
+          <rect x="628" y="714" width="48" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="652" y="723" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">미매칭</text>
+
+          <path d="M 840,704 V 790 Q 840,798 832,798 H 604"
+                fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#a2)"/>
+          <rect x="696" y="776" width="112" height="12" rx="2" fill="#f5f5f5"/>
+          <text x="804" y="785" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end" letter-spacing="0.06em">승인 후 재개 / 거부</text>
+
+          <rect x="400" y="40" width="200" height="44" rx="20" fill="#f5f5f5"/>
+          <rect x="400" y="40" width="200" height="44" rx="20" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+          <text x="500" y="67" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">tool_call 도착</text>
+
+          <rect x="372" y="128" width="256" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="372" y="128" width="256" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <rect x="380" y="134" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+          <text x="392" y="143" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">0</text>
+          <text x="500" y="162" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">PRE_TOOL_USE 구독자</text>
+          <text x="500" y="180" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">allow / deny / ask / none</text>
+
+          <rect x="332" y="264" width="336" height="144" rx="6" fill="#f5f5f5"/>
+          <rect x="332" y="264" width="336" height="144" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+          <rect x="340" y="270" width="48" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+          <text x="364" y="279" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">미구현</text>
+          <text x="500" y="300" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">규칙층 — 순서대로 short-circuit</text>
+          <text x="356" y="326" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1a  deny 룰                   → deny</text>
+          <text x="356" y="342" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1b  ask 룰                    → ask</text>
+          <text x="356" y="358" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1c  tools.check_permissions()</text>
+          <text x="356" y="374" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1e  requires_user_interaction → ask</text>
+          <text x="356" y="390" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">1g  safety check (.git 등)    → ask</text>
+
+          <path d="M 500,468 L 568,500 L 500,532 L 432,500 Z" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <text x="500" y="504" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">결정</text>
+
+          <rect x="372" y="576" width="256" height="56" rx="6" fill="#f5f5f5"/>
+          <rect x="372" y="576" width="256" height="56" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+          <rect x="380" y="582" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.22)" stroke-width="0.8"/>
+          <text x="392" y="591" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">2a</text>
+          <text x="500" y="608" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">bypass 진입점</text>
+          <text x="500" y="624" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">여기서부터만 allow 가능</text>
+
+          <rect x="372" y="672" width="256" height="56" rx="6" fill="#f5f5f5"/>
+          <rect x="372" y="672" width="256" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+          <rect x="380" y="678" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+          <text x="392" y="687" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">2b</text>
+          <text x="500" y="704" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">allow 룰</text>
+          <text x="500" y="720" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">미매칭은 passthrough → ask</text>
+
+          <rect x="720" y="640" width="240" height="64" rx="6" fill="#f5f5f5"/>
+          <rect x="720" y="640" width="240" height="64" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+          <rect x="728" y="646" width="24" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.50)" stroke-width="0.8"/>
+          <text x="740" y="655" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">3</text>
+          <text x="840" y="674" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">ask → suspend</text>
+          <text x="840" y="692" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">사람을 기다리지 않고 중단</text>
+
+          <rect x="400" y="776" width="200" height="44" rx="20" fill="#f5f5f5"/>
+          <rect x="400" y="776" width="200" height="44" rx="20" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+          <text x="500" y="803" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">실행 · 거부 · 중단</text>
+
+          <line x1="40" y1="848" x2="960" y2="848" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+          <text x="40" y="868" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+          <rect x="128" y="860" width="14" height="10" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="152" y="869" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">bypass로 못 뚫는 구간</text>
+          <text x="340" y="869" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">타원 = 시작·종단 · 사각 = 단계 · 다이아 = 분기</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="eyebrow">있음 · 테스트 107개</p>
+        <div class="card-header">
+          <span class="card-dot ink"></span>
+          <h3>구현되고 고정된 것</h3>
+        </div>
+        <ul>
+          <li>채널 하나 — <code>Emit</code>이 답을 돌려주고, blocking이면 예외가 run을 멈춘다</li>
+          <li><code>PRE_TOOL_USE</code> 구독 답이 allow / deny / ask</li>
+          <li><code>Orchestrator</code> — 스텝 메모이제이션 · <code>signal</code></li>
+          <li><code>run_agent</code> — <code>done</code>만 값, error·suspended는 올림</li>
+          <li>순차 배치 · 재개 진입 · 발행자 하나</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="eyebrow">미구현 · 최우선</p>
+        <div class="card-header">
+          <span class="card-dot coral"></span>
+          <h3>권한 해석기가 없다</h3>
+        </div>
+        <ul>
+          <li><strong>구독자 답이 최종이다</strong> — hook allow 재검증이 없다</li>
+          <li>규칙층 1a~1g 전체 · bypass 면역 개념 없음</li>
+          <li><code>tools.check_permissions()</code> — Protocol 문구만 있고 부르는 곳이 없다</li>
+          <li>모드 변환층(마지막 적용) · denial 한도</li>
+          <li>룰 매칭 — 툴 전체 vs 컨텐츠 단위, MCP 정규화</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="eyebrow">그 외 미구현</p>
+        <div class="card-header">
+          <span class="card-dot soft"></span>
+          <h3>남은 것</h3>
+        </div>
+        <ul>
+          <li><code>StepLog</code> — Postgres · <strong>lease 없음</strong> → exactly-once 아님</li>
+          <li>suspend 스냅샷 저장소 → 라운드 중간 재개 불가</li>
+          <li>턴 내부 압축 · 이미지 블록 주입 · <code>thinking</code></li>
+          <li><code>parent_run_id</code> → 하위 에이전트 감사 트리</li>
+          <li>루프가 <code>terminates_loop</code> / <code>is_exclusive</code>를 아직 읽는다</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="aside">순서가 곧 불변식이다. <code>2a</code>가 <code>1g</code> 다음에 있다는 사실이
+      "bypass로는 deny 룰을 못 뚫는다"를 뜻하고, 모드 변환을 마지막에 두는 것이 "early return으로
+      우회 못 한다"를 뜻한다. 그래서 아래 흐름도는 그림이 아니라 명세다.</p>
+
+    <div class="footer">
+      <span>nexora-python · 구조 검토용</span>
+      <span>2026-08-03</span>
+    </div>
+
+  </div>
+</body>
+</html>

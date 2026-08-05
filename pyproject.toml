@@ -24,12 +24,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The alternate engine. Kept out of the core so `nexora` itself never depends on a
-# framework's loop — see docs/architecture/adrs/adr-001.
-langgraph = [
-  "langchain>=1,<2",
-  "langchain-openai>=0.3,<1",
-  "langgraph>=1.2,<2",
+ui = [
+    "fastapi>=0.116,<1",
+    "langchain-openai>=0.3,<2",
+    "python-dotenv>=1.1,<2",
+    "uvicorn[standard]>=0.35,<1",
 ]
 
 [dependency-groups]
@@ -61,4 +60,3 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
-

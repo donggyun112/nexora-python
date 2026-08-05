@@ -6,6 +6,8 @@
 
 > Direct `ToolNode`의 async 실행 경로가 공식 `RunnableConfig.max_concurrency` 제한을 무시한다.
 
+정식 등록 이슈: https://github.com/langchain-ai/langgraph/issues/8517
+
 `max_concurrency`는 결정적 실행 순서를 보장하는 옵션이 아니라 최대 동시 실행 수를 제한하는 옵션이다. 따라서 일반적인 “순서 보장”을 주장하지 않는다. `max_concurrency=1`인데도 두 async 도구가 동시에 실행된다는 계약 위반을 주장한다.
 
 ## 다운로드 자료에서 확인한 제출 규칙
@@ -20,9 +22,11 @@
 8. 원인과 수정 방향은 제안할 수 있지만, 관찰된 public API 계약 위반이 본문 중심이어야 한다.
 9. 구현 PR은 유지보수자가 접근법을 승인하고 이슈를 할당한 뒤 여는 것이 안전하다.
 
+중요: `gh issue create --body-file ...`로 직접 생성하면 Issue Form의 `type: bug`와 `labels: ["bug"]`가 적용되지 않는다. 실제 Bug Report 웹 폼을 사용하거나, GraphQL `createIssue`의 `issueTemplate`에 파일명이 아닌 폼 표시 이름 `🐛 Bug Report`를 지정해야 한다. 생성 직후 실제 `issueType`과 `labels`를 다시 조회한다.
+
 ## 제출할 때 붙여 넣는 위치
 
-- Title: `issue_body_en.md`의 Title
+- Title: `ToolNode async execution ignores RunnableConfig.max_concurrency for multiple tool calls`
 - Checked other resources: 모두 확인 후 체크
 - Related Issues / PRs: 해당 섹션의 영문
 - Reproduction Steps / Example Code: `repro.py` 전체를 fence 없이 붙여 넣기

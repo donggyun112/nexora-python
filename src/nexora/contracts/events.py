@@ -1,13 +1,18 @@
-"""The event contract.
+"""The event contract. Observation, and only observation.
 
-Two kinds, and the difference is structural rather than cosmetic:
+Nothing here decides anything. A decision has to be a value the caller holds so it can pick the
+next step, and the order of those steps is the whole design — "the bypass entry sits *after* the
+deny rules" is an invariant you can only state in a call chain. Published events arrive whenever
+a subscriber gets around to them, so a permission answer cannot live on this channel; it lives in
+`nexora.orchestrator.Permissions`, which is an ordered chain of calls.
 
-* **Blocking** — the handler's answer changes what happens next. These are not published; they
-  are hooks the loop awaits. `PreToolUse` is the one the loop uses today, and it arrives as
-  `before_tool_call` rather than as a subscription, because a return value that nobody reads
-  is a permission check that silently passes.
-* **Observing** — the handler is told something happened and cannot change it. These go
-  through `emit`.
+What this channel is for: telling a UI what happened, and writing an audit trail. A failing sink
+is logged and skipped — an audit socket having a bad moment is not a reason to kill an agent
+mid-run. That rule is only safe *because* nothing load-bearing rides here.
+
+`BLOCKING` names the events that correspond to a decision point. The decision is made by a call,
+not by publishing these; the set exists so a subscriber can tell "you are being told about a
+gate" from "you are being told about a result".
 
 `EventEnvelope.event_id` is derived, never random. A run that crashes and resumes re-emits the
 events of rounds it had already finished; a derived id lets an outbox drop the duplicates.
@@ -36,6 +41,7 @@ class EventType(StrEnum):
     # Prompt
     USER_PROMPT_SUBMIT = "user_prompt_submit"
     USER_PROMPT_EXPANSION = "user_prompt_expansion"
+    CONTEXT_INJECTED = "context_injected"
 
     # Session lifecycle
     SESSION_START = "session_start"
@@ -84,7 +90,13 @@ BLOCKING: frozenset[EventType] = frozenset(
         EventType.PRE_COMPACT,
     }
 )
-"""Events whose handler answer feeds back into the run, rather than merely observing it."""
+"""Events that mark a decision point, published as a courtesy after the decision is made.
+
+The decision itself is a call — `Permissions.resolve` for a tool, and the chain that follows it.
+Answering one of these on the event channel does nothing, on purpose: an ordered short-circuit
+cannot be expressed by subscribers, and a permission model whose precedence depends on dispatch
+order is not a permission model.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +127,78 @@ class EventEnvelope:
 
 
 Sink = Callable[[EventEnvelope], Awaitable[None]]
+"""An observer. Told what happened; cannot change it."""
+
+Publisher = Callable[[str, dict[str, Any]], Awaitable[Any]]
+
+
+class RuntimeEvents:
+    """Typed emission points owned by the session/orchestration host.
+
+    The agent engines emit prompt, tool, permission, and stop events themselves. They cannot know
+    that a configuration file changed, a compaction began, or a background teammate became idle.
+    The component performing those actions calls this facade at the real boundary instead of
+    pretending every agent loop invocation is a new session.
+
+    These methods publish observations. A load-bearing decision still uses `Controls`; for
+    example `PRE_COMPACT` announces the compaction gate, while the gate's return value determines
+    whether and how compaction proceeds.
+    """
+
+    def __init__(self, emit: Publisher | None) -> None:
+        self._emit = emit
+
+    async def publish(self, event_type: EventType, **payload: Any) -> None:
+        if self._emit is not None:
+            await self._emit(event_type, payload)
+
+    async def session_start(self, source: str) -> None:
+        await self.publish(EventType.SESSION_START, source=source)
+
+    async def session_end(self, reason: str) -> None:
+        await self.publish(EventType.SESSION_END, reason=reason)
+
+    async def setup(self, **details: Any) -> None:
+        await self.publish(EventType.SETUP, **details)
+
+    async def config_change(self, changes: dict[str, Any]) -> None:
+        await self.publish(EventType.CONFIG_CHANGE, changes=changes)
+
+    async def cwd_changed(self, previous: str, current: str) -> None:
+        await self.publish(EventType.CWD_CHANGED, previous=previous, current=current)
+
+    async def instructions_loaded(self, paths: list[str]) -> None:
+        await self.publish(EventType.INSTRUCTIONS_LOADED, paths=paths)
+
+    async def pre_compact(self, reason: str) -> None:
+        await self.publish(EventType.PRE_COMPACT, reason=reason)
+
+    async def post_compact(self, reason: str) -> None:
+        await self.publish(EventType.POST_COMPACT, reason=reason)
+
+    async def subagent_start(self, agent_id: str, task: str = "") -> None:
+        await self.publish(EventType.SUBAGENT_START, agent_id=agent_id, task=task)
+
+    async def subagent_stop(self, agent_id: str, reason: str) -> None:
+        await self.publish(EventType.SUBAGENT_STOP, agent_id=agent_id, reason=reason)
+
+    async def task_created(self, task_id: str, description: str = "") -> None:
+        await self.publish(EventType.TASK_CREATED, task_id=task_id, description=description)
+
+    async def task_completed(self, task_id: str, outcome: Any = None) -> None:
+        await self.publish(EventType.TASK_COMPLETED, task_id=task_id, outcome=outcome)
+
+    async def teammate_idle(self, teammate_id: str) -> None:
+        await self.publish(EventType.TEAMMATE_IDLE, teammate_id=teammate_id)
+
+    async def elicitation(self, request_id: str, request: Any) -> None:
+        await self.publish(EventType.ELICITATION, request_id=request_id, request=request)
+
+    async def elicitation_result(self, request_id: str, result: Any) -> None:
+        await self.publish(EventType.ELICITATION_RESULT, request_id=request_id, result=result)
+
+    async def notification(self, message: str, *, level: str = "info") -> None:
+        await self.publish(EventType.NOTIFICATION, message=message, level=level)
 
 
 class EventStream:
@@ -122,10 +206,13 @@ class EventStream:
 
     One per run — `sequence` is what makes `event_id` unique without randomness.
 
-    A failing sink is logged and skipped, never raised. These events are observations: an
-    audit log or a UI socket having a bad moment is not a reason to kill an agent mid-run. The
-    cost is that a dropped event is only visible in the log, which is why `event_id` is
-    derived — a durable sink can replay and dedupe rather than rely on delivery here.
+    A failing sink is logged and skipped, never raised. These events are observations: an audit
+    log or a UI socket having a bad moment is not a reason to kill an agent mid-run. The cost is
+    that a dropped event is only visible in the log, which is why `event_id` is derived — a
+    durable sink can replay and dedupe rather than rely on delivery here.
+
+    Anything that must not be silently dropped is therefore not an event. The durable record of a
+    resolved tool call is `Permissions.record`, a call that raises through.
     """
 
     def __init__(self, sink: Sink, *, session_id: str, thread_id: str, run_id: str) -> None:
@@ -149,6 +236,4 @@ class EventStream:
         try:
             await self._sink(envelope)
         except Exception:
-            logger.exception(
-                "event sink failed: {} ({})", envelope.event_type, envelope.event_id
-            )
+            logger.exception("event sink failed: {} ({})", envelope.event_type, envelope.event_id)

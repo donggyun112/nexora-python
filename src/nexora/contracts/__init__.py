@@ -1,16 +1,19 @@
-"""What every engine and every caller agrees on: the types and the event vocabulary.
+"""What the planner, orchestrator, and callers agree on: types and event vocabulary.
 
-Nothing here knows how a loop is driven. Both engines import these; neither imports the other.
+Nothing here knows how the loop is driven.
 """
 
-from .events import BLOCKING, EventEnvelope, EventStream, EventType, Sink
+from .events import BLOCKING, EventEnvelope, EventStream, EventType, RuntimeEvents, Sink
 from .types import (
     Aborted,
+    AdmitInputs,
     BaseMessage,
-    BeforeToolCall,
-    DrainSteers,
+    BatchTools,
+    DrainInputs,
     Emit,
     OnSuspend,
+    PendingInput,
+    PreToolUse,
     ShouldStopAfterTurn,
     StopReason,
     ToolCall,
@@ -20,14 +23,18 @@ from .types import (
 __all__ = [
     "BLOCKING",
     "Aborted",
+    "AdmitInputs",
     "BaseMessage",
-    "BeforeToolCall",
-    "DrainSteers",
+    "BatchTools",
+    "DrainInputs",
     "Emit",
     "EventEnvelope",
     "EventStream",
     "EventType",
     "OnSuspend",
+    "PendingInput",
+    "PreToolUse",
+    "RuntimeEvents",
     "ShouldStopAfterTurn",
     "Sink",
     "StopReason",

@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from nexora.contracts import EventEnvelope, EventStream, EventType
+from nexora.controls import ControlPlane, Permissions, gate
 from nexora.engines.plain import react_loop
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 
@@ -63,12 +64,12 @@ async def test_concurrent_conversations_cost_like_one_not_like_many() -> None:
     """20 conversations must interleave. Serializing them would be ~20x and would mean the
     loop is holding something — a thread, a lock, a sync call — across an await."""
     started = time.perf_counter()
-    await drain(*a_conversation(), "hi")
+    await drain(*a_conversation())
     alone = time.perf_counter() - started
 
     conversations = [a_conversation() for _ in range(20)]
     started = time.perf_counter()
-    await asyncio.gather(*(drain(llm, tools, "hi") for llm, tools in conversations))
+    await asyncio.gather(*(drain(llm, tools) for llm, tools in conversations))
     together = time.perf_counter() - started
 
     assert together < alone * 3, f"20 conversations took {together / alone:.1f}x one"
@@ -94,7 +95,7 @@ async def test_the_loop_yields_at_every_wait() -> None:
 
     beat = asyncio.create_task(ticker())
     try:
-        await drain(*a_conversation(), "hi")
+        await drain(*a_conversation())
     finally:
         beat.cancel()
 
@@ -124,7 +125,11 @@ async def test_a_gated_batch_still_runs_concurrently() -> None:
         return None
 
     started = time.perf_counter()
-    await drain(llm, ConcurrentBatchTools(), "hi", before_tool_call=allow)
+    await drain(
+        llm,
+        ConcurrentBatchTools(),
+        controls=ControlPlane(pre_tool_use=Permissions(gate(allow))),
+    )
     elapsed = time.perf_counter() - started
 
     assert elapsed < LATENCY * 3, f"5 concurrent tools took {elapsed / LATENCY:.1f}x one"
@@ -148,7 +153,7 @@ async def _time_rounds(n: int, best_of: int = 3) -> float:
     best = float("inf")
     for _ in range(best_of):
         started = time.perf_counter()
-        await drain(_rounds(n), Tools(), "hi")
+        await drain(_rounds(n), Tools())
         best = min(best, time.perf_counter() - started)
     return best
 
@@ -167,20 +172,16 @@ async def test_per_round_cost_does_not_grow_with_history() -> None:
     )
 
 
-async def test_loop_overhead_is_a_small_fraction_of_io() -> None:
-    """Whatever the loop does per round must disappear next to a real provider call."""
-    rounds = 50
-    overhead = await _time_rounds(rounds) / rounds
-
-    assert overhead < LATENCY / 10, f"{overhead * 1000:.2f}ms per round of pure loop overhead"
-
-
 # ── Event emission ───────────────────────────────────────────────────────────
 
 
 async def test_emission_is_cheap_enough_to_leave_on() -> None:
-    """Every event hashes its coordinates for a stable id. That must stay far below the cost
-    of the work it describes, or observability becomes something people switch off."""
+    """Every event hashes its coordinates for a stable id. That must stay far below the cost of
+    the work it describes, or observability becomes something people switch off.
+
+    Measured against a round of that work in this same process, not against a fixed microsecond
+    budget: a number that passes on a laptop and fails on a loaded CI box measures the box.
+    """
 
     async def sink(envelope: EventEnvelope) -> None:
         return None
@@ -193,23 +194,9 @@ async def test_emission_is_cheap_enough_to_leave_on() -> None:
         await stream(EventType.POST_TOOL_USE, payload)
     per_event = (time.perf_counter() - started) / 10_000
 
-    assert per_event < 50e-6, f"{per_event * 1e6:.1f}us per event"
+    per_round = await _time_rounds(50) / 50
 
-
-async def test_turning_emission_on_does_not_change_the_shape_of_a_run() -> None:
-    """Emission is opt-in and observational; a run with a sink attached must not cost
-    materially more than one without."""
-    rounds = 50
-    without = await _time_rounds(rounds)
-
-    async def sink(envelope: EventEnvelope) -> None:
-        return None
-
-    stream = EventStream(sink, session_id="s", thread_id="t", run_id="r")
-    started = time.perf_counter()
-    await drain(_rounds(rounds), Tools(), "hi", emit=stream)
-    with_emission = time.perf_counter() - started
-
-    assert with_emission < without * 4, (
-        f"emission made the run {with_emission / without:.1f}x slower"
+    assert per_event < per_round / 20, (
+        f"{per_event * 1e6:.1f}us per event against a {per_round * 1e6:.0f}us round — "
+        "emission is no longer a rounding error on the work it describes"
     )

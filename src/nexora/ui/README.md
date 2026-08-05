@@ -19,9 +19,11 @@ Open <http://127.0.0.1:8790>. Configuration is loaded from `src/nexora/ui/.env`.
 names are `OPENROUTER_API_KEY`, `OPENROUTER_KEY`, and the imported fixture spelling
 `OPEN_ROTURE`.
 
-The two suspension samples exercise different boundaries:
+The **Pre-tool gate** sample asks permission before `remember_note` crosses the effect boundary. No
+  `post_tool_use` event exists until approval actually executes the tool.
+Tools cannot return a suspension after execution; `suspend` is reserved for `pre_tool_use` policy.
 
-* **Tool waits** executes `request_approval`; that tool returns a suspension and waits for its
-  eventual result.
-* **Pre-tool gate** asks permission before `remember_note` crosses the effect boundary. No
-  `post_tool_use` or `post_tool_batch` event exists until approval actually executes the tool.
+The UI labels the model output **TOOL REQUEST**, not tool execution. If a new chat message arrives
+while the sample is waiting, the interactive default cancels the unanswered request, writes its
+protocol-closing ToolMessage, and continues the same run with the new message. Approval responses
+use `pending_id`; a late approval for the cancelled request is rejected.

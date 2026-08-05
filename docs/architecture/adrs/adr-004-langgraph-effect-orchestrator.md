@@ -46,7 +46,6 @@ LangGraph checkpointer와 Effect ledger는 서로 대체하지 않는다.
 - 배치의 모든 도구가 `is_concurrency_safe`를 선언한 경우만 한 node 안에서 병렬 실행한다.
 - gate 장애는 실패한 gate node에서 재개한다.
 - Effect 완료 후 journal 장애는 node를 재시도하되 실제 tool은 StepLog 결과를 재사용한다.
-- `POST_TOOL_BATCH`는 agent engine이 한 번만 발행한다.
 
 ## 비용
 

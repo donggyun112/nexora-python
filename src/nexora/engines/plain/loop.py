@@ -47,7 +47,6 @@ from ...tools import (
     ExecuteRound,
     a_tool_result,
     absorb_round,
-    announce_batch,
     as_model_tools,
     execute_calls,
     select_for_execution,
@@ -216,8 +215,6 @@ async def react_loop(
                 text=turn_text,
             ),
         )
-        # Before the results are yielded, and before a suspend can return out of this round.
-        await announce_batch(emit, turn, resolved)
         for call, result, refused in resolved:
             event = a_tool_result(call, result)
             event["executed"] = not refused

@@ -6,9 +6,10 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from nexora import AgentRuntime, ToolCall, run
-from nexora.contracts import PendingInput
+from nexora.contracts import EventType, PendingInput
 from nexora.controls import ControlPlane, Permissions, gate
 from nexora.orchestrator import AgentFailed, AgentSuspended, MemorySteps, Orchestrator
+from nexora.tools import InvalidToolResult
 
 from .test_loop import Tools, a_call, says, scripted
 
@@ -32,6 +33,23 @@ async def test_runtime_hides_orchestrator_wiring_but_records_tool_effects() -> N
 
     assert outcome["content"] == "done"
     assert (await store.read("run-1", "c1")).status == "done"
+
+
+async def test_invalid_tool_suspension_is_not_committed_as_a_completed_effect() -> None:
+    store = MemorySteps()
+    runtime = AgentRuntime(store=store)
+    tools = Tools(results={"ask": {"type": "suspend", "pending_id": "p1"}}, names=["ask"])
+
+    with pytest.raises(InvalidToolResult, match="pre_tool_use"):
+        await runtime.run(
+            "invalid-tool-suspend",
+            scripted(says("", a_call("c1", "ask"))),
+            tools,
+            "ask",
+        )
+
+    assert tools.ran == ["ask"]
+    assert (await store.read("invalid-tool-suspend", "c1")).status == "absent"
 
 
 async def test_submitted_background_result_uses_the_same_input_queue() -> None:
@@ -116,7 +134,7 @@ async def test_runtime_parks_and_resumes_without_exposing_the_ledger() -> None:
     resumed = Tools(names=["deploy"])
     outcome = await runtime.resume(
         "run-2",
-        stopped.value.tool_call_id,
+        stopped.value.pending_id,
         {"type": "text", "text": "approved"},
         scripted(says("deployed")),
         resumed,
@@ -124,6 +142,109 @@ async def test_runtime_parks_and_resumes_without_exposing_the_ledger() -> None:
 
     assert resumed.ran == ["deploy"]
     assert outcome["content"] == "deployed"
+
+
+async def test_new_interactive_input_cancels_pending_effect_before_switching() -> None:
+    store = MemorySteps()
+    emitted: list[str] = []
+
+    async def emit(event_type: str, _payload: dict[str, Any]) -> None:
+        emitted.append(event_type)
+
+    async def ask(_call: Any) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    runtime = AgentRuntime(store=store, emit=emit)
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "cancel-switch",
+            scripted(says("", a_call("c1", "deploy"))),
+            Tools(names=["deploy"]),
+            "deploy it",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(ask))),
+        )
+
+    tools = Tools(names=["deploy"])
+    model = scripted(says("switched"))
+    outcome = await runtime.run(
+        "cancel-switch",
+        model,
+        tools,
+        "do something else",
+        prompt_id="replacement-1",
+    )
+
+    seen = model.seen[0]
+    cancelled = next(message for message in seen if isinstance(message, ToolMessage))
+    replacement = next(
+        message
+        for message in seen
+        if isinstance(message, HumanMessage) and message.content == "do something else"
+    )
+    assert seen.index(cancelled) < seen.index(replacement)
+    assert "cancelled" in str(cancelled.content)
+    assert tools.ran == []
+    assert (await store.read("cancel-switch", "c1")).value["code"] == "cancelled"
+    assert EventType.TOOL_REQUEST_CANCELLED in emitted
+    assert outcome["content"] == "switched"
+
+    with pytest.raises(LookupError, match="no active suspension"):
+        await runtime.resume(
+            "cancel-switch",
+            "approval-1",
+            {"type": "text", "text": "approved too late"},
+            scripted(says("never")),
+            tools,
+        )
+
+
+async def test_headless_input_waits_then_follows_the_eventual_tool_result() -> None:
+    store = MemorySteps()
+    runtime = AgentRuntime(store=store)
+
+    async def ask(_call: Any) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    controls = ControlPlane(pre_tool_use=Permissions(gate(ask)))
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "headless-wait",
+            scripted(says("", a_call("c1", "deploy"))),
+            Tools(names=["deploy"]),
+            "deploy",
+            controls=controls,
+        )
+
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "headless-wait",
+            scripted(says("unused")),
+            Tools(names=["deploy"]),
+            "also summarize",
+            input_mode="headless",
+        )
+
+    model = scripted(says("deployed and summarized"))
+    tools = Tools(results={"deploy": {"type": "text", "text": "ok"}}, names=["deploy"])
+    await runtime.resume(
+        "headless-wait",
+        "approval-1",
+        {"type": "text", "text": "approved"},
+        model,
+        tools,
+        controls=controls,
+    )
+
+    tool_index = next(
+        i for i, message in enumerate(model.seen[0]) if isinstance(message, ToolMessage)
+    )
+    user_index = next(
+        i
+        for i, message in enumerate(model.seen[0])
+        if isinstance(message, HumanMessage) and message.content == "also summarize"
+    )
+    assert tool_index < user_index
+    assert tools.ran == ["deploy"]
 
 
 async def test_suspension_commits_then_releases_the_worker_instead_of_waiting() -> None:

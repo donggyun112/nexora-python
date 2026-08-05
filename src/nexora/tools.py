@@ -32,7 +32,7 @@ class Resolved(NamedTuple):
 
 
 class RoundSuspended(Exception):
-    """A non-orchestrated executor encountered a suspension result.
+    """A permission gate parked a tool round before the effect boundary.
 
     Agent engines do not interpret this. A durable orchestrator catches it, commits the
     continuation, and terminates the agent attempt.
@@ -41,6 +41,20 @@ class RoundSuspended(Exception):
     def __init__(self, resolved: list[Resolved]) -> None:
         super().__init__("tool round suspended")
         self.resolved = resolved
+
+
+class InvalidToolResult(RuntimeError):
+    """A tool returned a control-plane result reserved for permission gates."""
+
+
+def validate_tool_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Reject approval suspension after execution; approval belongs to ``pre_tool_use``."""
+    if result.get("type") == "suspend":
+        raise InvalidToolResult(
+            f"tool {name!r} returned reserved result type 'suspend'; "
+            "request approval from pre_tool_use before executing the tool"
+        )
+    return result
 
 
 class ExecuteRound(Protocol):
@@ -105,7 +119,10 @@ async def execute_calls(
         result = (
             stood_in
             if stood_in is not None
-            else await tools.execute(call["name"], call["id"] or "", call["args"])
+            else validate_tool_result(
+                call["name"],
+                await tools.execute(call["name"], call["id"] or "", call["args"]),
+            )
         )
         # A policy result stands in for an effect; it must not claim that the tool ran. Actual
         # executions are recorded before append so a failed record leaves the call unresolved.
@@ -212,7 +229,8 @@ class Stepped:
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
         result: dict[str, Any] = await self._orchestrator.run(
-            call_id, lambda: self._tools.execute(name, call_id, arguments)
+            call_id,
+            lambda: _execute_validated(self._tools, name, call_id, arguments),
         )
         return result
 
@@ -265,7 +283,10 @@ class Concurrent:
         return resolved
 
     async def _one(self, call: dict[str, Any]) -> dict[str, Any]:
-        result = await self._tools.execute(call["name"], call["call_id"], call["input"])
+        result = validate_tool_result(
+            call["name"],
+            await self._tools.execute(call["name"], call["call_id"], call["input"]),
+        )
         return {"call_id": call["call_id"], "result": result}
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
@@ -338,21 +359,6 @@ def a_tool_result(call: ToolCall, result: dict[str, Any]) -> dict[str, Any]:
         "result": result,
         "is_error": result.get("type") == "error",
     }
-
-
-async def announce_batch(emit: Emit | None, turn: int, resolved: list[Resolved]) -> None:
-    """Publish the calls that actually crossed the effect boundary, in request order."""
-    executed = [
-        {"call_id": call["id"], "name": call["name"]}
-        for call, _result, refused in resolved
-        if not refused
-    ]
-    if emit is None or not executed:
-        return
-    await emit(
-        EventType.POST_TOOL_BATCH,
-        {"turn": turn, "calls": executed},
-    )
 
 
 def as_model_tools(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -442,8 +448,15 @@ def _in_call_order(
             missing = f"Missing tool result: {call['id']}"
             ordered.append((call, {"type": "error", "message": missing}))
         else:
-            ordered.append((call, result["result"]))
+            ordered.append((call, validate_tool_result(call["name"], result["result"])))
     return ordered
+
+
+async def _execute_validated(
+    tools: Tools, name: str, call_id: str, arguments: Any
+) -> dict[str, Any]:
+    """Validate inside the durable step so an invalid result is never committed as done."""
+    return validate_tool_result(name, await tools.execute(name, call_id, arguments))
 
 
 def select_for_execution(tools: Tools, calls: list[ToolCall]) -> list[ToolCall]:

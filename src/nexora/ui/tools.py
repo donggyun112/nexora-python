@@ -7,7 +7,7 @@ from typing import Any
 
 
 class DemoTools:
-    """Visible effects for checking execution, ordering, and suspension."""
+    """Visible effects for checking execution and ordering."""
 
     def __init__(self) -> None:
         self.notes: dict[str, str] = {}
@@ -30,12 +30,6 @@ class DemoTools:
             }
         if name == "runtime_clock":
             return {"type": "text", "text": str(asyncio.get_running_loop().time())}
-        if name == "request_approval":
-            return {
-                "type": "suspend",
-                "pending_id": call_id,
-                "reason": str(args.get("reason", "approval requested")),
-            }
         return {"type": "error", "message": f"unknown tool: {name}"}
 
     def get(self, name: str) -> dict[str, Any] | None:
@@ -75,15 +69,5 @@ class DemoTools:
                 "name": "runtime_clock",
                 "description": "Return the monotonic runtime clock through a durable effect.",
                 "parameters": {"type": "object", "properties": {}},
-            },
-            {
-                "name": "request_approval",
-                "description": "Suspend this agent attempt until a human approves or denies it.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"reason": string},
-                    "required": ["reason"],
-                },
-                "is_exclusive": True,
             },
         ]

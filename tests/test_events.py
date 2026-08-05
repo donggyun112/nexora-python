@@ -50,7 +50,6 @@ async def test_a_tool_round_emits_the_full_hook_sequence() -> None:
         EventType.CONTEXT_INJECTED,
         EventType.PRE_TOOL_USE,
         EventType.POST_TOOL_USE,
-        EventType.POST_TOOL_BATCH,
         EventType.CONTEXT_INJECTED,
         EventType.STOP,
     ]
@@ -209,32 +208,7 @@ async def test_an_ask_decision_announces_a_permission_request() -> None:
     assert EventType.PERMISSION_REQUEST in sink.types()
     assert EventType.POST_TOOL_USE not in sink.types()
     assert EventType.POST_TOOL_USE_FAILURE not in sink.types()
-    assert EventType.POST_TOOL_BATCH not in sink.types()
     assert EventType.STOP not in sink.types()  # suspended, not stopped
-
-
-async def test_a_tool_suspension_announces_the_same_permission_request_once() -> None:
-    sink = Recorder()
-    request = {"type": "suspend", "pending_id": "c1", "reason": "deploy"}
-
-    with pytest.raises(AgentSuspended):
-        await AgentRuntime(emit=a_stream(sink)).run(
-            "tool-ask-event",
-            scripted(says("", a_call("c1", "request_approval"))),
-            Tools(results={"request_approval": request}, names=["request_approval"]),
-            "ship",
-        )
-
-    assert sink.types() == [
-        EventType.USER_PROMPT_SUBMIT,
-        EventType.CONTEXT_INJECTED,
-        EventType.PRE_TOOL_USE,
-        EventType.POST_TOOL_USE,
-        EventType.PERMISSION_REQUEST,
-        EventType.POST_TOOL_BATCH,
-    ]
-    announced = next(e for e in sink.seen if e.event_type == EventType.PERMISSION_REQUEST)
-    assert announced.payload["request"] == request
 
 
 async def test_stop_carries_the_reason() -> None:
@@ -309,7 +283,6 @@ async def test_orchestrator_owns_one_publisher_for_lifecycle_and_agent_events() 
         EventType.CONTEXT_INJECTED,
         EventType.PRE_TOOL_USE,
         EventType.POST_TOOL_USE,
-        EventType.POST_TOOL_BATCH,
         EventType.CONTEXT_INJECTED,
         EventType.STOP,
         EventType.SESSION_END,
@@ -348,7 +321,7 @@ async def test_no_answer_on_this_channel_can_decide_anything() -> None:
     `Permissions.resolve`, a call whose answer comes back by `return`.
     """
     assert EventType.PRE_TOOL_USE in BLOCKING  # names a decision point
-    assert EventType.POST_TOOL_BATCH not in BLOCKING
+    assert EventType.POST_TOOL_USE not in BLOCKING
 
     async def opinionated(envelope: EventEnvelope) -> Any:
         if envelope.payload.get("boom"):

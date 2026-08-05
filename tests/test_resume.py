@@ -46,7 +46,7 @@ async def test_a_suspended_run_continues_where_it_stopped() -> None:
         )
 
     assert first.ran == ["read"]
-    call, _pending, _snapshot, done = handed_over[0]
+    _call, pending, _snapshot, done = handed_over[0]
     assert [c["id"] for c in done] == ["c1"]
 
     # ── the human approves, hours later, in a new process ──
@@ -57,7 +57,7 @@ async def test_a_suspended_run_continues_where_it_stopped() -> None:
     model = scripted(says("deployed"))
     outcome = await runtime.resume(
         "resume-1",
-        call["id"],
+        pending["pending_id"],
         {"type": "text", "text": "approved"},
         model,
         resumed,
@@ -69,94 +69,6 @@ async def test_a_suspended_run_continues_where_it_stopped() -> None:
     assert answer.content == "deployment-id-7"
     assert outcome["content"] == "deployed"
     assert outcome["stop_reason"] == "completed"
-
-
-async def test_a_suspension_keeps_the_work_the_rest_of_the_batch_already_did() -> None:
-    """react.ts:196-245 — the round is absorbed whole, then it stops.
-
-    A call that finished is an external fact. Dropping it because a *different* call suspended
-    means the resumed run re-issues it, and a `write` runs twice. This engine used to return at
-    the suspended call, so anything after it in call order vanished.
-    """
-
-    tools = Tools(
-        results={"ask": {"type": "suspend", "pending_id": "p1"}},
-        defs={
-            "read": {"is_concurrency_safe": True},
-            "ask": {"is_concurrency_safe": True},
-            "write": {"is_concurrency_safe": True},
-        },
-        names=["read", "ask", "write"],
-    )
-
-    handed: list[tuple[str, list[str]]] = []
-
-    async def on_suspend(
-        call: Any, result: dict[str, Any], snapshot: list[BaseMessage], done: list[Any]
-    ) -> None:
-        handed.append((call["id"], [d["id"] for d in done]))
-
-    events: list[dict[str, Any]] = []
-
-    async def collect(event: dict[str, Any]) -> None:
-        events.append(event)
-
-    with pytest.raises(AgentSuspended):
-        await AgentRuntime().run(
-            "resume-batch",
-            scripted(
-                says("", a_call("c1", "read"), a_call("c2", "ask"), a_call("c3", "write")),
-                says("after"),
-            ),
-            tools,
-            "go",
-            on_suspend=on_suspend,
-            on_event=collect,
-        )
-
-    assert [e["id"] for e in events if e["type"] == "tool_result"] == ["c1", "c2", "c3"]
-    assert events[-1]["type"] == "suspended"
-    assert handed == [("c2", ["c1", "c3"])]  # c3 finished after the suspension and is kept
-
-
-async def test_an_elicitation_answer_is_injected_without_reexecuting_the_tool() -> None:
-    """A tool that asks the human has already run; its answer is the eventual tool result."""
-    runtime = AgentRuntime(store=MemorySteps())
-    first = Tools(
-        results={
-            "request_approval": {
-                "type": "suspend",
-                "pending_id": "question-1",
-                "prompt": "deploy?",
-            }
-        },
-        names=["request_approval"],
-    )
-
-    with pytest.raises(AgentSuspended) as stopped:
-        await runtime.run(
-            "resume-elicitation",
-            scripted(says("", a_call("c1", "request_approval"))),
-            first,
-            "ship it",
-        )
-
-    resumed = Tools(names=["request_approval"])
-    model = scripted(says("approved"))
-    outcome = await runtime.resume(
-        "resume-elicitation",
-        stopped.value.tool_call_id,
-        {"type": "text", "text": "yes"},
-        model,
-        resumed,
-    )
-
-    assert first.ran == ["request_approval"]
-    assert resumed.ran == []
-    answer = model.seen[0][-1]
-    assert isinstance(answer, ToolMessage)
-    assert answer.content == "yes"
-    assert outcome["content"] == "approved"
 
 
 async def test_repeating_resume_reuses_the_committed_effect_result() -> None:
@@ -183,7 +95,7 @@ async def test_repeating_resume_reuses_the_committed_effect_result() -> None:
     with pytest.raises(AgentFailed):
         await runtime.resume(
             "resume-retry",
-            "c1",
+            "approval-1",
             {"type": "text", "text": "approved"},
             scripted(),
             first_attempt,
@@ -193,7 +105,7 @@ async def test_repeating_resume_reuses_the_committed_effect_result() -> None:
     model = scripted(says("recovered"))
     outcome = await runtime.resume(
         "resume-retry",
-        "c1",
+        "approval-1",
         {"type": "text", "text": "approved"},
         model,
         second_attempt,

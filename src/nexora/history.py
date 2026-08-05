@@ -11,7 +11,7 @@ a payload the ledger can hold. It does not persist anything itself; `Orchestrato
 Ported from `loop-helpers.ts:96-125`.
 """
 
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 from langchain_core.messages import (
     AIMessage,
@@ -59,6 +59,37 @@ def suspension_result_message(
         name=name or None,
         status="error" if result.get("type") == "error" else "success",
     )
+
+
+def cancelled_tool_inputs(
+    snapshot: list[BaseMessage],
+    *,
+    reason: str = "cancelled by a newer user request",
+) -> list[PendingInput]:
+    """Close every unanswered tool call before a replacing HumanMessage may be admitted.
+
+    The cancellation is a protocol answer, not an execution result. Completed calls already have
+    ToolMessages in the snapshot and are preserved; only calls with no answer are closed.
+    """
+    answered = {
+        message.tool_call_id for message in snapshot if isinstance(message, ToolMessage)
+    }
+    pending: list[ToolCall] = []
+    for message in snapshot:
+        if isinstance(message, AIMessage):
+            pending.extend(call for call in message.tool_calls if call["id"] not in answered)
+    return [
+        PendingInput(
+            "cancelled_tool_result",
+            suspension_result_message(
+                call["id"] or "",
+                {"type": "error", "message": reason, "code": "cancelled"},
+                name=call.get("name", ""),
+            ),
+            f"cancel:{call['id']}",
+        )
+        for call in pending
+    ]
 
 
 def encode_pending_input(item: PendingInput) -> dict[str, Any]:
@@ -118,10 +149,6 @@ def suspend_history_snapshot(
     return snapshot
 
 
-SuspensionKind = Literal["effect_approval", "elicitation"]
-"""Why the run parked: an unexecuted effect gate, or an already-executed question tool."""
-
-
 class Suspension(NamedTuple):
     """A run stopped waiting for a person, written down so another process can continue it.
 
@@ -133,13 +160,11 @@ class Suspension(NamedTuple):
 
     call: ToolCall
     request: dict[str, Any]
-    """The suspend result the gate or the tool returned, whole — it carries the external handle."""
+    """The permission gate's request, whole — it carries the external approval handle."""
     messages: list[BaseMessage]
     completed: list[dict[str, Any]]
     rules_version: str
     """What the rules looked like when the call was made. Compare, do not trust."""
-    kind: SuspensionKind
-    """Whether resume must execute the call or use the human answer as the call result."""
     turn: int
     """The original model turn, retained so resumed control and observation events stay accurate."""
 
@@ -151,7 +176,6 @@ def encode_continuation(
     completed: list[dict[str, Any]],
     rules_version: str = "",
     *,
-    kind: SuspensionKind = "elicitation",
     turn: int = 0,
 ) -> dict[str, Any]:
     """A suspension as something the ledger can hold without knowing what a message is.
@@ -163,12 +187,12 @@ def encode_continuation(
     (ADR-003 §5). When one does, this shrinks to a position in it plus the one pruned message.
     """
     return {
+        "origin": "pre_tool_use",
         "call": call,
         "request": request,
         "messages": messages_to_dict(messages),
         "completed": completed,
         "rules_version": rules_version,
-        "kind": kind,
         "turn": turn,
     }
 
@@ -177,15 +201,19 @@ def decode_continuation(payload: dict[str, Any] | None) -> Suspension | None:
     """The other half. None passes through, so a caller can hand `suspension()` straight in."""
     if payload is None:
         return None
+    origin = payload.get("origin")
+    legacy_kind = payload.get("kind")
+    if origin != "pre_tool_use" and legacy_kind != "effect_approval":
+        raise ValueError(
+            "cannot resume an ambiguous or tool-originated legacy suspension; "
+            "only pre_tool_use permission continuations are executable"
+        )
     return Suspension(
         call=cast(ToolCall, payload["call"]),
         request=payload["request"],
         messages=messages_from_dict(payload["messages"]),
         completed=payload["completed"],
         rules_version=payload.get("rules_version", ""),
-        # Old records did not preserve the origin. Treating them as elicitation is the safe
-        # migration: it cannot unexpectedly execute an external effect after an upgrade.
-        kind=cast(SuspensionKind, payload.get("kind", "elicitation")),
         turn=int(payload.get("turn", 0)),
     )
 

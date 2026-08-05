@@ -1,4 +1,4 @@
-"""Six control points, six composition rules. One generic gate could not hold these."""
+"""Typed control points with point-specific composition rules."""
 
 from typing import Any
 
@@ -19,7 +19,6 @@ from nexora.controls import (
     Proceed,
     ResumeInput,
     Steering,
-    StopPolicy,
     Suspend,
     Suspending,
 )
@@ -146,33 +145,6 @@ async def test_every_writer_runs_and_a_raise_is_fail_closed() -> None:
     assert written == ["ok"]
 
 
-# ── after_tool_batch: one stop is enough, every gate still asked ─────────────
-
-
-async def test_one_stop_ends_the_turn_and_every_gate_is_still_asked() -> None:
-    """Asked even after a stop: this is where budget accounting lives, and a gate that only hears
-    about rounds nobody else ended has wrong numbers."""
-    asked: list[str] = []
-
-    def budget(answer: Any, name: str) -> Any:
-        async def g(ctx: Ctx, resolved: Any) -> Any:
-            asked.append(name)
-            return answer
-
-        return g
-
-    decision = await StopPolicy(
-        budget(Halt("policy"), "first"), budget(Proceed(), "second")
-    )(CTX, [])
-
-    assert decision == Halt("policy")
-    assert asked == ["first", "second"]
-
-
-async def test_no_gate_means_carry_on() -> None:
-    assert await StopPolicy()(CTX, []) == Proceed()
-
-
 # ── before_model: steers accumulate in order ─────────────────────────────────
 
 
@@ -225,7 +197,6 @@ async def test_an_empty_plane_lets_everything_through() -> None:
 
     assert isinstance(plane, Controls)
     assert await plane.before_model(CTX) == Proceed()
-    assert await plane.before_tool_batch(CTX, [CALL]) == [CALL]
     assert await plane.pre_tool_use(CTX, CALL) == Continue()
     resume = ResumeInput(
         answer={"type": "text", "text": "approved"},
@@ -234,7 +205,6 @@ async def test_an_empty_plane_lets_everything_through() -> None:
         current_rules_version="v1",
     )
     assert await plane.on_resume(CTX, CALL, resume) == Continue()
-    assert await plane.after_tool_batch(CTX, []) == Proceed()
     await plane.after_tool_call(CTX, CALL, {"type": "text", "text": "x"})
     await plane.on_suspend(CTX, CALL, {"pending_id": "c1"}, [], [])
 

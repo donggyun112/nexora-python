@@ -187,6 +187,27 @@ async def react_loop(
                 # received these inputs would be an audit-log lie.
                 carried_inputs = late_inputs
                 continue
+            if controls is not None:
+                # The last word. A verifier that says "not done yet" gets another round, which is
+                # why this sits after the late-input check and not instead of it: an arriving steer
+                # and a policy objection are different reasons to keep going, and both may apply.
+                # A gate that vetoes forever runs forever — this loop caps nothing by design, and
+                # `should_stop_after_turn` is not consulted on a round that asked for no tools.
+                match await controls.before_finish(
+                    Ctx(
+                        turn=turn,
+                        messages=list(messages),
+                        calls_made=list(calls_made),
+                        text=turn_text,
+                    ),
+                    "completed",
+                ):
+                    case Proceed(steers):
+                        carried_inputs += [PendingInput("control", message) for message in steers]
+                        continue
+                    case Halt(halt_reason):
+                        yield await _done(emit, turn_text, calls_made, halt_reason, spent)
+                        return
             yield await _done(emit, turn_text, calls_made, "completed", spent)
             return
 

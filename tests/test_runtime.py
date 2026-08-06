@@ -299,6 +299,41 @@ async def test_runtime_recovers_a_tool_round_without_replaying_the_model() -> No
     assert outcome["content"] == "finished"
 
 
+async def test_recovery_does_not_re_decide_a_refusal_the_transcript_already_answered() -> None:
+    """The other half of the rule the test below states, and the reason a `Deny` needs no ledger
+    entry of its own: a refusal is an answer, and an answered call is not part of the pending
+    round. The gate re-runs only for calls with nothing in the transcript — record the refusal in
+    the ledger instead and `recover_pending` would replay it as a completed step, journalling an
+    effect that never happened.
+    """
+    store = MemorySteps()
+    requested = [a_call("c1", "rm"), a_call("c2", "read")]
+    tools = Tools(names=["rm", "read"])
+    asked: list[str] = []
+
+    async def deny_rm(call: ToolCall) -> dict[str, Any] | None:
+        asked.append(call["id"] or "")
+        return {"type": "error", "message": "not allowed"} if call["name"] == "rm" else None
+
+    history = [
+        HumanMessage("go"),
+        AIMessage(content="", tool_calls=requested),
+        ToolMessage(content="not allowed", tool_call_id="c1", status="error"),
+    ]
+
+    outcome = await AgentRuntime(store=store).recover(
+        "run-denied",
+        history,
+        scripted(says("finished")),
+        tools,
+        controls=ControlPlane(pre_tool_use=Permissions(gate(deny_rm))),
+    )
+
+    assert asked == ["c2"]  # c1 was answered; nothing re-decides it
+    assert tools.ran == ["read"]
+    assert outcome["content"] == "finished"
+
+
 async def test_public_recover_resumes_the_durable_round_without_model_replay() -> None:
     store = MemorySteps()
     runtime = AgentRuntime(store=store)

@@ -97,11 +97,16 @@ async def test_a_submission_is_announced_once_and_carries_no_prompt_text() -> No
     assert submitted.payload["input_id"]
 
 
-async def test_a_run_with_nothing_new_in_the_inbox_announces_no_submission() -> None:
+async def test_a_run_with_no_prompt_announces_no_submission() -> None:
+    """A continuation is not a submission. Through the runtime, because that is the only layer
+    that can announce one — asserting this against a bare `react_loop` would test nothing."""
     resumed = Recorder()
-    async for _ in react_loop(scripted(says("done")), Tools(), emit=a_stream(resumed)):
-        pass
-    assert EventType.USER_PROMPT_SUBMIT not in resumed.types()
+
+    await AgentRuntime(store=MemorySteps(), emit=a_stream(resumed)).run(
+        "event-resume", scripted(says("done")), Tools()
+    )
+
+    assert resumed.types() == [EventType.STOP]
 
 
 async def test_a_masked_prompt_leaves_no_original_in_the_event_stream() -> None:

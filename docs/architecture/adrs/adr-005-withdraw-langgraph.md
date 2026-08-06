@@ -4,6 +4,9 @@
 
 **대체:** ADR-001, ADR-003, ADR-004의 실행 엔진 결론을 이 문서로 통합한다.
 
+**보강:** 뒤집힘 조건 2·3·5는 [ADR-007](adr-007-everything-nondeterministic-is-a-step.md)이
+검토 후 닫았다. 남는 재검토 방아쇠는 Platform 운영 구매라는 사업 결정뿐이다.
+
 ## 맥락
 
 Nexora에는 같은 durable tool round를 수행하는 두 구현이 존재했다.

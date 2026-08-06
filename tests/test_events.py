@@ -14,7 +14,18 @@ from nexora.contracts import (
     PendingInput,
     RuntimeEvents,
 )
-from nexora.controls import ControlPlane, Halt, Permissions, Proceed, gate
+from nexora.contracts.types import ToolCall
+from nexora.controls import (
+    Continue,
+    ControlPlane,
+    Controls,
+    Halt,
+    Ingress,
+    Permissions,
+    Proceed,
+    ToolDecision,
+    gate,
+)
 from nexora.engines.plain import react_loop
 from nexora.orchestrator import AgentSuspended, MemorySteps
 from tests.test_loop import Tools, a_call, says, scripted
@@ -67,7 +78,12 @@ async def test_a_failing_tool_emits_the_failure_variant() -> None:
     assert EventType.POST_TOOL_USE not in sink.types()
 
 
-async def test_a_submitted_prompt_is_emitted_once_but_an_empty_resume_is_not() -> None:
+async def test_a_submission_is_announced_once_and_carries_no_prompt_text() -> None:
+    """The payload identifies a submission and nothing more.
+
+    Text here would be the pre-mask original — this event fires at the inbox, before `on_inputs`
+    can screen anything. The admitted version is `CONTEXT_INJECTED`'s job.
+    """
     sink = Recorder()
 
     await AgentRuntime(store=MemorySteps(), emit=a_stream(sink)).run(
@@ -76,14 +92,49 @@ async def test_a_submitted_prompt_is_emitted_once_but_an_empty_resume_is_not() -
 
     assert sink.types().count(EventType.USER_PROMPT_SUBMIT) == 1
     submitted = next(e for e in sink.seen if e.event_type == EventType.USER_PROMPT_SUBMIT)
-    assert submitted.payload["prompt"] == "hello"
+    assert set(submitted.payload) == {"input_id", "source"}
     assert submitted.payload["source"] == "user_prompt"
-    assert "turn" not in submitted.payload
+    assert submitted.payload["input_id"]
 
+
+async def test_a_run_with_nothing_new_in_the_inbox_announces_no_submission() -> None:
     resumed = Recorder()
     async for _ in react_loop(scripted(says("done")), Tools(), emit=a_stream(resumed)):
         pass
     assert EventType.USER_PROMPT_SUBMIT not in resumed.types()
+
+
+async def test_a_masked_prompt_leaves_no_original_in_the_event_stream() -> None:
+    """The submission path end to end, which is where the leak was.
+
+    `test_loop.py` masks an input that arrives by `drain_inputs`, so `USER_PROMPT_SUBMIT` never
+    fires there and the original could ride out on it unnoticed. Going through `run()` puts the
+    prompt through `enqueue_input` first, the way a real caller does.
+    """
+    sink = Recorder()
+
+    async def mask(ctx: Any, inputs: list[PendingInput]) -> list[PendingInput]:
+        return [
+            PendingInput(
+                item.kind,
+                HumanMessage(str(item.message.content).replace("123-45", "***")),
+                item.origin_id,
+            )
+            for item in inputs
+        ]
+
+    await AgentRuntime(store=MemorySteps(), emit=a_stream(sink)).run(
+        "masked-prompt",
+        scripted(says("done")),
+        Tools(),
+        "ssn is 123-45",
+        controls=ControlPlane(on_inputs=Ingress(mask)),
+    )
+
+    assert EventType.USER_PROMPT_SUBMIT in sink.types()  # the announcing path really ran
+    assert "123-45" not in str([e.payload for e in sink.seen])
+    injected = [e.payload for e in sink.seen if e.event_type == EventType.CONTEXT_INJECTED]
+    assert injected and "***" in str(injected)
 
 
 async def test_inputs_are_recorded_when_they_enter_the_model_context() -> None:
@@ -313,12 +364,59 @@ async def test_event_id_differs_by_position_in_the_run() -> None:
     assert sink.seen[0].event_id != sink.seen[1].event_id
 
 
+def test_every_blocking_event_names_a_control_point_that_exists() -> None:
+    """A `BLOCKING` entry promises a gate decides that event, so the gate has to be real.
+
+    `PRE_COMPACT` and `ELICITATION` sat in this table while `Controls` had no method for either —
+    a contract advertising a decision point that nothing could decide. This fails on the next one
+    instead of documenting it.
+    """
+    for event_type, control_point in BLOCKING.items():
+        assert hasattr(Controls, control_point), (
+            f"{event_type} names control point {control_point!r}, absent from `Controls`"
+        )
+
+
+async def test_announcing_a_tool_call_and_asking_the_gate_are_one_step() -> None:
+    """Per call: the event, then the decision it announces. Nothing between them, nothing missing.
+
+    The pairing is code placement in `decide_tool_call`, not a type — an engine that emitted
+    `PRE_TOOL_USE` and skipped the control point would run the call unguarded, and every default
+    in `ControlPlane` is fail-open. Two calls in the round, because with one an interleaving bug
+    and correct behaviour look the same.
+    """
+    # ponytail: asserted for `engines/plain`, the only engine (ADR-005). A second engine needs this
+    # test parametrized over engines, not a conformance harness built before there is a second one.
+    trail: list[str] = []
+
+    class Watching(Recorder):
+        async def __call__(self, envelope: EventEnvelope) -> None:
+            if envelope.event_type == EventType.PRE_TOOL_USE:
+                trail.append(f"event:{envelope.payload['call_id']}")
+            await super().__call__(envelope)
+
+    async def watch(ctx: Any, call: ToolCall) -> ToolDecision:
+        trail.append(f"control:{call['id']}")
+        return Continue()
+
+    llm = scripted(says("", a_call("c1", "read"), a_call("c2", "read")), says("done"))
+    await AgentRuntime(store=MemorySteps(), emit=a_stream(Watching())).run(
+        "gate-pairing",
+        llm,
+        Tools(),
+        "hi",
+        controls=ControlPlane(pre_tool_use=Permissions(watch)),
+    )
+
+    assert trail == ["event:c1", "control:c1", "event:c2", "control:c2"]
+
+
 async def test_no_answer_on_this_channel_can_decide_anything() -> None:
     """A subscriber that tries to decide is ignored, and one that dies is logged and skipped.
 
     Both together are the point: this channel is observation, so nothing load-bearing may ride
-    on it. `BLOCKING` only marks *which* events describe a decision point — the decision is
-    `Permissions.resolve`, a call whose answer comes back by `return`.
+    on it. `BLOCKING` only says *which* events describe a decision point and *which* control point
+    decides it — the decision itself is that call, whose answer comes back by `return`.
     """
     assert EventType.PRE_TOOL_USE in BLOCKING  # names a decision point
     assert EventType.POST_TOOL_USE not in BLOCKING

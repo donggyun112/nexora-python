@@ -146,8 +146,12 @@ async def react_loop(
                     # Chunks add, and the sum reassembles tool arguments that arrived as JSON
                     # fragments — the one part of streaming worth not writing ourselves.
                     reply = chunk if reply is None else reply + chunk
-                    if isinstance(chunk.content, str) and chunk.content:
-                        yield {"type": "text", "text": chunk.content}
+                    # `.text` and not `.content`: a provider may stream content blocks rather than
+                    # a plain string, and reading `content` directly meant a block-shaped chunk
+                    # produced no `text` event at all — the caller saw an empty answer until the
+                    # run finished. The property concatenates the text blocks and ignores the rest.
+                    if delta := chunk.text:
+                        yield {"type": "text", "text": delta}
                     # Checked per chunk, not just per round: a SIGTERM arriving early in a long
                     # generation should not wait out the rest of it. Still a poll at a point the
                     # loop chose — a callback firing at an arbitrary await would make the step
@@ -304,9 +308,8 @@ async def _commit_inputs(
 
 
 def _text_of(reply: AIMessageChunk | None) -> str:
-    if reply is None:
-        return ""
-    return reply.content if isinstance(reply.content, str) else reply.text()
+    """The assistant text of a turn, whatever shape the provider streamed it in."""
+    return reply.text if reply is not None else ""
 
 
 def _usage_of(reply: AIMessageChunk | None) -> dict[str, int]:

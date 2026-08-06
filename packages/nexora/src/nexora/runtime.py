@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, ToolMessage
 
 from .contracts import BaseMessage, EventType, PendingInput, RuntimeEvents, Tools
 from .contracts.types import Aborted, Emit, OnSuspend
-from .controls import Ctx
+from .controls import Controls, Ctx
 from .driver import drive
 from .engines.plain import react_loop
 from .history import (
@@ -63,7 +63,7 @@ class AgentRuntime:
         tools: Tools,
         prompt: str = "",
         *,
-        controls: Any = None,
+        controls: Controls | None = None,
         on_event: OnAgentEvent | None = None,
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
@@ -154,7 +154,7 @@ class AgentRuntime:
         model: Any,
         tools: Tools,
         *,
-        controls: Any = None,
+        controls: Controls | None = None,
         on_event: OnAgentEvent | None = None,
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
@@ -212,7 +212,7 @@ class AgentRuntime:
         model: Any,
         tools: Tools,
         *,
-        controls: Any = None,
+        controls: Controls | None = None,
         aborted: Aborted = lambda: False,
         retry_running: bool = True,
         on_event: OnAgentEvent | None = None,
@@ -256,7 +256,7 @@ class AgentRuntime:
         tools: Tools,
         *,
         history: list[BaseMessage] | None,
-        controls: Any,
+        controls: Controls | None,
         on_event: OnAgentEvent | None,
         **engine_options: Any,
     ) -> dict[str, Any]:

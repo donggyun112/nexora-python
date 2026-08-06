@@ -47,6 +47,41 @@ class InvalidToolResult(RuntimeError):
     """A tool returned a control-plane result reserved for permission gates."""
 
 
+class InvalidToolCall(RuntimeError):
+    """A requested round cannot be keyed, so none of it may run."""
+
+
+def require_call_ids(calls: list[ToolCall]) -> list[ToolCall]:
+    """Refuse a round whose calls cannot be told apart. Checked before any effect.
+
+    The call id is the idempotency key (ADR-002), so it is also the step name. LangChain types it
+    as optional and a provider or adapter can hand over a round with a missing or repeated one —
+    and then the ledger cannot say which call a result belongs to.
+
+    The whole round is refused rather than the offending call filtered out, for two reasons. A
+    filtered call would sit in the assistant message forever with no `ToolMessage` answering it,
+    which is exactly what `_unanswered_tool_calls` reads as "still pending". And a result cannot be
+    returned for a call with no id at all: `ToolMessage` needs one. Refusing early is also what
+    keeps the round from half-executing — the failure this replaced ran the first tool and raised
+    `duplicate step name` on the second, after the effect.
+    """
+    seen: set[str] = set()
+    for position, call in enumerate(calls):
+        call_id = call.get("id")
+        if not call_id:
+            raise InvalidToolCall(
+                f"tool call {position} ({call.get('name')!r}) has no id; "
+                "the id is the idempotency key and the durable step name"
+            )
+        if call_id in seen:
+            raise InvalidToolCall(
+                f"tool call id {call_id!r} appears twice in one round; "
+                "a ledger keyed by call id cannot tell the two apart"
+            )
+        seen.add(call_id)
+    return calls
+
+
 def validate_tool_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
     """Reject approval suspension after execution; approval belongs to ``pre_tool_use``."""
     if result.get("type") == "suspend":
@@ -460,7 +495,12 @@ async def _execute_validated(
 
 
 def select_for_execution(tools: Tools, calls: list[ToolCall]) -> list[ToolCall]:
-    """An exclusive call runs alone; the model re-issues the others next round."""
+    """An exclusive call runs alone; the model re-issues the others next round.
+
+    Ids are checked here because this runs before the engine appends the assistant message or
+    announces a single call — the earliest point where refusing costs nothing.
+    """
+    require_call_ids(calls)
     for call in calls:
         if _flag(tools, call, "is_exclusive"):
             return [call]

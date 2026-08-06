@@ -1,10 +1,12 @@
 """A tool call is a step. What that does to a run that resumes."""
 
-from typing import Any
+from typing import Any, cast
 
+import pytest
 from nexora.engines.plain import react_loop
-from nexora.orchestrator import MemorySteps, Orchestrator
-from nexora.tools import Concurrent, Stepped
+from nexora.orchestrator import MemorySteps, Orchestrator, Step
+from nexora.tools import Concurrent, InvalidToolCall, Stepped
+
 from tests.test_loop import Tools, a_call, says, scripted
 
 SAFE = {"is_concurrency_safe": True}
@@ -45,3 +47,20 @@ async def test_concurrent_outside_stepped_keeps_both_properties() -> None:
     assert sorted(tools.executed) == ["a", "b"]
     assert (await log.read("run-3", "a")).status == "done"
     assert (await log.read("run-3", "b")).status == "done"
+
+
+async def test_an_unkeyable_round_executes_no_tool_and_records_no_step() -> None:
+    """The durable boundary is public, so it checks the ids itself — before `record_pending`.
+
+    An invalid round leaves nothing behind: no effect, and no pending-round entry claiming a round
+    that could never be keyed.
+    """
+    log = MemorySteps()
+    tools = Counting()
+    calls = [a_call(cast(str, None), "read"), a_call(cast(str, None), "read")]
+
+    with pytest.raises(InvalidToolCall):
+        await Orchestrator("unkeyable", log).execute_round(tools, calls, lambda: False)
+
+    assert tools.executed == []
+    assert await log.read("unkeyable", "agent:pending-round") == Step("absent")

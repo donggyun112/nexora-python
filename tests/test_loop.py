@@ -1,5 +1,6 @@
 """Loop semantics pinned against react.ts. Fakes, not mocks."""
 
+import warnings
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import Any, cast
@@ -406,6 +407,42 @@ async def test_a_gate_cannot_relabel_an_ending_it_did_not_object_to() -> None:
     )
 
     assert events[-1]["stop_reason"] == "completed"
+
+
+async def test_a_provider_streaming_content_blocks_still_streams_to_the_caller() -> None:
+    """Not every provider streams a bare string. Reading `chunk.content` directly meant a
+    block-shaped chunk produced no `text` event at all: the answer arrived only in the terminal
+    event, so a UI showed nothing until the run finished. `.text` is shape-agnostic.
+    """
+
+    class Blocks(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            for piece in ("hello ", "world"):
+                yield ChatGenerationChunk(
+                    message=AIMessageChunk(content=[{"type": "text", "text": piece}])
+                )
+
+    model = Blocks(messages=iter(()))
+    model.seen = []
+    events = await run(model, durable=False)
+
+    assert [e["text"] for e in events if e["type"] == "text"] == ["hello ", "world"]
+    assert events[-1]["content"] == "hello world", "and the turn text still adds up"
+
+
+async def test_streaming_emits_no_deprecated_langchain_call() -> None:
+    """`reply.text()` was a method call LangChain now warns about; `.text` is the property.
+
+    Asserted rather than tidied silently, because a warning that reappears is a version drift
+    someone should see rather than a line of noise in every run's output.
+    """
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        await run(scripted(says("done")), durable=False)
+
+    assert not [w for w in caught if "deprecat" in str(w.message).lower()], [
+        str(w.message) for w in caught
+    ]
 
 
 async def test_an_abort_inside_a_generation_carries_the_fragment_and_says_it_is_one() -> None:

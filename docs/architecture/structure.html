@@ -167,7 +167,7 @@
 <body>
   <header>
     <div class="shell">
-      <p class="eyebrow">Nexora · Architecture diagrams · 2026-08-05</p>
+      <p class="eyebrow">Nexora · Architecture diagrams · 2026-08-06</p>
       <h1>Durable Agent Runtime</h1>
       <p class="lead">plain while 플래너와 중앙 Orchestrator 실행 경계의 실제 노드·엣지 구조도. 권한은 실행 전 <code>pre_tool_use</code>에서만 결정되고, batch는 이벤트나 control point가 아닌 실행 최적화 단위로만 존재한다.</p>
       <div class="decision">
@@ -195,7 +195,7 @@
         <div class="number">01 · System flow</div>
         <div>
           <h2>전체 런타임 구조</h2>
-          <p class="note">모델은 effect를 요청할 뿐 실행하지 않는다. 모든 tool effect는 Orchestrator의 pending 기록, 호출별 권한 게이트, StepLog를 거쳐 외부 세계에 도달한다.</p>
+          <p class="note">모델은 effect를 요청할 뿐 실행하지 않는다. 모든 tool effect는 Orchestrator의 pending 기록, 호출별 권한 게이트, StepLog를 거쳐 외부 세계에 도달한다. tool 결과는 정상 경로에서 durable inbox를 거치지 않는다 — 같은 라운드 안의 carried input이고, inbox를 통과하는 건 복구가 복원해 넣을 때다.</p>
         </div>
       </div>
       <div class="diagram-frame">
@@ -222,9 +222,11 @@ flowchart LR
   end
 
   subgraph AP["AGENT PLANE · intent only"]
+    OI{"on_inputs<br/>mask · drop · Halt"}:::control
+    BM{"before_model<br/>steer · Halt"}:::control
     L["react_loop<br/>plain async while"]:::planner
     M["Chat Model"]:::planner
-    BF{"before_finish"}:::control
+    BF{"before_finish<br/>veto the ending"}:::control
     DONE(["done / stop"]):::stop
   end
 
@@ -233,6 +235,7 @@ flowchart LR
     RP["record_pending<br/>ordered tool requests"]:::durable
     G{"pre_tool_use<br/>per call"}:::control
     S["Stepped effect<br/>call_id = idempotency key"]:::durable
+    AT["after_tool_call<br/>journal · raise stops the run"]:::control
     RV["on_resume<br/>current-policy revalidation"]:::control
     TM["ToolMessage<br/>result · denied · cancelled"]:::planner
     P[("Permission continuation<br/>worker = 0")]:::durable
@@ -256,11 +259,12 @@ flowchart LR
   C -->|"prompt"| R
   B -->|"durable input"| R
   R --> IQ
-  IQ -->|"claim + admit"| L
+  IQ -->|"claim"| OI --> BM
+  BM -->|"admit — context_injected"| L
   L --> M
   M -->|"text only"| BF
   BF -->|"Halt"| DONE
-  BF -->|"Proceed + steer"| IQ
+  BF -->|"Proceed + steer"| OI
   M -->|"AIMessage(tool_calls)<br/>request ≠ execution"| ER
   ER --> RP --> G
   G -->|"Continue"| S
@@ -274,13 +278,14 @@ flowchart LR
   S -->|"start"| SL
   S --> T
   T -->|"result"| SL
-  SL -->|"done result"| TM
-  TM --> IQ
+  SL -->|"committed result"| AT
+  AT --> TM
+  TM -->|"carried input — same round"| L
   RC -->|"read ordered calls"| RP
   RC -->|"reuse done / inspect running"| SL
-  RP -.-> EV
+  RC -->|"restored results → inbox"| IQ
   G -.-> EV
-  T -.-> EV
+  AT -.-> EV
   DONE -.-> EV
   EV --> AU
         </pre>

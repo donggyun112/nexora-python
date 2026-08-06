@@ -5,6 +5,18 @@ documentation corrections belong in the commit log, not here.
 
 ## Unreleased
 
+### Fixed
+
+- **`Controls.before_finish` is actually called now.** The protocol method, the `FinishPolicy`
+  composer and the `ControlPlane` slot all existed with no caller anywhere, so a registered
+  verifier silently did nothing. `react_loop` now asks it on a round the model ended without tool
+  calls, after the late-steer check: `Proceed` sends the run around again with its steers admitted
+  beside the next model call, `Halt` ends it. Registering nothing keeps the previous behaviour
+  exactly. `FinishPolicy` is also exported now — it was missing from `controls.__all__`.
+
+  Note that `FinishPolicy` returns the engine's stop reason, so a gate decides only whether the run
+  continues; it cannot relabel an ending it did not object to.
+
 ### Breaking
 
 - **`controls.gate()` maps `{"type": "allow"}` to `Continue` instead of `Deny`.** A stage answering

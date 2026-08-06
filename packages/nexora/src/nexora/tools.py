@@ -316,7 +316,19 @@ class Concurrent:
         if concurrency_safe_batch(self._tools, [_as_tool_call(call) for call in calls]):
             if self._aborted():
                 return []
-            return list(await asyncio.gather(*(self._one(call) for call in calls)))
+            # `return_exceptions` so a raise does not abandon the calls beside it. Plain `gather`
+            # propagates the first exception and leaves the rest running: their effects still land,
+            # after the round is over and with nothing awaiting them. Cancelling instead would be
+            # worse — a tool cut mid-write leaves the ledger saying it never ran. So the round is
+            # awaited whole, every finished call reaches its step, and then the failure is raised.
+            together: list[dict[str, Any]] = []
+            for outcome in await asyncio.gather(
+                *(self._one(call) for call in calls), return_exceptions=True
+            ):
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                together.append(outcome)
+            return together
         resolved: list[dict[str, Any]] = []
         for call in calls:
             if self._aborted():
@@ -335,7 +347,7 @@ class Concurrent:
         return {"call_id": call["call_id"], "result": result}
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
-        return await self._tools.execute(name, call_id, arguments)
+        return await _execute_validated(self._tools, name, call_id, arguments)
 
     def get(self, name: str) -> dict[str, Any] | None:
         return self._tools.get(name)
@@ -395,7 +407,7 @@ def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
     return Absorbed(answers, completed, suspended, ended_by_tool)
 
 
-def a_tool_result(call: ToolCall, result: dict[str, Any]) -> dict[str, Any]:
+def tool_result(call: ToolCall, result: dict[str, Any]) -> dict[str, Any]:
     """The one definition of the public `tool_result` event."""
     return {
         "type": "tool_result",

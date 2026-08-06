@@ -5,13 +5,19 @@ and suspension snapshots. They have no I/O, so a unit test is enough and a failu
 the rule rather than at the loop.
 """
 
-from typing import Any
+from typing import Any, cast
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-
 from nexora.contracts import BaseMessage, ToolCall
 from nexora.history import suspend_history_snapshot
-from nexora.tools import render_for_model, select_for_execution, terminates_loop
+from nexora.tools import (
+    InvalidToolCall,
+    render_for_model,
+    require_call_ids,
+    select_for_execution,
+    terminates_loop,
+)
 
 
 class Defs:
@@ -137,3 +143,32 @@ def test_earlier_turns_are_left_alone() -> None:
     earlier = snapshot[0]
     assert isinstance(earlier, AIMessage)
     assert [c["id"] for c in earlier.tool_calls] == ["old1", "old2"]
+
+
+# ── The round has to be keyable before any of it runs ────────────────────────
+
+
+def test_a_round_with_an_unkeyable_call_is_refused_whole() -> None:
+    """The call id is the step name, so a round that cannot be keyed cannot be recorded.
+
+    What this replaced: the first tool executed and the second raised `duplicate step name` from
+    inside the ledger — after the effect. Refused whole rather than filtered, because a dropped
+    call would stay in the assistant message with no `ToolMessage` answering it, which
+    `_unanswered_tool_calls` reads as still pending, forever.
+    """
+    with pytest.raises(InvalidToolCall, match="has no id"):
+        require_call_ids([a_call("read", cast(str, None))])
+    with pytest.raises(InvalidToolCall, match="has no id"):
+        require_call_ids([a_call("read", "")])
+    with pytest.raises(InvalidToolCall, match="appears twice"):
+        require_call_ids([a_call("read", "c1"), a_call("write", "c1")])
+
+    keyed = [a_call("read", "c1"), a_call("write", "c2")]
+    assert require_call_ids(keyed) == keyed
+
+
+def test_selection_refuses_the_round_before_announcing_a_single_call() -> None:
+    """`select_for_execution` runs before the engine appends the assistant message and before any
+    `tool_call` event — the last moment at which refusing costs nothing."""
+    with pytest.raises(InvalidToolCall):
+        select_for_execution(Defs(), [a_call("read", "c1"), a_call("read", "c1")])

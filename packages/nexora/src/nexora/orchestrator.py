@@ -65,6 +65,7 @@ from .tools import (
     absorb_round,
     execute_calls,
     record_resolved,
+    require_call_ids,
     tool_payload,
 )
 
@@ -471,6 +472,9 @@ class Orchestrator:
         boundary so callers cannot accidentally compose them in the unsafe order.
         """
         publisher = emit if emit is not None else self._emit
+        # Before `record_pending`, so an unkeyable round leaves no durable trace of itself. The
+        # engine checks this too; this is the durable boundary, and it is public.
+        require_call_ids(calls)
         await self.record_pending(calls, turn)
         durable = Concurrent(Stepped(tools, self), aborted)
         try:

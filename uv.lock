@@ -538,10 +538,12 @@ source = { editable = "." }
 dependencies = [
     { name = "langchain-core" },
     { name = "loguru" },
-    { name = "psycopg", extra = ["binary", "pool"] },
 ]
 
 [package.optional-dependencies]
+postgres = [
+    { name = "psycopg", extra = ["binary", "pool"] },
+]
 ui = [
     { name = "fastapi" },
     { name = "langchain-openai" },
@@ -563,11 +565,11 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1,<2" },
     { name = "langchain-openai", marker = "extra == 'ui'", specifier = ">=0.3,<2" },
     { name = "loguru", specifier = ">=0.7,<1" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3,<4" },
+    { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'postgres'", specifier = ">=3.3,<4" },
     { name = "python-dotenv", marker = "extra == 'ui'", specifier = ">=1.1,<2" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'ui'", specifier = ">=0.35,<1" },
 ]
-provides-extras = ["ui"]
+provides-extras = ["postgres", "ui"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -10,9 +10,9 @@ import pytest
 
 from nexora import AgentRuntime
 from nexora.contracts import ToolCall
-from nexora.controls import ControlPlane, Permissions, gate
+from nexora.controls import ControlPlane, Ctx, Deny, Permissions, gate
 from nexora.history import decode_continuation, encode_continuation
-from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator, PermissionChain
+from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora.permissions import PolicyContext, Rule, resolve_rules
 from tests.test_loop import Tools, a_call, says, scripted
 
@@ -197,12 +197,12 @@ async def test_a_policy_context_is_one_owned_thing() -> None:
         seen.append("hook")
         return {"type": "allow"}
 
-    chain = PermissionChain(permissive, policy.stage(tools))
-    decision = await chain.resolve(a_call("c1", DEPLOY))
+    chain = Permissions(gate(permissive), gate(policy.stage(tools)))
+    decision = await chain(Ctx(turn=0), a_call("c1", DEPLOY))
 
     assert seen == ["hook"]
-    assert decision is not None
-    assert decision["type"] == "error"  # the rules had the last word
+    assert isinstance(decision, Deny)  # the rules had the last word
+    assert decision.result["type"] == "error"
 
 
 @pytest.mark.parametrize("effect", ["deny", "ask"])

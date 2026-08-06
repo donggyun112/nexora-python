@@ -12,7 +12,7 @@ from langchain_core.outputs import ChatGenerationChunk
 from nexora import AgentRuntime, react_loop
 from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
 from nexora.controls import ControlPlane, Halt, Ingress, Journal, Permissions, gate, writer
-from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended, PermissionChain
+from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended
 from nexora.tools import InvalidToolResult
 
 
@@ -528,8 +528,13 @@ async def test_a_deny_beats_an_allow_whatever_the_order() -> None:
         return None
 
     llm = scripted(says("", a_call("c1", "rm")), says("recovered"))
-    chain = PermissionChain(permissive, deny_rules, never_reached)
-    events = await run(llm, tools, pre_tool_use=chain.resolve)
+    events = await run(
+        llm,
+        tools,
+        controls=ControlPlane(
+            pre_tool_use=Permissions(gate(permissive), gate(deny_rules), gate(never_reached))
+        ),
+    )
 
     assert seen == ["hook", "rules"]  # allow did not stop the chain; deny did
     assert tools.ran == []

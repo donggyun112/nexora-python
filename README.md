@@ -114,35 +114,36 @@ suspension/resume scenarios.
 
 ## Current scaffold
 
-A uv workspace of five distributions. `nexora` is the runtime; what is split out is what has its
-own dependency footprint or its own audience, which is the line the Python ecosystem draws —
-`langchain-openai`, `apache-airflow-providers-*`, `opentelemetry-exporter-*`. Layers that share one
-footprint stay subpackages, the way Django keeps `django.db` inside `django`.
+A uv workspace of five distributions, all under `packages/`. The root builds nothing — none of the
+members is the product the others orbit, so the core sits beside them rather than above them.
 
 ```text
-src/nexora/                 nexora                    deps: langchain-core, loguru, nexora-store
-├── contracts/              message types, the event vocabulary
-├── controls.py             the control points and what composes at each
-├── tools.py                tool execution, the policy gate, result rendering
-├── history.py              suspension snapshots and the resume codec
-├── orchestrator.py         durable rounds, suspension, recovery
-├── engines/plain/          the planner as an `async while`
-├── driver.py               engine stream → one outcome
-└── runtime.py              the public AgentRuntime facade
-
 packages/
-├── nexora-store/           nexora_store         StepLog, MemorySteps.  deps: none
-├── nexora-store-pg/        nexora_store_pg      Postgres StepLog       nexora[postgres]
-├── nexora-permissions/     nexora_permissions   the rule table         nexora[permissions]
-└── nexora-ui/              nexora_ui            local console          nexora[ui]
+├── nexora/                 nexora               the core · deps: langchain-core, loguru, nexora-store
+│   └── src/nexora/
+│       ├── contracts/      message types, the event vocabulary
+│       ├── controls.py     the control points and what composes at each
+│       ├── tools.py        tool execution, the policy gate, result rendering
+│       ├── history.py      suspension snapshots and the resume codec
+│       ├── orchestrator.py durable rounds, suspension, recovery
+│       ├── engines/plain/  the planner as an `async while`
+│       ├── driver.py       engine stream → one outcome
+│       └── runtime.py      the public AgentRuntime facade
+├── nexora-store/           nexora_store         StepLog, MemorySteps · deps: none
+├── nexora-store-pg/        nexora_store_pg      Postgres StepLog      · nexora[postgres]
+├── nexora-permissions/     nexora_permissions   the rule table        · nexora[permissions]
+└── nexora-ui/              nexora_ui            local console         · nexora[ui]
 ```
 
-`nexora-store` having no dependencies at all is the point of it existing: a `StepLog` stores opaque
-values under opaque keys, so implementing one needs neither a message type nor `nexora` itself.
-`nexora-permissions` is optional because nothing in the runtime imports it.
+What is split out is what has its own dependency footprint or its own audience — the line the Python
+ecosystem draws for `langchain-openai`, `apache-airflow-providers-*`, `opentelemetry-exporter-*`.
+Layers of the core share one footprint, so they stay subpackages the way `django.db` stays inside
+`django`, and `tests/test_packaging.py` keeps them layered instead: `contracts` may reach nothing,
+and no layer may import above its own.
 
-The layering inside `nexora` is a rule, not a convention — `tests/test_packaging.py` fails if
-`contracts` reaches out of itself or a layer imports above its own.
+`nexora-store` having no dependencies at all is the point of it existing — a `StepLog` stores opaque
+values under opaque keys, so implementing one needs neither a message type nor `nexora` itself.
+`nexora-permissions` is optional because nothing in the core imports it.
 
 The runtime covers the reference's stop conditions, exclusive and terminating tools, steering,
 permission suspension/resume, durable tool effects, and interrupted-round reconstruction.

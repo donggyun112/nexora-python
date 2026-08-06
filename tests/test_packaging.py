@@ -38,9 +38,12 @@ def _internal(names: list[str]) -> frozenset[str]:
 
 
 def distributions() -> list[Distribution]:
-    manifests = [ROOT / "pyproject.toml", *sorted(ROOT.glob("packages/*/pyproject.toml"))]
+    """Every workspace member. The root manifest builds nothing and declares no `[project]`."""
+    assert "project" not in tomllib.loads((ROOT / "pyproject.toml").read_text()), (
+        "the workspace root is virtual — a `[project]` there would be a sixth distribution"
+    )
     found = []
-    for manifest in manifests:
+    for manifest in sorted(ROOT.glob("packages/*/pyproject.toml")):
         project = tomllib.loads(manifest.read_text())["project"]
         module = project["name"].replace("-", "_")
         source = manifest.parent / "src" / module
@@ -48,6 +51,7 @@ def distributions() -> list[Distribution]:
         found.append(
             Distribution(project["name"], module, source, _internal(project["dependencies"]))
         )
+    assert len(found) == 5, f"expected five distributions, found {[d.name for d in found]}"
     return found
 
 
@@ -131,7 +135,7 @@ def test_no_layer_of_nexora_imports_above_itself() -> None:
     could import `orchestrator`, and nothing — not ruff, not mypy, not any other test — would say
     so, because they all live in the same package now.
     """
-    package = ROOT / "src" / "nexora"
+    package = ROOT / "packages" / "nexora" / "src" / "nexora"
     for path in sorted(package.rglob("*.py")):
         layer = _layer_of(path, package)
         if layer == "__init__":  # `nexora/__init__.py` is the facade and reaches by definition

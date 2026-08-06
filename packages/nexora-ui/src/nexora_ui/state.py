@@ -1,5 +1,6 @@
 """Process-local state and fault injection for the test console."""
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,6 +18,14 @@ class SimulatedWorkerCrash(RuntimeError):
         super().__init__(f"simulated worker crash after committed step {step!r}")
         self.run_id = run_id
         self.step = step
+
+
+def _preview(value: Any) -> str:
+    """One short line: a continuation snapshot holds a transcript and the panel wants a hint."""
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text if len(text) <= 90 else f"{text[:87]}…"
 
 
 class FaultInjectingMemorySteps(MemorySteps):
@@ -39,6 +48,19 @@ class FaultInjectingMemorySteps(MemorySteps):
         ):
             self._crash_after_step.remove(run_id)
             raise SimulatedWorkerCrash(run_id, key)
+
+    def snapshot(self, run_id: str) -> list[dict[str, Any]]:
+        """Every step this run has, for the console's ledger panel.
+
+        Reaches into `MemorySteps` internals on purpose, and only here: `StepLog` answers "what is
+        the state of *this* key", which is all recovery needs and all a real backend should be asked
+        for cheaply. Listing every step of a run is a demo's question, so it is a demo's method.
+        """
+        return [
+            {"key": key, "status": step.status, "value": _preview(step.value)}
+            for (owner, key), step in self._entries.items()
+            if owner == run_id
+        ]
 
 
 @dataclass(slots=True)

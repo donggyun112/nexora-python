@@ -5,15 +5,15 @@ from typing import Any, cast
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from nexora_ui.execution import AgentEvent, stream_attempt
-from nexora_ui.policy import permission_controls
-from nexora_ui.state import FaultInjectingMemorySteps, RuntimeState, SimulatedWorkerCrash
-from nexora_ui.tools import DemoTools
-
+from loguru import logger
 from nexora.contracts.types import ToolCall
 from nexora.controls import Ctx
 from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora.runtime import AgentRuntime
+from nexora_ui.execution import AgentEvent, stream_attempt
+from nexora_ui.policy import permission_controls
+from nexora_ui.state import FaultInjectingMemorySteps, RuntimeState, SimulatedWorkerCrash
+from nexora_ui.tools import DemoTools
 
 
 class TrackingTools(DemoTools):
@@ -65,6 +65,45 @@ async def test_agent_stream_forwards_tool_call_and_result() -> None:
     assert [event["type"] for event in agent_events] == ["tool_call", "tool_result", "text"]
     assert agent_events[0]["input"] == {"text": "hi"}
     assert agent_events[1]["result"] == {"type": "text", "text": "hi"}
+
+
+@pytest.fixture
+def logged() -> Any:
+    """Every line loguru emitted during a test, so a swallowed failure can be caught."""
+    written: list[str] = []
+    sink = logger.add(written.append, level="WARNING", format="{level}|{message}")
+    yield written
+    logger.remove(sink)
+
+
+async def test_no_failure_branch_reaches_the_browser_without_reaching_the_log(
+    logged: list[str],
+) -> None:
+    """The hole this closes: the bridge turned every exception into a frame and logged none of
+    them, so a run whose effect committed and then lost its worker left `POST /api/run 200 OK` and
+    nothing else. Whoever is not watching the browser has only the log.
+
+    Both branches, because the unanticipated one matters more — it is the one that drops a stack.
+    """
+
+    async def crashed(
+        _runtime: AgentRuntime, _tools: DemoTools, _on_event: AgentEvent
+    ) -> dict[str, Any]:
+        raise SimulatedWorkerCrash("logged-crash", "call-9")
+
+    async def broke(
+        _runtime: AgentRuntime, _tools: DemoTools, _on_event: AgentEvent
+    ) -> dict[str, Any]:
+        raise RuntimeError("something nobody planned for")
+
+    async for _ in stream_attempt("logged-crash", crashed, RuntimeState()):
+        pass
+    async for _ in stream_attempt("logged-break", broke, RuntimeState()):
+        pass
+
+    assert any("logged-crash" in line and "committed step" in line for line in logged), logged
+    assert any("logged-break" in line for line in logged), logged
+    assert any("Traceback" in line for line in logged), "an unexpected failure must keep its stack"
 
 
 async def test_agent_stream_marks_a_post_commit_worker_crash_as_recoverable() -> None:

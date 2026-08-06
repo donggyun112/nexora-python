@@ -8,7 +8,6 @@ from typing import Any, cast
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
-
 from nexora.contracts import ToolCall
 from nexora.runtime import AgentRuntime
 
@@ -31,6 +30,17 @@ async def health() -> dict[str, Any]:
         "default_model": SETTINGS.default_model,
         "engine": "plain while + orchestrator",
     }
+
+
+@router.get("/steps/{run_id}")
+async def steps(run_id: str) -> dict[str, Any]:
+    """The ledger itself, which is the only place that answers what survived a crash.
+
+    The event rail beside it is observation and can be dropped; `absent`/`running`/`done` is the
+    state recovery actually reads. A crash after a commit shows as `done` — nothing to repeat — and
+    a crash before one stays `running`, which is the ledger refusing to guess.
+    """
+    return {"run_id": run_id, "steps": STATE.step_store.snapshot(run_id)}
 
 
 @router.post("/run")

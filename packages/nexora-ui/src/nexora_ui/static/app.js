@@ -228,7 +228,7 @@ function handle(frame) {
       entry.card.classList.add("waiting");
       entry.status.textContent = "STEP DONE · WORKER CRASHED";
       entry.resultLabel.textContent = "RECOVERY STATE";
-      entry.result.textContent = "Result committed in StepLog. ToolMessage was not appended.";
+      entry.result.textContent = `${frame.message}\nResult committed in StepLog. ToolMessage was not appended.`;
     }
     $("recovery").classList.remove("hidden");
     setStatus("suspended", "RECOVERABLE CRASH");
@@ -238,6 +238,45 @@ function handle(frame) {
     setStatus("failed");
     if (!state.assistant) state.assistant = message("assistant");
     state.assistant.textContent = `Error: ${frame.message}`;
+  }
+}
+
+// The ledger, not the rail. Events say what was announced; this says what recovery will read —
+// a crash after a commit leaves `done` here, and a crash before one leaves `running`.
+async function refreshLedger() {
+  if (!state.runId) return;
+  let steps = [];
+  try {
+    const response = await fetch(`/api/steps/${encodeURIComponent(state.runId)}`);
+    if (!response.ok) return;
+    ({ steps } = await response.json());
+  } catch { return; }
+  const box = $("ledger");
+  box.textContent = "";
+  if (!steps.length) {
+    const empty = document.createElement("div");
+    empty.className = "rail-empty";
+    empty.textContent = "No steps yet";
+    box.append(empty);
+    return;
+  }
+  for (const step of steps) {
+    const item = document.createElement("div");
+    item.className = `event ${step.status === "running" ? "wait" : ""}`;
+    const top = document.createElement("div");
+    top.className = "event-top";
+    const name = document.createElement("span");
+    name.className = "event-name";
+    name.textContent = step.key;
+    const status = document.createElement("span");
+    status.className = "event-time";
+    status.textContent = step.status.toUpperCase();
+    top.append(name, status);
+    const detail = document.createElement("div");
+    detail.className = "event-detail";
+    detail.textContent = step.value || (step.status === "running" ? "started, never finished — Indeterminate on the next attempt" : "");
+    item.append(top, detail);
+    box.append(item);
   }
 }
 
@@ -264,6 +303,7 @@ async function consume(url, body) {
   } finally {
     state.busy = false;
     $("send").disabled = false;
+    await refreshLedger();
   }
 }
 

@@ -619,6 +619,7 @@ source = { editable = "packages/nexora-ui" }
 dependencies = [
     { name = "fastapi" },
     { name = "langchain-openai" },
+    { name = "loguru" },
     { name = "nexora" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
@@ -628,6 +629,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.116,<1" },
     { name = "langchain-openai", specifier = ">=0.3,<2" },
+    { name = "loguru", specifier = ">=0.7,<1" },
     { name = "nexora", editable = "packages/nexora" },
     { name = "python-dotenv", specifier = ">=1.1,<2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },

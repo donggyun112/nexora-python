@@ -8,7 +8,6 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
-
 from nexora import AgentRuntime, react_loop
 from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
 from nexora.controls import (
@@ -407,6 +406,73 @@ async def test_a_gate_cannot_relabel_an_ending_it_did_not_object_to() -> None:
     )
 
     assert events[-1]["stop_reason"] == "completed"
+
+
+async def test_an_abort_inside_a_generation_carries_the_fragment_and_says_it_is_one() -> None:
+    """Two aborts land in different places and mean different things.
+
+    At a round boundary `content` is a finished turn. Inside a generation it is the words a person
+    already read, of a turn nobody knows the shape of — it might have been about to call a tool.
+    Appending that as a completed assistant turn tells the model it said something it never
+    finished, so `interrupted_mid_turn` is what says a marker belongs beside it. The reference
+    implementation does the same thing with a synthetic `INTERRUPT_MESSAGE` user turn.
+    """
+    streamed = 0
+
+    class Counting(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            nonlocal streamed
+            for chunk in super()._stream(messages, *a, **k):
+                streamed += 1
+                yield chunk
+
+    model = Counting(messages=iter([says("먼저 읽은 부분 그리고 아직 안 나온 뒷부분")]))
+    model.seen = []
+    events = await run(model, durable=False, aborted=lambda: streamed >= 3)
+
+    done = events[-1]
+    assert done["stop_reason"] == "aborted"
+    assert done["interrupted_mid_turn"] is True
+    assert done["content"] and done["content"] != "먼저 읽은 부분 그리고 아직 안 나온 뒷부분"
+    assert done["content"] == text_of(events), "the fragment must be what the caller actually saw"
+
+
+async def test_a_provider_failure_carries_the_fragment_as_partial_not_content() -> None:
+    """`content` would say the run answered. It did not — the turn died half-written.
+
+    Before this the failure branch reported the *previous* turn's text, so the fragment a person
+    had just watched arrive was dropped on the floor with nothing holding a copy.
+    """
+
+    class DiesLate(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            for index, chunk in enumerate(super()._stream(messages, *a, **k)):
+                if index == 2:
+                    raise RuntimeError("connection dropped")
+                yield chunk
+
+    model = DiesLate(messages=iter([says("이미 읽은 앞부분 그리고 못 받은 뒷부분")]))
+    model.seen = []
+    events = await run(model, durable=False)
+
+    failed = events[-1]
+    assert failed["type"] == "error"
+    assert "content" not in failed, "an unfinished turn is not an answer"
+    assert failed["partial"] == text_of(events)
+    assert failed["partial"], "the fragment the caller saw has to survive somewhere"
+
+
+async def test_a_failure_with_nothing_streamed_carries_no_fragment() -> None:
+    """Absent rather than empty, the way `usage` is: no fragment is not a fact worth carrying."""
+
+    class DiesFirst(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            raise RuntimeError("429 rate limited")
+            yield  # pragma: no cover — makes this a generator
+
+    events = await run(DiesFirst(messages=iter([])), durable=False)
+
+    assert events == [{"type": "error", "message": "429 rate limited"}]
 
 
 async def test_abort_leaves_a_record_instead_of_a_stream_that_just_stops() -> None:

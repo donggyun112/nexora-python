@@ -1,9 +1,10 @@
 """The step ledger: durable intent, ambiguity detection, and exclusive execution.
 
-Lifted out of `orchestrator.py` unchanged. It is the one layer here that knows nothing about
-agents — no transcript, no message type, no control point, no `contracts` import. That is what
-makes it substitutable: a `StepLog` is opaque keys and opaque values, so `steps_postgres.py` and
-anything else anyone writes need only this module.
+Its own distribution with no dependencies at all, which is the whole claim: this is the one layer
+that knows nothing about agents — no transcript, no message type, no control point, nothing from
+`nexora`. A `StepLog` stores opaque values under opaque keys, so `nexora-store-pg` and anything
+else anyone writes need only this package. Anything appearing in its dependency list means the
+boundary moved.
 
 `StepLog` answers one narrow question for those keys: absent, running, or done. It does not claim
 exactly-once execution. A crash between an external effect and its committed result stays

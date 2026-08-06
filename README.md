@@ -92,17 +92,19 @@ Internally, those responsibilities split cleanly:
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync --dev
+uv sync
 uv run ruff check .
 uv run mypy
 uv run pytest
 ```
 
+`uv sync` alone is enough: the dev group pulls both extras, because mypy needs FastAPI's types to
+check `ui/` and the Postgres store test skips itself without psycopg.
+
 ### Local OpenRouter test UI
 
 ```bash
-uv sync --extra ui
-uv run --extra ui uvicorn nexora.ui.app:app --reload --port 8790
+uv run uvicorn nexora.ui.app:app --reload --port 8790
 ```
 
 Then open <http://127.0.0.1:8790>. See `src/nexora/ui/README.md` for the chat, tool-effect and
@@ -110,17 +112,28 @@ suspension/resume scenarios.
 
 ## Current scaffold
 
+A uv workspace. `nexora` is what you install; the ledger is separate because it can be — it has no
+dependencies, so a store implementation never pulls in a model SDK.
+
 ```text
-src/nexora/
-├── runtime.py        # public AgentRuntime facade
-├── orchestrator.py   # internal durable effect ledger and recovery
-├── contracts/       # what everything agrees on
-│   ├── types.py     #   messages, tool calls, hook signatures
-│   └── events.py    #   event vocabulary and envelope
-├── engines/plain/   # the planner as an `async while`
-├── tools.py         # the shared policy gate, tool execution, result rendering
-└── history.py       # suspension snapshots and resume codec
+src/nexora/                 # the nexora distribution
+├── runtime.py              # public AgentRuntime facade
+├── orchestrator.py         # durable execution, suspension, recovery
+├── contracts/              # what everything agrees on
+│   ├── types.py            #   messages, tool calls, hook signatures
+│   └── events.py           #   event vocabulary and envelope
+├── controls.py             # the control points and what composes at each
+├── engines/plain/          # the planner as an `async while`
+├── tools.py                # tool execution, the policy gate, result rendering
+└── history.py              # suspension snapshots and resume codec
+
+packages/
+├── nexora-store/           # nexora_store — StepLog, MemorySteps. dependencies: none
+└── nexora-store-pg/        # nexora_store_pg — Postgres StepLog. `nexora[postgres]`
 ```
+
+`nexora.orchestrator` re-exports the ledger names, so `from nexora.orchestrator import MemorySteps`
+keeps working; `import nexora_store` is the direct path for anyone implementing a store.
 
 The runtime covers the reference's stop conditions, exclusive and terminating tools, steering,
 permission suspension/resume, durable tool effects, and interrupted-round reconstruction.

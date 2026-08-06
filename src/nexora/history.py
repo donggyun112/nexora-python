@@ -19,8 +19,8 @@ from langchain_core.messages import (
     messages_from_dict,
     messages_to_dict,
 )
-from nexora_contracts.types import BaseMessage, PendingInput, ToolCall
 
+from .contracts.types import BaseMessage, PendingInput, ToolCall
 from .tools import render_for_model
 
 

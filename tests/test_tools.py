@@ -8,9 +8,10 @@ the rule rather than at the loop.
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
-from nexora_contracts import BaseMessage, ToolCall
-from nexora_orchestrator.history import suspend_history_snapshot
-from nexora_orchestrator.tools import render_for_model, select_for_execution, terminates_loop
+
+from nexora.contracts import BaseMessage, ToolCall
+from nexora.history import suspend_history_snapshot
+from nexora.tools import render_for_model, select_for_execution, terminates_loop
 
 
 class Defs:

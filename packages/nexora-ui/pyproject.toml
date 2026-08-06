@@ -18,8 +18,6 @@ classifiers = [
 ]
 dependencies = [
   "nexora",
-  "nexora-contracts",
-  "nexora-orchestrator",
   "fastapi>=0.116,<1",
   "langchain-openai>=0.3,<2",
   "python-dotenv>=1.1,<2",
@@ -29,8 +27,6 @@ dependencies = [
 
 [tool.uv.sources]
 nexora = { workspace = true }
-nexora-contracts = { workspace = true }
-nexora-orchestrator = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nexora_ui"]

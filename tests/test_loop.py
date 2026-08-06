@@ -8,8 +8,10 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
-from nexora_contracts import BatchTools, EventType, PendingInput, ToolCall
-from nexora_contracts.controls import (
+
+from nexora import AgentRuntime, react_loop
+from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
+from nexora.controls import (
     ControlPlane,
     FinishPolicy,
     Halt,
@@ -20,10 +22,8 @@ from nexora_contracts.controls import (
     gate,
     writer,
 )
-from nexora_orchestrator import AgentAborted, AgentFailed, AgentSuspended
-from nexora_orchestrator.tools import InvalidToolResult
-
-from nexora import AgentRuntime, react_loop
+from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended
+from nexora.tools import InvalidToolResult
 
 
 def a_call(cid: str, name: str, args: dict[str, Any] | None = None) -> ToolCall:

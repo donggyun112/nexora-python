@@ -3,13 +3,13 @@
 from typing import Any
 
 import pytest
-from nexora_contracts import ToolCall
-from nexora_contracts.controls import ControlPlane, Permissions, gate
-from nexora_engines.plain import react_loop
-from nexora_orchestrator import AgentSuspended, MemorySteps
 
 from nexora import AgentRuntime
+from nexora.contracts import ToolCall
+from nexora.controls import ControlPlane, Permissions, gate
 from nexora.driver import drive
+from nexora.engines.plain import react_loop
+from nexora.orchestrator import AgentSuspended, MemorySteps
 from tests.test_loop import Tools, a_call, says, scripted
 
 DEPLOY = "deploy"

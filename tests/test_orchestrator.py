@@ -3,8 +3,9 @@
 from typing import Any
 
 import pytest
-from nexora_engines.plain import react_loop
-from nexora_orchestrator import (
+
+from nexora.engines.plain import react_loop
+from nexora.orchestrator import (
     AgentFailed,
     AgentSuspended,
     MemorySteps,
@@ -12,7 +13,6 @@ from nexora_orchestrator import (
     Suspended,
     run_agent,
 )
-
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 
 

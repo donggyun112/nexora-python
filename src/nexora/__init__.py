@@ -2,9 +2,8 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from nexora_contracts import BaseMessage, PendingInput, ToolCall, Tools
-from nexora_engines.plain import react_loop
-
+from .contracts import BaseMessage, PendingInput, ToolCall, Tools
+from .engines.plain import react_loop
 from .runtime import AgentRuntime, run
 
 try:

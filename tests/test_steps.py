@@ -4,8 +4,9 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage
-from nexora_contracts import PendingInput
-from nexora_orchestrator import (
+
+from nexora.contracts import PendingInput
+from nexora.orchestrator import (
     Contended,
     Fenced,
     Indeterminate,
@@ -239,9 +240,8 @@ async def test_an_interruption_is_not_recorded_as_the_answer() -> None:
     Same family as recording a failure or a suspension. `stop_reason == "policy"` is the one that
     does record — a supervisor's decision is an answer, and repeating the run reaches it again.
     """
-    from nexora_engines.plain import react_loop
-    from nexora_orchestrator import AgentAborted, run_agent
-
+    from nexora.engines.plain import react_loop
+    from nexora.orchestrator import AgentAborted, run_agent
     from tests.test_loop import Tools, says, scripted
 
     log = MemorySteps()

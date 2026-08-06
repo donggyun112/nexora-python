@@ -9,9 +9,6 @@ resolution-markers = [
 [manifest]
 members = [
     "nexora",
-    "nexora-contracts",
-    "nexora-engines",
-    "nexora-orchestrator",
     "nexora-permissions",
     "nexora-store",
     "nexora-store-pg",
@@ -549,9 +546,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "langchain-core" },
-    { name = "nexora-contracts" },
-    { name = "nexora-engines" },
-    { name = "nexora-orchestrator" },
+    { name = "loguru" },
+    { name = "nexora-store" },
 ]
 
 [package.optional-dependencies]
@@ -577,10 +573,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "langchain-core", specifier = ">=1,<2" },
-    { name = "nexora-contracts", editable = "packages/nexora-contracts" },
-    { name = "nexora-engines", editable = "packages/nexora-engines" },
-    { name = "nexora-orchestrator", editable = "packages/nexora-orchestrator" },
+    { name = "loguru", specifier = ">=0.7,<1" },
     { name = "nexora-permissions", marker = "extra == 'permissions'", editable = "packages/nexora-permissions" },
+    { name = "nexora-store", editable = "packages/nexora-store" },
     { name = "nexora-store-pg", marker = "extra == 'postgres'", editable = "packages/nexora-store-pg" },
     { name = "nexora-ui", marker = "extra == 'ui'", editable = "packages/nexora-ui" },
 ]
@@ -596,60 +591,15 @@ dev = [
 ]
 
 [[package]]
-name = "nexora-contracts"
-version = "0.1.0"
-source = { editable = "packages/nexora-contracts" }
-dependencies = [
-    { name = "langchain-core" },
-    { name = "loguru" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "langchain-core", specifier = ">=1,<2" },
-    { name = "loguru", specifier = ">=0.7,<1" },
-]
-
-[[package]]
-name = "nexora-engines"
-version = "0.1.0"
-source = { editable = "packages/nexora-engines" }
-dependencies = [
-    { name = "nexora-contracts" },
-    { name = "nexora-orchestrator" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "nexora-contracts", editable = "packages/nexora-contracts" },
-    { name = "nexora-orchestrator", editable = "packages/nexora-orchestrator" },
-]
-
-[[package]]
-name = "nexora-orchestrator"
-version = "0.1.0"
-source = { editable = "packages/nexora-orchestrator" }
-dependencies = [
-    { name = "nexora-contracts" },
-    { name = "nexora-store" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "nexora-contracts", editable = "packages/nexora-contracts" },
-    { name = "nexora-store", editable = "packages/nexora-store" },
-]
-
-[[package]]
 name = "nexora-permissions"
 version = "0.1.0"
 source = { editable = "packages/nexora-permissions" }
 dependencies = [
-    { name = "nexora-contracts" },
+    { name = "nexora" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "nexora-contracts", editable = "packages/nexora-contracts" }]
+requires-dist = [{ name = "nexora", editable = "." }]
 
 [[package]]
 name = "nexora-store"
@@ -679,8 +629,6 @@ dependencies = [
     { name = "fastapi" },
     { name = "langchain-openai" },
     { name = "nexora" },
-    { name = "nexora-contracts" },
-    { name = "nexora-orchestrator" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -690,8 +638,6 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.116,<1" },
     { name = "langchain-openai", specifier = ">=0.3,<2" },
     { name = "nexora", editable = "." },
-    { name = "nexora-contracts", editable = "packages/nexora-contracts" },
-    { name = "nexora-orchestrator", editable = "packages/nexora-orchestrator" },
     { name = "python-dotenv", specifier = ">=1.1,<2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },
 ]

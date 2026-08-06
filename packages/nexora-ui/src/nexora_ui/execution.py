@@ -7,8 +7,10 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from ..orchestrator import AgentAborted, AgentFailed, AgentSuspended
-from ..runtime import AgentRuntime
+from nexora_orchestrator import AgentAborted, AgentFailed, AgentSuspended
+
+from nexora.runtime import AgentRuntime
+
 from .state import STATE, RuntimeState, SimulatedWorkerCrash
 from .tools import DemoTools
 

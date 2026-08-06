@@ -4,9 +4,8 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage
-
-from nexora.contracts import PendingInput
-from nexora.controls import (
+from nexora_contracts import PendingInput
+from nexora_contracts.controls import (
     Continue,
     ControlPlane,
     Controls,
@@ -22,6 +21,7 @@ from nexora.controls import (
     Suspend,
     Suspending,
 )
+
 from tests.test_loop import a_call
 
 CTX = Ctx(turn=0)

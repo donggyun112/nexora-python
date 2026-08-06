@@ -65,7 +65,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
-from .contracts.types import BaseMessage, PendingInput, StopReason, ToolCall
+from .types import BaseMessage, PendingInput, StopReason, ToolCall
 
 __all__ = [
     "Continue",

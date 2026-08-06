@@ -12,10 +12,10 @@ Run it with:
 
 ```bash
 uv sync --extra ui
-uv run --extra ui uvicorn nexora.ui.app:app --reload --port 8790
+uv run uvicorn nexora_ui.app:app --reload --port 8790
 ```
 
-Open <http://127.0.0.1:8790>. Configuration is loaded from `src/nexora/ui/.env`. Supported key
+Open <http://127.0.0.1:8790>. Configuration is loaded from `packages/nexora-ui/.env`. Supported key
 names are `OPENROUTER_API_KEY`, `OPENROUTER_KEY`, and the imported fixture spelling
 `OPEN_ROTURE`.
 

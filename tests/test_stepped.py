@@ -2,9 +2,10 @@
 
 from typing import Any
 
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import MemorySteps, Orchestrator
-from nexora.tools import Concurrent, Stepped
+from nexora_engines.plain import react_loop
+from nexora_orchestrator import MemorySteps, Orchestrator
+from nexora_orchestrator.tools import Concurrent, Stepped
+
 from tests.test_loop import Tools, a_call, says, scripted
 
 SAFE = {"is_concurrency_safe": True}

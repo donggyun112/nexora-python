@@ -19,25 +19,24 @@ classifiers = [
 ]
 dependencies = [
   "langchain-core>=1,<2",
-  "loguru>=0.7,<1",
-  "nexora-store",
+  "nexora-contracts",
+  "nexora-engines",
+  "nexora-orchestrator",
 ]
+# The facade. It owns runtime.py and driver.py and re-exports the entry points, so
+# `from nexora import AgentRuntime` keeps meaning what it always did.
 
 [project.optional-dependencies]
 postgres = ["nexora-store-pg"]
-ui = [
-    "fastapi>=0.116,<1",
-    "langchain-openai>=0.3,<2",
-    "python-dotenv>=1.1,<2",
-    "uvicorn[standard]>=0.35,<1",
-]
+permissions = ["nexora-permissions"]
+ui = ["nexora-ui"]
 
 [dependency-groups]
 dev = [
   # The extras, so a plain `uv sync` gives an environment the checks can actually run in: without
   # them mypy reports every FastAPI decorator as untyped and the Postgres store test skips — a
   # green run that verified less than it looked like it did.
-  "nexora[postgres,ui]",
+  "nexora[permissions,postgres,ui]",
   "mypy>=1.19,<2",
   "pytest>=9,<10",
   "pytest-asyncio>=1.3,<2",
@@ -51,8 +50,13 @@ packages = ["src/nexora"]
 members = ["packages/*"]
 
 [tool.uv.sources]
+nexora-contracts = { workspace = true }
+nexora-engines = { workspace = true }
+nexora-orchestrator = { workspace = true }
+nexora-permissions = { workspace = true }
 nexora-store = { workspace = true }
 nexora-store-pg = { workspace = true }
+nexora-ui = { workspace = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

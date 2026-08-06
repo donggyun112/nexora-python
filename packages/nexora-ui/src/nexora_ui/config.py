@@ -9,7 +9,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 UI_ROOT = Path(__file__).resolve().parent
-load_dotenv(UI_ROOT / ".env")
+"""Where `static/` lives — inside the package, so it ships in the wheel."""
+
+ENV_FILE = UI_ROOT.parents[1] / ".env"
+"""Beside the manifest, not inside the module: `.env` is developer configuration and does not belong
+in a wheel. An installed copy finds nothing here and falls back to the environment, which is how a
+deployed process is configured anyway. Named rather than inlined so a test can check that
+`.env.example` documents the place this actually reads."""
+
+load_dotenv(ENV_FILE)
 
 
 @dataclass(frozen=True, slots=True)

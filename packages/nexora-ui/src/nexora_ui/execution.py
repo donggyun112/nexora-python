@@ -7,6 +7,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+from loguru import logger
 from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended
 from nexora.runtime import AgentRuntime
 
@@ -60,6 +61,10 @@ async def stream_attempt(
                 }
             )
         except SimulatedWorkerCrash as failure:
+            # Logged as well as framed. A frame reaches whoever is watching the browser; the crash
+            # itself is not an event, so without this line an effect that committed and then lost
+            # its worker leaves nothing behind but `POST /api/run 200 OK`.
+            logger.warning("run {} crashed after a committed step: {}", run_id, failure)
             await queue.put(
                 {
                     "kind": "recoverable",
@@ -68,8 +73,13 @@ async def stream_attempt(
                 }
             )
         except (AgentAborted, AgentFailed) as failure:
+            logger.warning("run {} ended without an outcome: {}", run_id, failure)
             await queue.put({"kind": "error", "message": str(failure)})
         except Exception as failure:
+            # With a stack, because this branch catches what nobody anticipated. Turning an
+            # unknown failure into a one-line frame and dropping the traceback is how a bug here
+            # becomes unreproducible.
+            logger.exception("run {} failed", run_id)
             await queue.put({"kind": "error", "message": str(failure)})
         finally:
             await queue.put(None)

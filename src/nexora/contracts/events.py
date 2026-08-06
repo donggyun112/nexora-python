@@ -6,9 +6,11 @@ deny rules" is an invariant you can only state in a call chain. Published events
 a subscriber gets around to them, so a permission answer cannot live on this channel; it lives in
 `nexora.controls.Permissions`, which is an ordered chain of calls.
 
-What this channel is for: telling a UI what happened, and writing an audit trail. A failing sink
-is logged and skipped — an audit socket having a bad moment is not a reason to kill an agent
-mid-run. That rule is only safe *because* nothing load-bearing rides here.
+What this channel is for: telling a UI what happened. A failing sink is logged and skipped — an
+audit socket having a bad moment is not a reason to kill an agent mid-run. That rule is only safe
+*because* nothing load-bearing rides here, and it is also the reason this channel is not an audit
+trail: delivery is at-most-once and nothing replays it. A record that must survive belongs in
+`Controls.after_tool_call`, which raises through.
 
 `BLOCKING` maps each event that announces a decision point to the `Controls` method that makes
 that decision. The decision is made by that call, never by publishing the event; the mapping
@@ -16,8 +18,12 @@ exists so a subscriber can tell "you are being told about a gate" from "you are 
 a result" — and so a declared gate that no control point implements fails a test instead of
 reading as a guarantee.
 
-`EventEnvelope.event_id` is derived, never random. A run that crashes and resumes re-emits the
-events of rounds it had already finished; a derived id lets an outbox drop the duplicates.
+`EventEnvelope.event_id` is derived, never random, so a consumer can recognise the same event
+twice **within one stream** — recovery re-announces a tool result it restored from the ledger, and
+that repeat is the case the id exists for. It is not a key that survives a process: `sequence` is
+part of the coordinates and a new `EventStream` starts it at zero, so the same event emitted by a
+resumed process gets a different id. Deduplicating across a crash would need coordinates that do
+not depend on a per-process counter, and nothing here needs that yet.
 """
 
 import hashlib
@@ -123,7 +129,8 @@ class EventEnvelope:
             object.__setattr__(self, "event_id", self._derive_id())
 
     def _derive_id(self) -> str:
-        """Stable across a crash-and-resume: same coordinates, same id."""
+        """Same coordinates, same id — within one stream. `sequence` is one of the coordinates
+        and restarts at zero in a new `EventStream`, so this is not a cross-process key."""
         parts = (
             self.run_id,
             self.turn_id or "",
@@ -215,13 +222,13 @@ class EventStream:
 
     One per run — `sequence` is what makes `event_id` unique without randomness.
 
-    A failing sink is logged and skipped, never raised. These events are observations: an audit
-    log or a UI socket having a bad moment is not a reason to kill an agent mid-run. The cost is
-    that a dropped event is only visible in the log, which is why `event_id` is derived — a
-    durable sink can replay and dedupe rather than rely on delivery here.
+    A failing sink is logged and skipped, never raised. These events are observations: a UI socket
+    having a bad moment is not a reason to kill an agent mid-run. The cost is real and it is not
+    recovered anywhere — a dropped event is gone, visible only in the log. Delivery here is
+    at-most-once, and `event_id` narrows repeats inside this stream, not across a restart.
 
     Anything that must not be silently dropped is therefore not an event. The durable record of a
-    resolved tool call is `Permissions.record`, a call that raises through.
+    resolved tool call is `Controls.after_tool_call`, a call that raises through.
     """
 
     def __init__(self, sink: Sink, *, session_id: str, thread_id: str, run_id: str) -> None:

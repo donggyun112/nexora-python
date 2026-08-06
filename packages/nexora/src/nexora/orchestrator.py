@@ -89,8 +89,11 @@ __all__ = [
 class AgentFailed(Exception):
     """A run ended in `error`. Raised so a step cannot record a failure as an outcome."""
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, partial: str = "") -> None:
         super().__init__(message)
+        self.partial = partial
+        """Text the dying turn had streamed. Not an answer — nobody knows whether that turn was
+        about to call a tool — but it is what a person already read, and the only copy of it."""
 
 
 async def run_agent(
@@ -121,7 +124,7 @@ async def run_agent(
         if on_event is not None:
             await on_event(event)
         if event["type"] == "error":
-            raise AgentFailed(event["message"])
+            raise AgentFailed(event["message"], event.get("partial", ""))
         if event["type"] == "suspended":
             raise AgentSuspended(event["pending_id"], event["tool_call_id"])
         if event["type"] == "done":

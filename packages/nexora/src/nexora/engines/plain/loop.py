@@ -153,19 +153,34 @@ async def react_loop(
                     # loop chose — a callback firing at an arbitrary await would make the step
                     # sequence depend on timing, and a replay could not reproduce it.
                     if aborted():
-                        yield await _done(emit, _text_of(reply), calls_made, "aborted", spent)
+                        yield await _done(
+                            emit, _text_of(reply), calls_made, "aborted", spent, mid_turn=True
+                        )
                         return
         except Exception as failure:
             # A provider failure ends the run as a reported error rather than an exception
             # escaping into the caller's event loop. Cancellation is not an `Exception`, so it
             # still propagates.
+            #
+            # Either way the text this turn had already streamed travels with the ending. It is
+            # the fragment a person watching has already read, and dropping it leaves their screen
+            # holding words no transcript knows about. `_text_of(reply)` and not `last_text`: the
+            # fragment belongs to the turn that died, not to the one before it.
+            fragment = _text_of(reply)
             if aborted():
-                yield await _done(emit, last_text, calls_made, "aborted", spent)
+                yield await _done(emit, fragment, calls_made, "aborted", spent, mid_turn=True)
             else:
                 # A failed run has to reach the event log too, or the audit record just stops.
+                # `partial`, never `content`: an unfinished turn is not an answer. Nobody knows
+                # whether this one was about to call a tool, so a host may show the fragment but
+                # must not append it as a completed assistant turn. Absent when there is none, the
+                # way `usage` is — an empty fragment is not a fact worth carrying.
+                cut: dict[str, Any] = {"reason": "error", "message": str(failure)}
+                if fragment:
+                    cut["partial"] = fragment
                 if emit is not None:
-                    await emit(EventType.STOP_FAILURE, {"reason": "error", "message": str(failure)})
-                yield {"type": "error", "message": str(failure)}
+                    await emit(EventType.STOP_FAILURE, cut)
+                yield {"type": "error", **{k: v for k, v in cut.items() if k != "reason"}}
             return
 
         turn_text = _text_of(reply)
@@ -311,11 +326,19 @@ async def _done(
     calls_made: list[dict[str, Any]],
     reason: StopReason,
     spent: Counter[str],
+    *,
+    mid_turn: bool = False,
 ) -> dict[str, Any]:
     """The single terminal event. Every exit but `suspended` goes through here.
 
     `stop_reason` exists so an abort leaves a record: without it a cancelled run and a finished
     one both look like a stream that simply ended.
+
+    `mid_turn` separates the two places an abort lands, which produce the same shape and mean
+    different things. Stopped at a round boundary, `content` is a finished assistant turn. Stopped
+    inside a generation, it is a fragment: the words a person already read, of a turn that might
+    have been about to call a tool. A host appending that as a completed turn tells the model it
+    said something it never finished, so the flag is what says a marker is needed beside it.
     """
     if emit is not None:
         await emit(EventType.STOP, {"reason": reason, "content": content})
@@ -325,6 +348,8 @@ async def _done(
         "tool_calls": calls_made,
         "stop_reason": reason,
     }
+    if mid_turn:
+        done["interrupted_mid_turn"] = True
     if spent:
         done["usage"] = dict(spent)
     return done

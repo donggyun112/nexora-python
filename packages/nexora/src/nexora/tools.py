@@ -36,10 +36,20 @@ class RoundSuspended(Exception):
 
     Agent engines do not interpret this. A durable orchestrator catches it, commits the
     continuation, and terminates the agent attempt.
+
+    Which is why it reaching a caller means there is no orchestrator to catch it. A loop driven
+    without one is a supported way to use this package — `react_loop` defaults to the plain
+    `execute_calls` and never touches a ledger — but parking a call is the one thing it cannot do,
+    because a suspension is only a suspension if the continuation was written down somewhere. The
+    message says so, since by then the caller is looking at an exception rather than a docstring.
     """
 
     def __init__(self, resolved: list[Resolved]) -> None:
-        super().__init__("tool round suspended")
+        super().__init__(
+            "tool round suspended, and nothing here can park it: a suspension has to commit its "
+            "continuation. Drive the loop through `AgentRuntime`, pass "
+            "`execute_round=orchestrator.execute_round`, or let the gate deny instead of suspend"
+        )
         self.resolved = resolved
 
 

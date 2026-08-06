@@ -14,6 +14,11 @@ The remaining hooks each take a position the loop alone has: `drain_inputs` and
 `should_stop_after_turn` need a round boundary. Suspension is deliberately absent: the injected
 orchestrator commits it and terminates this execution instead of returning it as agent state.
 
+`execute_round` defaults to the plain `execute_calls`, so durability is injected rather than
+assumed. Driven directly, this loop touches no ledger and no store while keeping every control
+point, and the one thing it then cannot do is park a call — a suspension is only a suspension once
+its continuation is written down. See `examples/06_bare_loop.py`.
+
 The model is a LangChain `BaseChatModel`, so provider differences, tool binding, and the
 reassembly of tool arguments that arrive as JSON fragments all happen below this file.
 """

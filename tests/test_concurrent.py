@@ -93,7 +93,12 @@ async def test_a_concurrent_tool_cannot_return_a_suspension() -> None:
             if name == "ask":
                 self.trace.append(f"ask:{call_id}")
                 return {"type": "suspend", "pending_id": call_id}
-            return await super().execute(name, call_id, arguments)
+            # Slow enough to still be in flight when `ask` fails, so an abandoned sibling is
+            # visibly abandoned rather than a race the test happens to win.
+            self.trace.append(f"start:{call_id}")
+            await asyncio.sleep(0.05)
+            self.trace.append(f"end:{call_id}")
+            return {"type": "text", "text": name}
 
     tools = Asking(defs={"read": SAFE, "ask": SAFE}, names=["read", "ask"])
     calls = [a_call("a", "read"), a_call("b", "ask"), a_call("c", "read")]
@@ -104,3 +109,8 @@ async def test_a_concurrent_tool_cannot_return_a_suspension() -> None:
             tools,
             "hi",
         )
+    # The raise must not outrun the calls beside it. `gather` leaves siblings running when it
+    # propagates, so without `return_exceptions` these two finish after the round is over — an
+    # effect landing with nothing awaiting it, and no step to show for it.
+    assert tools.trace.count("end:a") == 1
+    assert tools.trace.count("end:c") == 1

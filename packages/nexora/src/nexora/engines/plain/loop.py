@@ -50,11 +50,11 @@ from ...contracts.types import (
 from ...controls import Controls, Ctx, Halt, Proceed
 from ...tools import (
     ExecuteRound,
-    a_tool_result,
     absorb_round,
     as_model_tools,
     execute_calls,
     select_for_execution,
+    tool_result,
 )
 
 
@@ -261,7 +261,7 @@ async def react_loop(
             ),
         )
         for call, result, refused in resolved:
-            event = a_tool_result(call, result)
+            event = tool_result(call, result)
             event["executed"] = not refused
             yield event
 

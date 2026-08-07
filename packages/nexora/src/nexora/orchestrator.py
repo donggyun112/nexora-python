@@ -61,12 +61,12 @@ from .tools import (
     Resolved,
     RoundSuspended,
     Stepped,
-    a_tool_result,
     absorb_round,
     execute_calls,
     record_resolved,
     require_call_ids,
     tool_payload,
+    tool_result,
 )
 
 __all__ = [
@@ -552,7 +552,7 @@ class Orchestrator:
         items = [resolved]
         await self._terminate_if_suspended(tools, items, publisher, turn, controls, context)
         if self._on_agent_event is not None:
-            event = a_tool_result(call, resolved.result)
+            event = tool_result(call, resolved.result)
             event["executed"] = not resolved.refused
             await self._on_agent_event(event)
         return resolved.result
@@ -591,7 +591,7 @@ class Orchestrator:
         )
         if self._on_agent_event is not None:
             for item in resolved:
-                event = a_tool_result(item.call, item.result)
+                event = tool_result(item.call, item.result)
                 event["executed"] = not item.refused
                 await self._on_agent_event(event)
             await self._on_agent_event(

@@ -1,6 +1,6 @@
 """Public runtime facade for durable Nexora agent execution."""
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -503,7 +503,7 @@ class AgentRuntime:
     @asynccontextmanager
     async def _workspace_tools(
         self, run_id: str, tools: Tools
-    ) -> AsyncIterator[Tools]:
+    ) -> AsyncGenerator[Tools, None]:
         """Inject a provider-acquired session and guarantee end-of-attempt cleanup."""
         if self._workspace_provider is None:
             yield tools

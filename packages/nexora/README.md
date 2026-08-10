@@ -28,6 +28,10 @@ implements the Nexora sandbox HTTP wire, while `ContinuousWorkspaceProvider` per
 session state by conversation. Passing either provider as `AgentRuntime(workspace_provider=...)`
 acquires it per attempt and injects it into `ContextualTools` automatically.
 
+`builtin_tools()` supplies the TS core names (`read`, `write`, `edit`, `grep`, `glob`, `Bash`, and
+`web_fetch`) as a context-aware collection. `web_search` is intentionally not included. Command
+execution stays disabled until `ExecToolOptions.allow_list` is configured.
+
 Install what you need beside it:
 
 | | |

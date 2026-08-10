@@ -158,6 +158,26 @@ workspaces = ContinuousWorkspaceProvider(
 runtime = AgentRuntime(workspace_provider=workspaces)
 ```
 
+The TS-compatible core tool bundle is available directly. It contains `read`, `write`, `edit`,
+`grep`, `glob`, `Bash`, and `web_fetch`; it intentionally does not bundle `web_search`:
+
+```python
+from nexora import AgentRuntime, ExecToolOptions, RemoteSandboxClient, builtin_tools
+
+tools = builtin_tools(
+    exec_options=ExecToolOptions(allow_list=("git", "rg", "python"), allow_shell=True),
+)
+runtime = AgentRuntime(
+    workspace_provider=RemoteSandboxClient("https://sandbox.example.com"),
+)
+outcome = await runtime.run("attempt-42", model, tools, "inspect and update this project")
+```
+
+All file and process effects use the workspace injected by `AgentRuntime`. `Bash` is disabled
+until a non-empty executable allow-list is supplied; its default also requires an isolated
+workspace and denies network egress. `web_fetch` uses HTTPS and can be replaced or tested with an
+injected `WebFetchTransport`.
+
 When a provider is configured, tools must implement `ContextualTools`. The runtime acquires the
 session before model/tool execution, replaces the tool context's `workdir` and `workspace`, and
 always calls session cleanup after completion, suspension, cancellation, or failure. A tool set

@@ -79,6 +79,8 @@ class SandboxCommand:
     require_isolation: bool = True
     allowed_domains: Sequence[str] | None = field(default_factory=tuple)
     """Allowed egress domains; empty denies all, while ``None`` explicitly inherits host access."""
+    inherit_env: bool = True
+    """Whether host sessions inherit the parent environment before applying ``env``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -763,7 +765,10 @@ class HostWorkspaceSession:
         if not command.argv or any(not isinstance(part, str) or not part for part in command.argv):
             raise ValueError("command argv must contain non-empty strings")
         cwd = await self.resolve(command.cwd, access="read")
-        environment = {**os.environ, **dict(command.env)}
+        environment = {
+            **(os.environ if command.inherit_env else {}),
+            **dict(command.env),
+        }
         process = await asyncio.create_subprocess_exec(
             *command.argv,
             cwd=cwd.path,

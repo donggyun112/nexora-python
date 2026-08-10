@@ -3,6 +3,16 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .background import BackgroundResult, BackgroundTasks
+from .builtins import (
+    BuiltinTools,
+    ExecToolOptions,
+    UrllibWebFetchTransport,
+    WebFetchResponse,
+    WebFetchSummarizer,
+    WebFetchToolOptions,
+    WebFetchTransport,
+    builtin_tools,
+)
 from .contracts import (
     BaseMessage,
     CompactContext,
@@ -71,12 +81,14 @@ __all__ = [
     "BackgroundResult",
     "BackgroundTasks",
     "BaseMessage",
+    "BuiltinTools",
     "CommandResult",
     "CompactContext",
     "Compiled",
     "ContextualTools",
     "ContinuousWorkspaceProvider",
     "Declarative",
+    "ExecToolOptions",
     "FallbackChatModel",
     "HTTPResponse",
     "HTTPTransport",
@@ -105,6 +117,11 @@ __all__ = [
     "ToolContext",
     "Tools",
     "UrllibHTTPTransport",
+    "UrllibWebFetchTransport",
+    "WebFetchResponse",
+    "WebFetchSummarizer",
+    "WebFetchToolOptions",
+    "WebFetchTransport",
     "WorkspaceAccessMode",
     "WorkspaceDirEntry",
     "WorkspaceFS",
@@ -116,6 +133,7 @@ __all__ = [
     "WorkspaceStateStore",
     "WorkspaceViolation",
     "__version__",
+    "builtin_tools",
     "react_loop",
     "run",
 ]

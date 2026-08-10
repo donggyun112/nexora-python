@@ -107,6 +107,8 @@ LAYERS: dict[str, frozenset[str]] = {
     # Reaches nothing, like `contracts`, and for the same kind of reason: a registry of detached
     # jobs is `asyncio.Task` bookkeeping. Knowing what a subagent is would make it one.
     "background": frozenset(),
+    # Built-ins are adapters over the workspace boundary; they do not own gating or execution.
+    "builtins": frozenset({"workspace"}),
     # Provider selection and workspace lifecycle adapt external runtimes without reaching the
     # planner or durable execution layers.
     "providers": frozenset(),

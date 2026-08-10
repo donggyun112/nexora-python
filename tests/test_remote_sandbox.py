@@ -5,13 +5,16 @@ from pathlib import Path
 
 import pytest
 from nexora import (
+    BuiltinTools,
     ContinuousWorkspaceProvider,
+    ExecToolOptions,
     HTTPResponse,
     MemoryWorkspaceStateStore,
     RemoteSandboxClient,
     RemoteSandboxError,
     SandboxCommand,
     SandboxSessionState,
+    ToolContext,
     WorkspaceSeed,
     WorkspaceSnapshot,
 )
@@ -62,6 +65,27 @@ async def test_remote_command_executes_over_the_sandbox_wire() -> None:
     assert json.loads(request.body or b"") == {"argv": ["pwd"], "cwd": "src"}
     assert request.headers["authorization"] == "Bearer secret"
     assert result.stdout == "ok"
+
+
+async def test_builtin_bash_executes_through_the_remote_workspace_wire() -> None:
+    transport = FakeTransport(
+        response({"sessionId": "session-1", "root": "/workspace"}),
+        response({"exitCode": 0, "signal": None, "stdout": "remote", "stderr": ""}),
+    )
+    session = await RemoteSandboxClient(
+        "https://sandbox.example", transport=transport
+    ).acquire(run_id="run-1")
+    tools = BuiltinTools(
+        context=ToolContext(workdir="/workspace", workspace=session),
+        exec_options=ExecToolOptions(allow_list=("pwd",)),
+    )
+
+    result = await tools.execute("Bash", "call-1", {"argv": ["pwd"]})
+
+    request = transport.requests[1]
+    assert request.url.endswith("/sessions/session-1/exec")
+    assert json.loads(request.body or b"")["argv"] == ["pwd"]
+    assert result == {"type": "text", "text": "remote"}
 
 
 async def test_remote_files_use_the_workspace_filesystem_wire() -> None:

@@ -28,5 +28,4 @@ Install what you need beside it:
 with no dependencies of its own, so writing a `StepLog` needs neither a message type nor this
 package.
 
-See the [repository README](../../README.md) for the architecture map, the ADRs, and four runnable
-examples.
+See the [repository README](../../README.md) for the architecture map and the runnable examples.

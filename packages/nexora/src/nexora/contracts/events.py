@@ -115,7 +115,19 @@ Publisher = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
 class RuntimeEvents:
-    """Publish typed lifecycle observations owned by the runtime host."""
+    """Publish typed lifecycle observations owned by the runtime host.
+
+    **Nothing in this package calls most of these, by design.** The runtime emits what it can see —
+    tool use, permissions, prompts admitted, compaction, stop — from the loop and the orchestrator.
+    A session starting, a working directory changing, a worktree being made, a teammate going idle:
+    those are facts a host knows and the runtime cannot, so the methods exist for the host to call
+    through `AgentRuntime.events` / `Orchestrator.events`, and the enum above keeps the vocabulary
+    the TypeScript reference already defined rather than growing a Python-only dialect of it.
+
+    So an unused method here is not dead code, but it is also **unproven**: only what a caller
+    actually publishes has ever been through a sink. Adding a producer is the point at which one
+    of these gets its first test.
+    """
 
     def __init__(self, emit: Publisher | None) -> None:
         """Initialize the facade with an optional publisher."""

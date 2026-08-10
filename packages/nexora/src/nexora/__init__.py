@@ -14,10 +14,10 @@ from .contracts import (
     ToolCall,
     Tools,
 )
-from .delegate import Compiled, Declarative, Delegation, Remote, Subagent
 from .engines.plain import react_loop
 from .orchestrator import ModelFailurePolicy
 from .runtime import AgentRuntime, run
+from .subagents import Answering, Compiled, Declarative, Remote, Subagent, Subagents
 
 try:
     __version__ = version("nexora")
@@ -26,13 +26,13 @@ except PackageNotFoundError:  # pragma: no cover - source tree without installat
 
 __all__ = [
     "AgentRuntime",
+    "Answering",
     "BackgroundResult",
     "BackgroundTasks",
     "BaseMessage",
     "CompactContext",
     "Compiled",
     "Declarative",
-    "Delegation",
     "ModelErrorKind",
     "ModelFailure",
     "ModelFailureAction",
@@ -41,6 +41,7 @@ __all__ = [
     "PendingInput",
     "Remote",
     "Subagent",
+    "Subagents",
     "ToolCall",
     "Tools",
     "__version__",

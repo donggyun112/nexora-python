@@ -1,7 +1,7 @@
-"""Delegation — one agent handing a subtask to another, ported from `builtin/delegate.ts`.
+"""Subagents — children a parent agent owns, ported from `builtin/delegate.ts`.
 
 Wraps a host's `Tools` and adds five: `delegate`, and the four that hold the leash on what it
-launches. Composed the way the rest of this package composes — `Delegation(tools, ...)` beside
+launches. Composed the way the rest of this package composes — `Subagents(tools, ...)` beside
 `Stepped(tools, orchestrator)` and `Concurrent(tools)`.
 
 Three kinds of subagent, as in the reference. `Declarative` is a spec built at call time by a
@@ -16,22 +16,50 @@ Two ways to hand work over, and they are genuinely different shapes:
 * `sync` — the parent stops and waits. Its round does not end until the child answers, so the
   answer is guaranteed to be in hand before the parent decides anything else. Use it when the
   parent cannot continue without it.
-* `handoff` — the parent gives the task away and carries on. The child answers **when it decides
+* `async` — the parent gives the task away and carries on. The child answers **when it decides
   to**, by calling `respond_to_parent`, and that answer re-enters the parent's run through the
   same durable input queue a human steer uses. This is why a handed-off child must be built with
-  `Handoff` around its tools: the parent is no longer reading the child's stream, so the reply
+  `Answering` around its tools: the parent is no longer reading the child's stream, so the reply
   tool is the only way back. A child that never calls it still answers, from its last turn, so
   handing work to an agent that lacks the tool loses nothing.
 
   Live turn or finished turn, the queue does not care, which is why this needs neither of the
-  reference's two delivery paths (`steerSelf` and `deliverResult`). `async` is accepted as the
-  reference's name for this mode.
-* `none` — hand it off and drop the answer. For work whose result nobody reads.
+  reference's two delivery paths (`steerSelf` and `deliverResult`). `async` is the reference's own
+  name for this mode; `handoff` is accepted as a synonym, since that is what the shape is usually
+  called — but note that in the reference "handoff" names `delegate` itself, the addressed hop, as
+  opposed to `publish_topic`'s anonymous broadcast.
+`none` is not a third way of waiting — it is a different relationship. It opens an **independent
+agent**: the caller gets that agent's run id and nothing else, no result and no way to stop it.
+The reference is unambiguous about this even though the mode's name hides it — `none` never
+reaches a caller-owned child there at all (`delegate.ts:485-499`, where an inline subagent is
+executed synchronously and the `none` branch below is for registry peers, published over
+transport). The thing on the other side has its own lifecycle, so its outcome was never the
+caller's to collect.
+
+Nothing is lost by not collecting it. `AgentRuntime` is keyed by run id, so the id this hands
+back is the whole of what anyone needs to reach that agent again: steer it with `submit`, answer
+its permission suspensions, drive it further with `run`, or read what it did out of the ledger.
+A person can do all of that too. What would be lost is opening an agent and *not* handing back
+its address — an agent nobody could reach again.
 
 Delegation depth rides on the tool instance rather than on a message envelope, because a child
 here is built in this process by a factory this object holds. A host that spans processes has to
 carry `depth` itself; the reference carries it in `metadata.delegationDepth` for exactly that
 reason.
+
+A child gets a run id, and it is derived rather than fresh: `f"{parent_run_id}:{call_id}"`. That
+is what keeps `delegate` inside the contract every other tool is held to. A tool call's id is its
+idempotency key, so recovery may retry an interrupted call — but a subagent re-run from nothing
+does not repeat a write, it repeats *everything*, model rounds and child effects together. Given
+the same name, the child's own effects are in the ledger under it, and retrying the parent's call
+reaches the child's own recovery instead of a second execution. The parent's key is handed down
+rather than re-invented, which is also why `uuid4` appears here only for the task id a person
+reads.
+
+The host has to actually use it — drive the child through an `AgentRuntime` on that run id, on the
+store the parent uses. Ignoring the argument is allowed and costs exactly this property. `Remote`
+children cannot have it at all: what is on the other side of the POST owns its own durability, and
+this end has no way to key it.
 """
 
 import asyncio
@@ -48,29 +76,33 @@ from .contracts.events import EventType
 from .contracts.types import Emit, Tools
 
 __all__ = [
+    "Answering",
     "Compiled",
     "Declarative",
-    "Delegation",
     "Deliver",
-    "Handoff",
     "Remote",
     "Reply",
     "Runner",
     "Subagent",
+    "Subagents",
 ]
 
 Definitions = list[dict[str, Any]]
-"""Tool definitions. Named because `Delegation.list` shadows the builtin inside the class body."""
+"""Tool definitions. Named because `Subagents.list` shadows the builtin inside the class body."""
 
 Reply = Callable[[str, bool], Awaitable[None]]
 """A child answering its parent, on purpose. `(text, is_error)`."""
 
-Runner = Callable[[str, Reply], AsyncIterator[dict[str, Any]]]
-"""Drive a child for one input and yield its engine events.
+Runner = Callable[[str, Reply, str], AsyncIterator[dict[str, Any]]]
+"""Drive a child for one input and yield its engine events. `(prompt, reply, run_id)`.
 
 The `Reply` is handed in rather than closed over because it is per-launch: it names the task the
 answer belongs to. A child built for `sync` may ignore it — its last word is its answer either
-way — but a handed-off child has no other way home, so `Handoff` puts it in reach as a tool.
+way — but a handed-off child has no other way home, so `Answering` puts it in reach as a tool.
+
+The `run_id` is the child's, derived from the parent's — see `Subagents._child_run_id`. Give it
+to whatever drives the child and its effects land in the ledger under a name a retry reaches
+again; ignore it and the child is a fresh anonymous run every time it is asked for.
 """
 
 Deliver = Callable[[BackgroundResult], Awaitable[None]]
@@ -93,7 +125,7 @@ class Named(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Declarative:
-    """A child described, not built. `Delegation.factory` turns it into a `Runner` at call time."""
+    """A child described, not built. `Subagents.factory` turns it into a `Runner` at call time."""
 
     name: str
     description: str
@@ -116,7 +148,8 @@ class Remote:
     """A child behind an HTTP endpoint. `POST {"input": ...}`, and the body is the answer.
 
     `urllib` rather than a client library: this is one POST, and the core's dependency list is
-    three entries for reasons ADR-covered elsewhere. It blocks, so it runs in a worker thread.
+    three entries and an HTTP client is not going to be the fourth. It blocks, so it runs in a
+    worker thread.
     """
 
     name: str
@@ -137,7 +170,7 @@ class _Outcome:
     is_error: bool
 
 
-class Handoff:
+class Answering:
     """Child-side: the one tool a handed-off agent answers its parent with.
 
     A handoff gives a child the work and lets the parent carry on, which means the parent is no
@@ -148,7 +181,7 @@ class Handoff:
 
     Compose it into whatever tools the child already has:
 
-        Handoff(child_tools, reply)
+        Answering(child_tools, reply)
     """
 
     def __init__(self, tools: Tools, reply: Reply) -> None:
@@ -204,7 +237,7 @@ _REPLY_TOOL: dict[str, Any] = {
 }
 
 
-class Delegation:
+class Subagents:
     """Wrap `tools` with `delegate` and the background-task leash."""
 
     def __init__(
@@ -212,6 +245,7 @@ class Delegation:
         tools: Tools,
         subagents: Sequence[Subagent],
         *,
+        run_id: str = "",
         factory: Callable[[Declarative], Runner | Awaitable[Runner]] | None = None,
         deliver: Deliver | None = None,
         registry: BackgroundTasks | None = None,
@@ -229,8 +263,13 @@ class Delegation:
         and its answer is logged into the void, so the tool says so rather than pretending.
         `blocked_tools_for_child` is advisory here — it is reported to `factory`, which is the only
         thing that knows how to build a child's toolset.
+
+        `run_id` is the parent's, and every child id is derived from it. Left empty, children are
+        keyed by call id alone — stable within a run, which is all a host with no ledger needs, and
+        not enough to tell two runs' children apart.
         """
         self._tools = tools
+        self._run_id = run_id
         self._subagents: dict[str, Subagent] = {agent.name: agent for agent in subagents}
         self._factory = factory
         self._deliver = deliver
@@ -243,6 +282,9 @@ class Delegation:
         self._on_child_event = on_child_event
         self._emit = emit
         self._sending: set[asyncio.Task[None]] = set()
+        self._running: set[asyncio.Task[None]] = set()
+        """Independent agents this tool opened. A reference so the event loop cannot collect
+        one mid-run — deliberately not `self.tasks`, which is what `cancel_task` reaches."""
 
     # ── Tools ────────────────────────────────────────────────────────────────
 
@@ -298,13 +340,23 @@ class Delegation:
                 "agents are delegating in a cycle. Review the delegation graph."
             )
 
+        child_run = self._child_run_id(call_id)
         wait = _wait_mode(args.get("wait"))
         if wait == "sync":
             timeout = _positive(args.get("timeout")) or self._default_timeout
-            return _as_result(agent.name, await self._blocking(agent, args["input"], timeout))
-        return self._launch(agent, args["input"], deliver=wait == "handoff")
+            answer = await self._blocking(agent, args["input"], timeout, child_run)
+            return _as_result(agent.name, answer)
+        if wait == "async":
+            return self._hand_off(agent, args["input"], child_run)
+        return self._open(agent, args["input"], child_run)
 
-    async def _blocking(self, agent: Subagent, payload: Any, timeout: float) -> _Outcome:
+    def _child_run_id(self, call_id: str) -> str:
+        """The run id a child is driven under, derived so a retried call reaches the same one."""
+        return f"{self._run_id}:{call_id}" if self._run_id else call_id
+
+    async def _blocking(
+        self, agent: Subagent, payload: Any, timeout: float, child_run: str
+    ) -> _Outcome:
         """Run a child to its answer while the parent's round waits on it.
 
         A child that used `respond_to_parent` said which of its words were the answer, so that wins
@@ -316,7 +368,7 @@ class Delegation:
         async def reply(text: str, is_error: bool) -> None:
             spoken.append(_Outcome(text, is_error))
 
-        drained = await self._call(agent, payload, timeout, reply)
+        drained = await self._call(agent, payload, timeout, reply, child_run)
         return spoken[-1] if spoken else drained
 
     async def _fan_out(self, call_id: str, tasks: Any) -> dict[str, Any]:
@@ -353,33 +405,71 @@ class Delegation:
             rendered.append(f"## delegate[{index}] {tasks[index]['agent']}\n{body}")
         return {"type": "text", "text": "\n\n".join(rendered)}
 
-    def _launch(self, agent: Subagent, payload: Any, *, deliver: bool) -> dict[str, Any]:
-        """Start a child on a detached task and answer without waiting for it."""
-        if deliver and self._deliver is None:
+    def _hand_off(self, agent: Subagent, payload: Any, child_run: str) -> dict[str, Any]:
+        """Start a child the parent still owns, and answer without waiting for it."""
+        if self._deliver is None:
             return _error(
-                'wait="handoff" needs a delivery sink so the child\'s answer can reach you; this '
-                'Delegation was built without one. Use wait="sync", or construct it with '
+                'wait="async" needs a delivery sink so the child\'s answer can reach you; this '
+                'Subagents was built without one. Use wait="sync", or construct it with '
                 "deliver=runtime.background_sink(run_id)."
             )
         task_id = f"task-{uuid4().hex[:12]}"
         # The registry holds the reference; without one the loop only weakly references a task and
         # is free to collect a child mid-run.
-        task = asyncio.ensure_future(self._pump(task_id, agent, payload, deliver=deliver))
+        task = asyncio.ensure_future(self._pump(task_id, agent, payload, child_run))
         self.tasks.register(task_id, "subagent", agent.name, task)
-        tail = (
-            "it answers you on a later round, when it has something to say"
-            if deliver
-            else "its answer is discarded — you asked for none"
-        )
         return {
             "type": "text",
             "text": (
-                f'[subagent {agent.name}] launched as background task {task_id}; {tail}. '
-                f'Keep working. check_tasks for status, cancel_task with "{task_id}" to stop it.'
+                f"[subagent {agent.name}] launched as background task {task_id}; it answers you "
+                "on a later round, when it has something to say. Keep working. check_tasks for "
+                f'status, cancel_task with "{task_id}" to stop it.'
             ),
         }
 
-    async def _pump(self, task_id: str, agent: Subagent, payload: Any, *, deliver: bool) -> None:
+    def _open(self, agent: Subagent, payload: Any, child_run: str) -> dict[str, Any]:
+        """Open an independent agent and hand back its address, not a leash.
+
+        `wait="none"` is not "a child whose answer we throw away" — in the reference it is the one
+        mode that never reaches a caller-owned child at all (`delegate.ts:485-499`: an inline
+        subagent is executed synchronously and the `none` branch below it is for registry peers
+        only). What it hands work to is an autonomous agent with its own lifecycle, and the caller
+        gets no result because the result was never the caller's to have.
+
+        So this deliberately does *not* register the run in `self.tasks`. A task in there is
+        something `cancel_task` can kill, and a thing the parent can kill is not independent. What
+        the parent gets instead is the run id, which is the whole of what it needs: `AgentRuntime`
+        is keyed by run id, so anyone holding one can steer that agent (`submit`), answer its
+        permission suspensions, drive it further (`run`), or read what it did out of the ledger —
+        the user included. An agent opened without its address would be one nobody could ever
+        reach again.
+        """
+        running = asyncio.ensure_future(self._independent_run(agent, payload, child_run))
+        # A reference, not a leash: the event loop only weakly references tasks, so an unheld one
+        # may be collected mid-run. Nothing here exposes a way to cancel it.
+        self._running.add(running)
+        running.add_done_callback(self._running.discard)
+        return {
+            "type": "text",
+            "text": (
+                f'[agent {agent.name}] opened as independent run "{child_run}". It owns its own '
+                "outcome from here — you get no result and no way to stop it. Its work is on "
+                "that run id, which is how you, or a person, reach it again."
+            ),
+        }
+
+    async def _independent_run(self, agent: Subagent, payload: Any, child_run: str) -> None:
+        """Drive an agent that answers to nobody here. Its outcome belongs to its own run."""
+
+        async def unheard(_text: str, _is_error: bool) -> None:
+            """Accept a reply and drop it: there is no parent waiting on this one."""
+
+        outcome = await self._call(agent, payload, self._background_timeout, unheard, child_run)
+        await self._announce(
+            EventType.SUBAGENT_STOP, agent, reason=_reason(outcome), run_id=child_run
+        )
+
+    async def _pump(self, task_id: str, agent: Subagent, payload: Any, child_run: str) -> None:
         """Drive a handed-off child, and let it answer the moment it decides to.
 
         The answer travels when the child calls `respond_to_parent`, not when its process ends —
@@ -392,25 +482,29 @@ class Delegation:
         async def reply(text: str, is_error: bool) -> None:
             nonlocal answered
             answered = True
-            await self._settled(task_id, agent, _Outcome(text, is_error), deliver=deliver)
+            await self._settled(task_id, agent, _Outcome(text, is_error), child_run)
 
         try:
-            outcome = await self._call(agent, payload, self._background_timeout, reply)
+            outcome = await self._call(
+                agent, payload, self._background_timeout, reply, child_run
+            )
         except asyncio.CancelledError:
             # `cancel_task` already recorded `cancelled` and nobody is waiting on this answer.
             raise
         if not answered:
-            await self._settled(task_id, agent, outcome, deliver=deliver)
+            await self._settled(task_id, agent, outcome, child_run)
         else:
             self.tasks.settle(task_id, "done")
 
     async def _settled(
-        self, task_id: str, agent: Subagent, outcome: _Outcome, *, deliver: bool
+        self, task_id: str, agent: Subagent, outcome: _Outcome, child_run: str
     ) -> None:
-        """Record how a detached child ended, and send its answer home if anyone wants it."""
+        """Record how a handed-off child ended, and send its answer home."""
         self.tasks.settle(task_id, "error" if outcome.is_error else "done")
-        await self._announce(EventType.SUBAGENT_STOP, agent, reason=_reason(outcome))
-        if self.tasks.status(task_id) == "cancelled" or not deliver or self._deliver is None:
+        await self._announce(
+            EventType.SUBAGENT_STOP, agent, reason=_reason(outcome), run_id=child_run
+        )
+        if self.tasks.status(task_id) == "cancelled" or self._deliver is None:
             return
         await self._deliver(
             BackgroundResult(
@@ -425,16 +519,16 @@ class Delegation:
     # ── Running a child ──────────────────────────────────────────────────────
 
     async def _call(
-        self, agent: Subagent, payload: Any, timeout: float | None, reply: Reply
+        self, agent: Subagent, payload: Any, timeout: float | None, reply: Reply, child_run: str
     ) -> _Outcome:
         """One child, run to its answer, bounded when a timeout was asked for."""
         prompt = payload if isinstance(payload, str) else json.dumps(payload, default=str)
-        await self._announce(EventType.SUBAGENT_START, agent, task=prompt)
+        await self._announce(EventType.SUBAGENT_START, agent, task=prompt, run_id=child_run)
         try:
             if timeout is None:
-                return await self._drain(agent, prompt, reply)
+                return await self._drain(agent, prompt, reply, child_run)
             async with asyncio.timeout(timeout):
-                return await self._drain(agent, prompt, reply)
+                return await self._drain(agent, prompt, reply, child_run)
         except TimeoutError:
             return _Outcome(f'subagent "{agent.name}" exceeded {timeout}s and was stopped.', True)
         except asyncio.CancelledError:
@@ -442,12 +536,12 @@ class Delegation:
         except Exception as failure:
             return _Outcome(f'subagent "{agent.name}": {type(failure).__name__}: {failure}', True)
 
-    async def _drain(self, agent: Subagent, prompt: str, reply: Reply) -> _Outcome:
+    async def _drain(self, agent: Subagent, prompt: str, reply: Reply, child_run: str) -> _Outcome:
         """Read a child to its terminal event. Remote children answer in one piece instead."""
         if isinstance(agent, Remote):
             return await asyncio.to_thread(_post, agent, prompt)
 
-        run = (await self._runner(agent))(prompt, reply)
+        run = (await self._runner(agent))(prompt, reply, child_run)
         content, is_error = "", False
         async for event in run:
             if self._on_child_event is not None:
@@ -523,7 +617,7 @@ class Delegation:
         if unknown := [item for item in task_ids if self.tasks.get(item) is None]:
             return _error(f"Unknown task id(s): {', '.join(unknown)}. Nothing to watch.")
         if self._deliver is None:
-            return _error("watch_task needs a delivery sink; this Delegation was built without one")
+            return _error("watch_task needs a delivery sink; this Subagents was built without one")
         mode = "any" if args.get("mode") == "any" else "all"
         note = str(args.get("message", ""))
 
@@ -588,13 +682,15 @@ class Delegation:
                         "input": {"description": "The subtask to hand over."},
                         "wait": {
                             "type": "string",
-                            "enum": ["sync", "handoff", "none"],
+                            "enum": ["sync", "async", "none"],
                             "description": (
                                 '"sync" (default) blocks this round and returns the answer — use '
                                 "it when you cannot continue without it. "
-                                '"handoff" gives the task away and returns immediately; the child '
+                                '"async" gives the task away and returns immediately; the child '
                                 "answers you on a later round, when it has something to say. "
-                                '"none" hands it off and discards the answer.'
+                                '"none" opens it as an independent agent instead: you get '
+                                "its run id and nothing else — no result, and no way to "
+                                "stop it."
                             ),
                         },
                         "timeout": {
@@ -697,11 +793,13 @@ def _wait_mode(value: Any) -> str:
 
     Models emit `false` for fire-and-forget — the only non-string among string siblings — and a
     strict comparison drops it into the synchronous path, which is the opposite of what was asked.
-    `async` is the reference's name for a handoff and is accepted as one.
+    `async` is the reference's own name for this mode (`delegate.ts:228`); `handoff` is accepted
+    because it is what the shape is usually called, but the reference's spelling is the canonical
+    one the model is shown.
     """
     if value in (False, "false", "none"):
         return "none"
-    return "handoff" if value in ("handoff", "async") else "sync"
+    return "async" if value in ("async", "handoff") else "sync"
 
 
 def _reason(outcome: _Outcome) -> str:

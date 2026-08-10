@@ -1,4 +1,4 @@
-"""Delegation semantics pinned against `builtin/delegate.ts`. Fakes, not mocks."""
+"""Subagents semantics pinned against `builtin/delegate.ts`. Fakes, not mocks."""
 
 import asyncio
 import json
@@ -7,15 +7,16 @@ from typing import Any
 
 from nexora import (
     AgentRuntime,
+    Answering,
     BackgroundResult,
     Compiled,
     Declarative,
-    Delegation,
-    Handoff,
     Remote,
+    Subagents,
     react_loop,
 )
-from nexora.delegate import Deliver, Reply
+from nexora.subagents import Deliver, Reply
+from nexora_store import MemorySteps
 
 from tests.test_loop import Tools, a_call, says, scripted
 
@@ -23,7 +24,7 @@ from tests.test_loop import Tools, a_call, says, scripted
 def child(*events: dict[str, Any], delay: float = 0.0) -> Any:
     """A subagent's event stream, without a model behind it. Never uses its reply tool."""
 
-    async def run(_prompt: str, _reply: Reply) -> AsyncIterator[dict[str, Any]]:
+    async def run(_prompt: str, _reply: Reply, _run_id: str) -> AsyncIterator[dict[str, Any]]:
         if delay:
             await asyncio.sleep(delay)
         for event in events:
@@ -35,7 +36,7 @@ def child(*events: dict[str, Any], delay: float = 0.0) -> Any:
 def speaks(answer: str, *, is_error: bool = False, delay: float = 0.0) -> Any:
     """A subagent that answers its parent deliberately, the way a handed-off one must."""
 
-    async def run(_prompt: str, reply: Reply) -> AsyncIterator[dict[str, Any]]:
+    async def run(_prompt: str, reply: Reply, _run_id: str) -> AsyncIterator[dict[str, Any]]:
         if delay:
             await asyncio.sleep(delay)
         await reply(answer, is_error)
@@ -58,11 +59,11 @@ def collector() -> tuple[list[BackgroundResult], Deliver]:
     return delivered, deliver
 
 
-def sole(agents: Any, **kw: Any) -> Delegation:
-    return Delegation(Tools(), agents, **kw)
+def sole(agents: Any, **kw: Any) -> Subagents:
+    return Subagents(Tools(), agents, **kw)
 
 
-async def call(tools: Delegation, args: dict[str, Any]) -> dict[str, Any]:
+async def call(tools: Subagents, args: dict[str, Any]) -> dict[str, Any]:
     return await tools.execute("delegate", "c1", args)
 
 
@@ -94,7 +95,7 @@ async def test_the_input_reaches_the_child_as_the_prompt() -> None:
     """A non-string payload is JSON, not `str(dict)` — the child is a model, not a repl."""
     seen: list[str] = []
 
-    async def run(prompt: str, _reply: Reply) -> AsyncIterator[dict[str, Any]]:
+    async def run(prompt: str, _reply: Reply, _run_id: str) -> AsyncIterator[dict[str, Any]]:
         seen.append(prompt)
         yield {"type": "done", "content": "ok"}
 
@@ -117,7 +118,7 @@ async def test_delegation_deeper_than_the_cap_is_refused_before_the_child_runs()
     """delegate.ts:472 — the depth guard is what stops A→B→A from running forever."""
     ran: list[str] = []
 
-    async def run(_prompt: str, _reply: Reply) -> AsyncIterator[dict[str, Any]]:
+    async def run(_prompt: str, _reply: Reply, _run_id: str) -> AsyncIterator[dict[str, Any]]:
         ran.append("child")
         yield {"type": "done", "content": "never"}
 
@@ -155,7 +156,7 @@ async def test_a_batch_runs_its_children_together_and_answers_once() -> None:
 async def test_one_failing_child_does_not_take_its_siblings_answers_down() -> None:
     """The reason the fan-out gathers with `return_exceptions`, same rule as a tool round."""
 
-    async def explode(_prompt: str, _reply: Reply) -> AsyncIterator[dict[str, Any]]:
+    async def explode(_prompt: str, _reply: Reply, _run_id: str) -> AsyncIterator[dict[str, Any]]:
         raise RuntimeError("boom")
         yield  # pragma: no cover - unreachable, marks this an async generator
 
@@ -183,7 +184,7 @@ async def test_a_handoff_answers_before_the_child_finishes() -> None:
     assert [task["status"] for task in tools.tasks.list()] == ["running"]
 
 
-async def settle(tools: Delegation) -> None:
+async def settle(tools: Subagents) -> None:
     """Let every launched child finish, without guessing at a sleep."""
     for listed in tools.tasks.list():
         entry = tools.tasks.get(listed["task_id"])
@@ -213,8 +214,34 @@ async def test_wait_false_is_fire_and_forget_rather_than_a_silent_sync_hop() -> 
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    assert "its answer is discarded" in result["text"]
+    assert "opened as independent run" in result["text"]
     assert delivered == []
+
+
+async def test_an_independent_agent_is_answered_with_its_run_id() -> None:
+    """Opening an agent without handing back its address opens one nobody can reach again."""
+    _, deliver = collector()
+    tools = Subagents(
+        Tools(),
+        [Compiled("worker", "works", answers("mine to keep"))],
+        deliver=deliver,
+        run_id="parent-7",
+    )
+
+    opening = {"agent": "worker", "input": "x", "wait": "none"}
+    result = await tools.execute("delegate", "c9", opening)
+
+    assert '"parent-7:c9"' in result["text"]
+
+
+async def test_an_independent_agent_is_not_on_the_parents_leash() -> None:
+    """A thing `cancel_task` can kill is not independent — so it is not in that registry."""
+    _, deliver = collector()
+    tools = sole([Compiled("worker", "works", answers("mine", delay=0.05))], deliver=deliver)
+
+    await call(tools, {"agent": "worker", "input": "x", "wait": "none"})
+
+    assert tools.tasks.list() == []
 
 
 async def test_a_handoff_without_a_sink_says_so_instead_of_dropping_the_answer() -> None:
@@ -275,15 +302,15 @@ async def test_watch_notifies_once_the_tasks_it_names_have_settled() -> None:
 
 
 async def test_the_hosts_tools_still_run_through_the_wrapper() -> None:
-    """`Delegation` wraps, it does not replace — a host tool must survive the composition."""
-    tools = Delegation(Tools(results={"read": {"type": "text", "text": "file body"}}), [])
+    """`Subagents` wraps, it does not replace — a host tool must survive the composition."""
+    tools = Subagents(Tools(results={"read": {"type": "text", "text": "file body"}}), [])
 
     assert await tools.execute("read", "c1", {}) == {"type": "text", "text": "file body"}
 
 
 async def test_the_delegation_tools_are_offered_beside_the_hosts() -> None:
     """A tool the model is never shown is a tool it never calls."""
-    tools = Delegation(Tools(names=["read"]), [Compiled("r", "reviews", answers("x"))])
+    tools = Subagents(Tools(names=["read"]), [Compiled("r", "reviews", answers("x"))])
 
     offered = [item["name"] for item in tools.list()]
 
@@ -324,7 +351,7 @@ async def test_a_background_answer_re_enters_the_run_as_model_context() -> None:
     its second delivery path (`deliverResult`) for. Here the durable queue holds it either way.
     """
     runtime = AgentRuntime()
-    tools = Delegation(
+    tools = Subagents(
         Tools(),
         [Compiled("researcher", "digs", answers("40 papers", delay=0.05))],
         deliver=runtime.background_sink("delegated"),
@@ -374,7 +401,7 @@ async def test_a_remote_child_is_reached_over_http_and_its_body_is_the_answer() 
     assert json.loads(received[0]) == {"input": "ping"}
 
 
-# ── Handoff: the child answers on purpose ───────────────────────────────────
+# ── Answering: the child answers on purpose ───────────────────────────────────
 
 
 async def test_a_handed_off_child_answers_through_its_reply_tool() -> None:
@@ -396,7 +423,7 @@ async def test_a_reply_reaches_the_parent_before_the_child_stops_running() -> No
 
     running = asyncio.Event()
 
-    async def lingering(_prompt: str, reply: Reply) -> AsyncIterator[dict[str, Any]]:
+    async def lingering(_prompt: str, reply: Reply, _run_id: str) -> AsyncIterator[dict[str, Any]]:
         await reply("early answer", False)
         await running.wait()
         yield {"type": "done", "content": "finally done"}
@@ -446,7 +473,7 @@ async def test_a_child_reporting_a_failure_reaches_the_parent_as_an_error() -> N
     ]
 
 
-# ── Handoff: the child side ─────────────────────────────────────────────────
+# ── Answering: the child side ─────────────────────────────────────────────────
 
 
 async def test_the_reply_tool_is_offered_to_the_child_beside_its_own() -> None:
@@ -456,7 +483,7 @@ async def test_the_reply_tool_is_offered_to_the_child_beside_its_own() -> None:
     async def reply(text: str, is_error: bool) -> None:
         sent.append((text, is_error))
 
-    child_tools = Handoff(Tools(names=["read"]), reply)
+    child_tools = Answering(Tools(names=["read"]), reply)
 
     assert [item["name"] for item in child_tools.list()] == ["respond_to_parent", "read"]
     assert (child_tools.get("respond_to_parent") or {})["terminates_loop"] is True
@@ -469,7 +496,7 @@ async def test_the_reply_tool_ends_the_childs_run_when_it_answers() -> None:
     async def reply(text: str, is_error: bool) -> None:
         sent.append((text, is_error))
 
-    child_tools = Handoff(Tools(), reply)
+    child_tools = Answering(Tools(), reply)
     llm = scripted(says("", a_call("r1", "respond_to_parent", {"result": "done digging"})))
 
     events = [event async for event in react_loop(llm, child_tools)]
@@ -485,19 +512,19 @@ async def test_an_empty_reply_is_refused_so_the_parent_is_not_answered_with_noth
     async def reply(text: str, is_error: bool) -> None:
         sent.append((text, is_error))
 
-    result = await Handoff(Tools(), reply).execute("respond_to_parent", "r1", {"result": "  "})
+    result = await Answering(Tools(), reply).execute("respond_to_parent", "r1", {"result": "  "})
 
     assert result["type"] == "error"
     assert sent == []
 
 
 async def test_the_childs_own_tools_still_run_under_the_reply_wrapper() -> None:
-    """`Handoff` adds a way home; it must not take the child's tools away."""
+    """`Answering` adds a way home; it must not take the child's tools away."""
 
     async def reply(_text: str, _is_error: bool) -> None:  # pragma: no cover - unused here
         raise AssertionError("not this test")
 
-    child_tools = Handoff(Tools(results={"read": {"type": "text", "text": "body"}}), reply)
+    child_tools = Answering(Tools(results={"read": {"type": "text", "text": "body"}}), reply)
 
     assert await child_tools.execute("read", "c1", {}) == {"type": "text", "text": "body"}
 
@@ -520,3 +547,56 @@ async def test_sync_holds_the_round_and_handoff_releases_it() -> None:
 
     assert handed_off < waited / 5, "the handoff blocked the round it was supposed to release"
     await settle(tools)
+
+
+# ── The child's name ────────────────────────────────────────────────────────
+
+
+async def test_the_child_run_id_is_derived_from_the_call_that_asked_for_it() -> None:
+    """Two runs delegating under the same call id are still two different children."""
+    seen: list[str] = []
+
+    async def run(_prompt: str, _reply: Reply, run_id: str) -> AsyncIterator[dict[str, Any]]:
+        seen.append(run_id)
+        yield {"type": "done", "content": "ok"}
+
+    agents = [Compiled("worker", "works", run)]
+    await Subagents(Tools(), agents, run_id="run-42").execute(
+        "delegate", "c7", {"agent": "worker", "input": "x"}
+    )
+    await Subagents(Tools(), agents, run_id="run-43").execute(
+        "delegate", "c7", {"agent": "worker", "input": "x"}
+    )
+    await Subagents(Tools(), agents).execute("delegate", "c7", {"agent": "worker", "input": "x"})
+
+    assert seen == ["run-42:c7", "run-43:c7", "c7"]
+
+
+async def test_a_retried_delegate_resumes_the_child_instead_of_repeating_its_effects() -> None:
+    """The point of deriving the id: recovery retries a `delegate` call with the same call id.
+
+    A subagent re-run from nothing does not repeat one write, it repeats everything it did. Given
+    a name, the child's effects are in the ledger under it, and the retry becomes the child's own
+    recovery — which is what `call_id` being an idempotency key has to mean for this tool.
+    """
+    steps = MemorySteps()
+    executed: list[str] = []
+
+    async def run(_prompt: str, _reply: Reply, run_id: str) -> AsyncIterator[dict[str, Any]]:
+        done = await steps.read(run_id, "write")
+        if done.status == "done":
+            yield {"type": "done", "content": f"resumed, {done.value['wrote']} already written"}
+            return
+        await steps.start(run_id, "write")
+        executed.append(run_id)
+        await steps.finish(run_id, "write", {"wrote": "the report"})
+        raise RuntimeError("died between the effect and the answer")
+
+    tools = Subagents(Tools(), [Compiled("worker", "writes", run)], run_id="run-42")
+
+    crashed = await tools.execute("delegate", "c7", {"agent": "worker", "input": "write it"})
+    retried = await tools.execute("delegate", "c7", {"agent": "worker", "input": "write it"})
+
+    assert executed == ["run-42:c7"], "the retry re-executed the child's committed effect"
+    assert crashed["type"] == "error"
+    assert retried == {"type": "text", "text": "resumed, the report already written"}

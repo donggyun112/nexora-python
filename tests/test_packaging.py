@@ -109,9 +109,9 @@ LAYERS: dict[str, frozenset[str]] = {
     "background": frozenset(),
     "controls": frozenset({"contracts"}),
     "tools": frozenset({"contracts", "controls"}),
-    # Below `tools`, not beside it: delegation wraps a `Tools` the way a host composes one, and
+    # Beside `tools`, not above it: a subagent wrapper composes a `Tools` the way a host does, and
     # reaching the execution boundary would make a child's launch a second kind of tool round.
-    "delegate": frozenset({"background", "contracts"}),
+    "subagents": frozenset({"background", "contracts"}),
     "history": frozenset({"contracts", "tools"}),
     # Peer of `history`, not above it: both are codecs between a message and an opaque payload some
     # store holds. Reaching `tools` would mean the transcript had an opinion about executing one.
@@ -124,7 +124,7 @@ LAYERS: dict[str, frozenset[str]] = {
             "background",
             "contracts",
             "controls",
-            "delegate",
+            "subagents",
             "driver",
             "engines",
             "history",

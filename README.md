@@ -107,9 +107,9 @@ Internally, those responsibilities split cleanly:
   source of truth rather than a second durability mechanism beside a graph checkpointer.
 - **Input ledger:** owns pending/claimed/admitted input order. Initial prompts, steers, background
   results and resume answers enter the planner through one queue contract.
-- **Effect executors:** perform mediated tool operations. Sandbox and delegation effects have
-  their place here and no implementation yet. Model invocation is still direct planner I/O and
-  is not yet a durable step.
+- **Effect executors:** perform mediated tool operations, and delegation composes over them
+  as a `Tools` wrapper. Sandbox effects have their place here and no implementation yet.
+  Model invocation is still direct planner I/O and is not yet a durable step.
 - **Events:** expose the same lifecycle to audit, UI and monitoring consumers.
 
 ## Development
@@ -148,6 +148,8 @@ packages/
 │       ├── controls.py     the control points and what composes at each
 │       ├── tools.py        tool execution, the policy gate, result rendering
 │       ├── history.py      suspension snapshots and the resume codec
+│       ├── background.py   detached jobs, and the leash on them
+│       ├── delegate.py     subagents, and the tools that reach them
 │       ├── orchestrator.py durable rounds, suspension, recovery
 │       ├── engines/plain/  the planner as an `async while`
 │       ├── driver.py       engine stream → one outcome
@@ -173,16 +175,70 @@ permission suspension/resume, durable tool effects, interrupted-round reconstruc
 per-call tool failure — a tool that raises is reported to the model as an error result, the way
 `tool-executor.ts` catches per call, rather than ending the round.
 
-Not ported: **subagent delegation and background tasks**. The reference's `delegate` tool and
-its `BackgroundTaskRegistry` have no counterpart here; `SUBAGENT_START`/`SUBAGENT_STOP` are event
-names with nothing yet to publish them. The seam they would need does exist — a settled
-background result is an ordinary `PendingInput` on the durable queue, which is the same boundary
-a steer crosses — so what is missing is the registry, the leash (`check_tasks`/`cancel_task`),
-and the tool itself, not a place to put them. Also not ported: automatic transcript persistence
-and attachments. Crash recovery accordingly accepts the durable transcript explicitly rather than
-hiding that missing store. Context compaction is a seam rather than a feature: the loop calls a
-caller-supplied `compact_context` when the provider reports context overflow, and ships no
-compactor of its own.
+**Subagents** composes over a host's tools the way durability does, and adds `delegate` plus the
+four tools that hold the leash on what it launches:
+
+```python
+from nexora import AgentRuntime, Compiled, Subagents
+
+runtime = AgentRuntime()
+tools = Subagents(
+    my_tools,
+    [Compiled("researcher", "digs through papers", researcher_runner)],
+    run_id="run-42",
+    deliver=runtime.background_sink("run-42"),
+)
+```
+
+A child is driven under a run id derived from the call that asked for it, `f"{run_id}:{call_id}"`,
+and that is what keeps `delegate` inside the contract every other tool is held to. A tool call's
+id is its idempotency key, so recovery may retry an interrupted call — but a subagent re-run from
+nothing does not repeat one write, it repeats every model round and every effect together. Given
+the same name on the same store, the child's own effects are in the ledger under it and the retry
+becomes the child's own recovery. A runner that ignores the id it is handed gives up exactly this;
+a `Remote` child cannot have it at all, since what is behind the POST owns its own durability.
+
+A subtask is handed over one of two ways, and they are different shapes rather than two speeds
+of one thing:
+
+* **`wait="sync"` — the parent stops until it has the answer.** Its round does not end until the
+  child replies, so whatever the parent decides next was decided knowing the result.
+* **`wait="async"` — the parent gives the task away and carries on.** The child answers *when
+  it decides to*, by calling `respond_to_parent`, and that answer re-enters the parent's run
+  through the durable input queue on a later round.
+
+A handed-off child therefore has to be *able* to answer, which is what `Answering` is for — compose
+it into the child's own tools and it gains `respond_to_parent`, marked `terminates_loop` because
+an agent that has answered is finished and a second answer would race the first:
+
+```python
+def build_child(spec, reply):
+    return lambda prompt, _reply, _run_id: react_loop(model, Answering(child_tools, reply), ...)
+```
+
+A child that never calls it still answers, from its last turn, so handing work to an agent that
+lacks the tool loses nothing. `wait="none"` hands off and discards the answer. (`handoff` is accepted as a synonym for `async`; the reference spells the mode `async` and uses "handoff" for the `delegate` hop itself, as opposed to `publish_topic`'s anonymous broadcast.) `tasks=[...]` fans
+several children out inside one call, so parallelism is the caller's decision rather than a hope
+that the model emits several tool calls at once. The three subagent kinds are the reference's —
+`Declarative` (a spec a host factory builds at call time), `Compiled` (a child already wired), and
+`Remote` (an HTTP endpoint). `SUBAGENT_START`/`SUBAGENT_STOP` are published around every child.
+
+The reference needs two delivery paths, `ctx.steerSelf` for a result beating the turn's end and
+`ctx.deliverResult` for one that misses it. Here both are the durable input queue, which the
+planner drains at every round boundary and which keeps whatever arrives after the last one — so
+`background_sink` is the whole of it, and a result is folded in or waits for the next `run`
+without the caller knowing which happened. `check_tasks`, `read_task_output`, `cancel_task` and
+`watch_task` are the leash; `BackgroundTasks` holds it and is deliberately not durable, because a
+record of a job surviving a crash its coroutine did not would describe something no longer running.
+
+What delegation here does *not* have is the reference's other half: `capability`-based routing to
+a peer over `transport`, its `AgentRegistry`, `approvalGate`, and authority attenuation. Those
+depend on subsystems this port has not built — there is no transport to publish an envelope to and
+no registry to resolve a capability against — so a child is reached by name, in-process. Also not
+ported: automatic transcript persistence and attachments. Crash recovery accordingly accepts the
+durable transcript explicitly rather than hiding that missing store. Context compaction is a seam
+rather than a feature: the loop calls a caller-supplied `compact_context` when the provider
+reports context overflow, and ships no compactor of its own.
 
 Measured locally over 100 zero-I/O rounds (best of three), the direct durable path costs about
 260µs per round. The former graph path was removed despite equivalent effect safety.

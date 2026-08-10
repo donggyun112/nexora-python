@@ -21,7 +21,6 @@ from .contracts import (
 )
 from .contracts.types import Aborted, Emit, OnSuspend
 from .controls import Controls, Ctx
-from .delegate import Deliver
 from .driver import drive
 from .engines.plain import react_loop
 from .history import (
@@ -30,6 +29,7 @@ from .history import (
     suspension_result_message,
 )
 from .orchestrator import AgentSuspended, MemorySteps, Orchestrator, StepLog
+from .subagents import Deliver
 
 __all__ = ["AgentRuntime", "run"]
 

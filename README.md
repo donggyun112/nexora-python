@@ -12,10 +12,9 @@ Its public API speaks in agent concepts — models, tools, permissions, sessions
 The orchestrator is an internal execution substrate that records and recovers agent effects; it
 is not a second product users have to assemble beside the SDK.
 
-See the [current architecture map](docs/architecture/structure.html) for the ownership, approval,
-recovery, and three-lane control/signal/event model, and [examples/](examples/) for four runnable
-scripts — a tool round, permission suspend/resume, crash recovery, and control-plane injection.
-They need no API key.
+See [examples/](examples/) for runnable scripts — a tool round, permission suspend/resume, crash
+recovery, control-plane injection, a durable workflow, and the loop without a ledger. They need
+no API key.
 
 ```python
 from nexora import AgentRuntime
@@ -151,8 +150,7 @@ Automatic transcript persistence, context compaction, and attachments are not po
 recovery currently accepts the durable transcript explicitly rather than hiding that missing store.
 
 Measured locally over 100 zero-I/O rounds (best of three), the direct durable path costs about
-260µs per round. ADR-005 records why the former graph path was removed despite equivalent effect
-safety.
+260µs per round. The former graph path was removed despite equivalent effect safety.
 
 ## License
 

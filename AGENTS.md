@@ -8,12 +8,12 @@
   behavioral reference for the loop; cite the line a rule comes from when porting one.
 - **Messages, tool calls and models are LangChain's.** `BaseMessage`, `ToolCall`,
   `BaseChatModel`. Owning our own bought translation layers and a re-implementation of
-  `ChatOpenAI`; see [ADR-001](docs/architecture/adrs/adr-001-plain-loop-over-graph-engine.md).
+  `ChatOpenAI`.
 - **What is ours is the control-flow contract**: the hooks in `contracts/types.py`, the event
   vocabulary in `contracts/events.py`, and the react.ts semantics.
 - **One planner, one execution path.** `engines/plain` is the agent planner. Durable policy,
   effect execution, suspension and recovery belong to `Orchestrator`; do not add a second graph
-  engine or checkpointer path. See ADR-005.
+  engine or checkpointer path.
 - The loop imposes no iteration cap, no timeout, and no permission policy of its own. Those
   are the caller's, supplied as hooks.
 - **There is one approval path.** An agent asking a human and a policy refusing a tool both end
@@ -21,7 +21,7 @@
 - **Gate logic is centralized at the execution boundary.** An agent planner requests an effect;
   `Orchestrator` and the shared controls decide whether it may run.
 - Nexora owns providers' *selection*, tools, permissions, authority, sandboxing, and transport.
-- **Retry safety needs two things, not one** ([ADR-002](docs/architecture/adrs/adr-002-retry-safety-needs-order-determinism.md)):
+- **Retry safety needs two things, not one**:
   - *per-call idempotency* — a tool call's id is its idempotency key, because a crash between
     executing a tool and recording its result is indistinguishable from never running it;
   - *batch order determinism* — two individually idempotent writes to the same file give

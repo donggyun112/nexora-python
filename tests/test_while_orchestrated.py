@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
 from nexora.controls import Ctx
 from nexora.engines.plain import react_loop
 from nexora.orchestrator import Indeterminate, MemorySteps, Orchestrator

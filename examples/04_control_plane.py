@@ -17,7 +17,6 @@ from typing import Any
 
 from _scripted import Files, calling, says, scripted
 from langchain_core.messages import HumanMessage
-
 from nexora import AgentRuntime, PendingInput
 from nexora.controls import (
     ControlPlane,

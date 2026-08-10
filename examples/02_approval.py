@@ -15,7 +15,6 @@ import asyncio
 from typing import Any
 
 from _scripted import Files, calling, says, scripted
-
 from nexora import AgentRuntime
 from nexora.controls import (
     Continue,

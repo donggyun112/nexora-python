@@ -16,7 +16,6 @@ import asyncio
 
 from _scripted import Files, calling, says, scripted
 from langchain_core.messages import AIMessage, HumanMessage
-
 from nexora import AgentRuntime
 from nexora.orchestrator import MemorySteps, Orchestrator
 

@@ -4,13 +4,13 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-
 from nexora import AgentRuntime
 from nexora.contracts import ToolCall
 from nexora.controls import ControlPlane, Permissions, gate
 from nexora.engines.plain import react_loop
 from nexora.history import resume_after_suspend
 from nexora.orchestrator import AgentFailed, AgentSuspended, MemorySteps
+
 from tests.test_loop import Tools, a_call, says, scripted
 
 

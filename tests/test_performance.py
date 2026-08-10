@@ -61,8 +61,7 @@ def a_conversation() -> tuple[SlowLlm, SlowTools]:
 
 
 async def test_concurrent_conversations_cost_like_one_not_like_many() -> None:
-    """20 conversations must interleave. Serializing them would be ~20x and would mean the
-    loop is holding something — a thread, a lock, a sync call — across an await."""
+    """Twenty conversations interleave instead of executing serially."""
     started = time.perf_counter()
     await drain(*a_conversation())
     alone = time.perf_counter() - started
@@ -107,8 +106,7 @@ async def test_the_loop_yields_at_every_wait() -> None:
 
 
 async def test_a_gated_batch_still_runs_concurrently() -> None:
-    """The gate runs sequentially before the batch by design. That must not turn the batch
-    itself sequential — 5 concurrent tools should cost about one tool."""
+    """Sequential gating does not make a concurrency-safe batch run sequentially."""
 
     class ConcurrentBatchTools(Tools):
         async def execute_batch(self, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -139,7 +137,7 @@ async def test_a_gated_batch_still_runs_concurrently() -> None:
 
 
 def _rounds(n: int) -> Llm:
-    """n tool rounds followed by a final answer, with no simulated latency."""
+    """N tool rounds followed by a final answer, with no simulated latency."""
     return scripted(*[says("", a_call(f"c{i}", "read")) for i in range(n)], says("finished"))
 
 
@@ -159,8 +157,7 @@ async def _time_rounds(n: int, best_of: int = 3) -> float:
 
 
 async def test_per_round_cost_does_not_grow_with_history() -> None:
-    """History grows every round. If anything rescans or recopies all of it per round, cost
-    per round climbs and long conversations degrade quadratically."""
+    """Per-round overhead remains stable as conversation history grows."""
     await _time_rounds(20)  # warm up the interpreter before measuring
 
     per_round_short = await _time_rounds(20) / 20
@@ -176,12 +173,7 @@ async def test_per_round_cost_does_not_grow_with_history() -> None:
 
 
 async def test_emission_is_cheap_enough_to_leave_on() -> None:
-    """Every event hashes its coordinates for a stable id. That must stay far below the cost of
-    the work it describes, or observability becomes something people switch off.
-
-    Measured against a round of that work in this same process, not against a fixed microsecond
-    budget: a number that passes on a laptop and fails on a loaded CI box measures the box.
-    """
+    """Event emission stays much cheaper than the work it observes."""
 
     async def sink(envelope: EventEnvelope) -> None:
         return None

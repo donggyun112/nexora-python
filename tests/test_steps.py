@@ -112,8 +112,7 @@ async def test_the_lease_does_not_block_the_holder_from_resuming() -> None:
 
 
 async def test_a_stalled_worker_cannot_write_after_being_replaced() -> None:
-    """The failure renewal cannot fix: a worker stalls past its TTL, another takes over, and then
-    the first one wakes up still believing it holds the run. Only the token stops it."""
+    """A stale fencing token prevents a replaced worker from writing."""
     log = MemorySteps()
 
     stalled = await log.acquire("run-4b", "worker-a", 60.0)
@@ -131,8 +130,7 @@ async def test_a_stalled_worker_cannot_write_after_being_replaced() -> None:
 
 
 async def test_a_writer_with_no_lease_is_not_fenced() -> None:
-    """A signal is answered from outside the run by something that holds no lease — a webhook, an
-    operator. Fencing it would refuse the writes the mechanism exists for."""
+    """An external signal writer without a lease is not fenced."""
     log = MemorySteps()
     await log.acquire("run-4c", "worker-a", 60.0)
 
@@ -279,23 +277,19 @@ async def test_a_signal_is_a_step_that_only_an_outsider_can_finish() -> None:
 
 
 async def test_the_postgres_log_matches_the_protocol() -> None:
-    """Shape only. No test here connects to a database — see the module docstring.
+    """The DDL only. Protocol conformance moved to `tests/test_store_conformance.py`.
 
-    Skipped when the `postgres` extra is not installed: psycopg stopped being a hard dependency
-    when the store became substitutable, so a default install must not fail this file.
+    That file runs the same behavioural suite over both implementations, which is a stronger claim
+    than `isinstance` — a Protocol is satisfied by having the right method names, and every
+    divergence found so far was in what those methods *did*. What is left here is the schema text,
+    which no behavioural test reads.
+
+    Skipped when the `postgres` extra is not installed: psycopg stopped being a hard dependency when
+    the store became substitutable, so a default install must not fail this file.
     """
     pytest.importorskip("psycopg")
-    from nexora_store_pg import SCHEMA, PostgresSteps
+    from nexora_store_pg import SCHEMA
 
-    assert issubclass(PostgresSteps, object)
-    assert isinstance(PostgresSteps(_NoConnection()), StepLog)  # type: ignore[arg-type]
     assert "nexora_run_lease" in SCHEMA
     assert "nexora_input" in SCHEMA
     assert "expires_at < now()" not in SCHEMA  # the takeover clause lives in the query, not the DDL
-
-
-class _NoConnection:
-    """Enough of a connection to satisfy construction. Any use of it is a test bug."""
-
-    def cursor(self, **_: Any) -> Any:
-        raise AssertionError("this test must not talk to a database")

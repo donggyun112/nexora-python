@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api")
 
 @router.get("/health")
 async def health() -> dict[str, Any]:
+    """Return service health and provider configuration status."""
     return {
         "ok": True,
         "openrouter_configured": SETTINGS.configured,
@@ -34,17 +35,13 @@ async def health() -> dict[str, Any]:
 
 @router.get("/steps/{run_id}")
 async def steps(run_id: str) -> dict[str, Any]:
-    """The ledger itself, which is the only place that answers what survived a crash.
-
-    The event rail beside it is observation and can be dropped; `absent`/`running`/`done` is the
-    state recovery actually reads. A crash after a commit shows as `done` — nothing to repeat — and
-    a crash before one stays `running`, which is the ledger refusing to guess.
-    """
+    """Return the persisted step states for a run."""
     return {"run_id": run_id, "steps": STATE.step_store.snapshot(run_id)}
 
 
 @router.post("/run")
 async def run_agent(request: RunRequest) -> StreamingResponse:
+    """Start an agent run and stream newline-delimited events."""
     run_id = request.run_id or f"ui-{uuid.uuid4()}"
     session = STATE.session(run_id)
     session.controls = permission_controls() if request.permission_gate else None
@@ -56,6 +53,7 @@ async def run_agent(request: RunRequest) -> StreamingResponse:
     async def attempt(
         runtime: AgentRuntime, tools: DemoTools, on_event: AgentEvent
     ) -> dict[str, Any]:
+        """Execute the requested run through the shared runtime."""
         text: list[str] = []
         calls: list[ToolCall] = []
 
@@ -106,6 +104,7 @@ async def run_agent(request: RunRequest) -> StreamingResponse:
 
 @router.post("/recover")
 async def recover_agent(request: RecoverRequest) -> StreamingResponse:
+    """Recover a run after a simulated post-commit worker crash."""
     if request.run_id not in STATE.sessions:
         raise HTTPException(status_code=404, detail="unknown run_id")
     session = STATE.sessions[request.run_id]
@@ -115,6 +114,7 @@ async def recover_agent(request: RecoverRequest) -> StreamingResponse:
     async def attempt(
         runtime: AgentRuntime, tools: DemoTools, on_event: AgentEvent
     ) -> dict[str, Any]:
+        """Recover the requested run through the shared runtime."""
         outcome = await runtime.recover(
             request.run_id,
             session.recovery_history or [],
@@ -138,6 +138,7 @@ async def recover_agent(request: RecoverRequest) -> StreamingResponse:
 
 @router.post("/resume")
 async def resume_agent(request: ResumeRequest) -> StreamingResponse:
+    """Resume a suspended tool call with an operator decision."""
     if request.run_id not in STATE.sessions:
         raise HTTPException(status_code=404, detail="unknown run_id")
     session = STATE.sessions[request.run_id]
@@ -150,6 +151,7 @@ async def resume_agent(request: ResumeRequest) -> StreamingResponse:
     async def attempt(
         runtime: AgentRuntime, tools: DemoTools, on_event: AgentEvent
     ) -> dict[str, Any]:
+        """Resume the requested run through the shared runtime."""
         return await runtime.resume(
             request.run_id,
             request.pending_id,

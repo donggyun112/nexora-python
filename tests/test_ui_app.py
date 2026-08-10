@@ -17,19 +17,13 @@ from nexora_ui.config import ENV_FILE, UI_ROOT  # noqa: E402
 
 
 def test_the_static_directory_ships_inside_the_package() -> None:
-    """`static/` is mounted from `UI_ROOT`, so it has to live in the module and not beside it —
-    otherwise the mount resolves to nothing in a wheel."""
+    """The mounted static directory ships inside the installed package."""
     assert (UI_ROOT / "static" / "index.html").is_file()
     assert (UI_ROOT / "static" / "app.js").is_file()
 
 
 def test_the_console_serves_its_page_and_the_assets_that_page_asks_for() -> None:
-    """Importing `app` runs the config module, mounts the static files, and builds every route.
-    None of that is exercised by importing the modules beneath it.
-
-    The asset URLs come out of `index.html` rather than being written here, so renaming the mount
-    without editing the page — or the reverse — fails instead of serving a blank console.
-    """
+    """The console serves its page and every local asset referenced by that page."""
     with TestClient(app) as client:
         page = client.get("/")
         assert page.status_code == 200
@@ -48,12 +42,7 @@ def test_the_console_serves_its_page_and_the_assets_that_page_asks_for() -> None
     reason="a source-checkout invariant: an installed wheel ships no .env.example, by design",
 )
 def test_the_env_example_documents_the_path_configuration_actually_reads() -> None:
-    """Asserted against `ENV_FILE` itself, not against a path spelled out again here.
-
-    `.env` moved next to the manifest while `config.py` kept looking inside the module, and the
-    console silently found no key. An assertion that only checked `.env.example` exists passed
-    right through that, because it never mentioned where the code looks.
-    """
+    """The example environment file documents the path configuration reads."""
     assert ENV_FILE.parent / ".env.example" == ENV_FILE.with_name(".env.example")
     assert ENV_FILE.with_name(".env.example").is_file(), (
         f"config reads {ENV_FILE}, but nothing documents that location"
@@ -61,11 +50,7 @@ def test_the_env_example_documents_the_path_configuration_actually_reads() -> No
 
 
 def test_the_ledger_panel_shows_step_state_and_not_only_events() -> None:
-    """The panel was titled "Orchestrator ledger" and contained the emit rail — nothing from the
-    ledger appeared in it, which is why a crash was invisible where someone would look for it.
-
-    Events say what was announced; `absent`/`running`/`done` is what recovery reads.
-    """
+    """The ledger panel reads persisted step state instead of inferring it from events."""
     with TestClient(app) as client:
         page = client.get("/").text
         script = client.get("/assets/app.js").text
@@ -79,9 +64,7 @@ def test_the_ledger_panel_shows_step_state_and_not_only_events() -> None:
 
 
 async def test_the_ledger_reports_a_committed_step_and_an_unfinished_one() -> None:
-    """The two answers the panel exists to show. A crash after a commit leaves `done` — nothing to
-    repeat — and a crash before one leaves `running`, which is `Indeterminate` on the next attempt.
-    """
+    """The ledger panel distinguishes committed and unfinished steps."""
     from nexora_ui.state import FaultInjectingMemorySteps
 
     log = FaultInjectingMemorySteps()

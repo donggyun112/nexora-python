@@ -178,13 +178,10 @@ def encode_continuation(
     *,
     turn: int = 0,
 ) -> dict[str, Any]:
-    """A suspension as something the ledger can hold without knowing what a message is.
+    """Encode a suspension as an opaque ledger payload.
 
-    Half of the codec. `Orchestrator.suspend` stores what this returns; it never looks inside.
-
-    ponytail: the whole conversation goes in, every time. It is reconstructible in principle, and
-    the ceiling is that there is nowhere to reconstruct it from — no transcript exists yet
-    (ADR-003 §5). When one does, this shrinks to a position in it plus the one pruned message.
+    The payload currently includes the full conversation snapshot. ADR-007 describes replacing
+    that snapshot with a cursor once the append-only transcript store is integrated.
     """
     return {
         "origin": "pre_tool_use",

@@ -79,12 +79,7 @@ def logged() -> Any:
 async def test_no_failure_branch_reaches_the_browser_without_reaching_the_log(
     logged: list[str],
 ) -> None:
-    """The hole this closes: the bridge turned every exception into a frame and logged none of
-    them, so a run whose effect committed and then lost its worker left `POST /api/run 200 OK` and
-    nothing else. Whoever is not watching the browser has only the log.
-
-    Both branches, because the unanticipated one matters more — it is the one that drops a stack.
-    """
+    """Every browser-visible failure is also written to the server log."""
 
     async def crashed(
         _runtime: AgentRuntime, _tools: DemoTools, _on_event: AgentEvent

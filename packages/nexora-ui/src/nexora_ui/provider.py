@@ -7,6 +7,7 @@ from .config import SETTINGS, Settings
 
 
 def openrouter_model(name: str, settings: Settings = SETTINGS) -> ChatOpenAI:
+    """Create a streaming OpenRouter chat model."""
     return ChatOpenAI(
         model=name,
         api_key=SecretStr(settings.require_api_key()),

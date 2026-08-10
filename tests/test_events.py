@@ -98,8 +98,7 @@ async def test_a_submission_is_announced_once_and_carries_no_prompt_text() -> No
 
 
 async def test_a_run_with_no_prompt_announces_no_submission() -> None:
-    """A continuation is not a submission. Through the runtime, because that is the only layer
-    that can announce one — asserting this against a bare `react_loop` would test nothing."""
+    """Continuing a run without a prompt emits no submission event."""
     resumed = Recorder()
 
     await AgentRuntime(store=MemorySteps(), emit=a_stream(resumed)).run(

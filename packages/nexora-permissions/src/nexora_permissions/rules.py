@@ -217,9 +217,5 @@ def _deny(message: str) -> dict[str, Any]:
 
 
 def _ask(call: ToolCall, reason: str) -> dict[str, Any]:
-    """A suspension, because this runtime never blocks a worker on a human.
-
-    ponytail: `pending_id` is the call id. That is the idempotency key already (ADR-002), and a
-    second identifier for the same pending decision is a second thing to keep consistent.
-    """
+    """Build a non-blocking suspension keyed by the tool call identifier."""
     return {"type": "suspend", "pending_id": call["id"], "reason": reason}

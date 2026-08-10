@@ -120,8 +120,7 @@ async def test_repeating_resume_reuses_the_committed_effect_result() -> None:
 
 
 async def test_the_resumed_history_answers_the_call_that_stopped() -> None:
-    """A provider rejects an assistant turn whose tool calls have no results, so the shape has
-    to be exactly: the asking turn, then its answer."""
+    """Resumed history places the suspended call's answer directly after its request."""
     snapshot: list[BaseMessage] = [
         AIMessage(content="", tool_calls=[a_call("c1", "deploy")]),
     ]

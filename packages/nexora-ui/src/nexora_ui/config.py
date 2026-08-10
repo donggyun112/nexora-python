@@ -9,19 +9,17 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 UI_ROOT = Path(__file__).resolve().parent
-"""Where `static/` lives — inside the package, so it ships in the wheel."""
+"""Directory containing the packaged UI assets."""
 
 ENV_FILE = UI_ROOT.parents[1] / ".env"
-"""Beside the manifest, not inside the module: `.env` is developer configuration and does not belong
-in a wheel. An installed copy finds nothing here and falls back to the environment, which is how a
-deployed process is configured anyway. Named rather than inlined so a test can check that
-`.env.example` documents the place this actually reads."""
+"""Development environment file beside the UI package manifest."""
 
 load_dotenv(ENV_FILE)
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
+    """Store UI and OpenRouter configuration."""
     ui_root: Path = UI_ROOT
     default_model: str = "openai/gpt-4o-mini"
     openrouter_api_key: str = field(default="", repr=False)
@@ -30,15 +28,18 @@ class Settings:
 
     @property
     def configured(self) -> bool:
+        """Return whether an OpenRouter API key is configured."""
         return bool(self.openrouter_api_key)
 
     def require_api_key(self) -> str:
+        """Return the configured API key or raise a configuration error."""
         if not self.openrouter_api_key:
             raise RuntimeError("OpenRouter API key is missing from packages/nexora-ui/.env")
         return self.openrouter_api_key
 
     @classmethod
     def from_environment(cls) -> Settings:
+        """Build settings from supported environment variables."""
         # OPEN_ROTURE is the spelling used by the imported bug-case fixture.
         key = (
             os.getenv("OPENROUTER_API_KEY")

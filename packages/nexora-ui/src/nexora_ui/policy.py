@@ -7,7 +7,7 @@ from nexora.controls import ControlPlane, Permissions, gate
 
 
 async def require_note_write_approval(call: ToolCall) -> dict[str, Any] | None:
-    """Park `remember_note` before its effect crosses the execution boundary."""
+    """Suspend ``remember_note`` calls for operator approval."""
     if call["name"] != "remember_note":
         return None
     return {
@@ -19,4 +19,5 @@ async def require_note_write_approval(call: ToolCall) -> dict[str, Any] | None:
 
 
 def permission_controls() -> ControlPlane:
+    """Create the control plane used by the note-write demo."""
     return ControlPlane(pre_tool_use=Permissions(gate(require_note_write_approval)))

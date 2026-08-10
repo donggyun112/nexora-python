@@ -12,16 +12,17 @@ from .tools import DemoTools
 
 
 class SimulatedWorkerCrash(RuntimeError):
-    """The effect result is committed, but its worker disappears before returning it."""
+    """Simulate a worker disappearing after an effect result commits."""
 
     def __init__(self, run_id: str, step: str) -> None:
+        """Initialize the failure for a committed run step."""
         super().__init__(f"simulated worker crash after committed step {step!r}")
         self.run_id = run_id
         self.step = step
 
 
 def _preview(value: Any) -> str:
-    """One short line: a continuation snapshot holds a transcript and the panel wants a hint."""
+    """Render a compact single-line value preview."""
     if value is None:
         return ""
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
@@ -29,19 +30,23 @@ def _preview(value: Any) -> str:
 
 
 class FaultInjectingMemorySteps(MemorySteps):
-    """A demo ledger that can crash one worker immediately after a tool step commits."""
+    """Inject a simulated worker crash after a tool step commits."""
 
     def __init__(self) -> None:
+        """Initialize an unarmed in-memory ledger."""
         super().__init__()
         self._crash_after_step: set[str] = set()
 
     def arm(self, run_id: str) -> None:
+        """Arm fault injection for the next tool step in a run."""
         self._crash_after_step.add(run_id)
 
     def disarm(self, run_id: str) -> None:
+        """Disable fault injection for a run."""
         self._crash_after_step.discard(run_id)
 
     async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Commit a result and raise the armed simulated crash."""
         await super().finish(run_id, key, value, token)
         if run_id in self._crash_after_step and not key.startswith(
             ("agent:", "signal:", "suspend:")
@@ -50,12 +55,7 @@ class FaultInjectingMemorySteps(MemorySteps):
             raise SimulatedWorkerCrash(run_id, key)
 
     def snapshot(self, run_id: str) -> list[dict[str, Any]]:
-        """Every step this run has, for the console's ledger panel.
-
-        Reaches into `MemorySteps` internals on purpose, and only here: `StepLog` answers "what is
-        the state of *this* key", which is all recovery needs and all a real backend should be asked
-        for cheaply. Listing every step of a run is a demo's question, so it is a demo's method.
-        """
+        """Return compact step records for the console's ledger panel."""
         return [
             {"key": key, "status": step.status, "value": _preview(step.value)}
             for (owner, key), step in self._entries.items()
@@ -65,6 +65,7 @@ class FaultInjectingMemorySteps(MemorySteps):
 
 @dataclass(slots=True)
 class Session:
+    """Store process-local dependencies and recovery state for one run."""
     tools: DemoTools = field(default_factory=DemoTools)
     controls: Controls | None = None
     recovery_history: list[BaseMessage] | None = None
@@ -72,10 +73,12 @@ class Session:
 
 @dataclass(slots=True)
 class RuntimeState:
+    """Store process-local sessions and the shared demo ledger."""
     step_store: FaultInjectingMemorySteps = field(default_factory=FaultInjectingMemorySteps)
     sessions: dict[str, Session] = field(default_factory=dict)
 
     def session(self, run_id: str) -> Session:
+        """Return an existing session or create one for ``run_id``."""
         return self.sessions.setdefault(run_id, Session())
 
 

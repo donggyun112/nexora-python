@@ -19,23 +19,28 @@ Attempt = Callable[[AgentRuntime, DemoTools, AgentEvent], Awaitable[dict[str, An
 
 
 def frame(kind: str, **payload: Any) -> str:
+    """Encode one newline-delimited UI frame."""
     return json.dumps({"kind": kind, **payload}, ensure_ascii=False, default=str) + "\n"
 
 
 async def capped(turn: int, _text: str, _calls: list[dict[str, Any]]) -> bool:
+    """Stop the demo loop after its eighth turn."""
     return turn >= 7
 
 
 async def stream_attempt(
     run_id: str, attempt: Attempt, state: RuntimeState = STATE
 ) -> AsyncIterator[str]:
+    """Run one attempt and stream its events as UI frames."""
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     session = state.session(run_id)
 
     async def publish(event_type: str, payload: dict[str, Any]) -> None:
+        """Queue a runtime lifecycle event."""
         await queue.put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
 
     async def on_event(event: dict[str, Any]) -> None:
+        """Queue model-visible planner events for the conversation rail."""
         # The lifecycle rail is the canonical audit stream. The agent stream also needs the
         # planner-facing call and result pair so an operator can read the conversation the model
         # actually saw. `done` stays represented by the outcome frame.
@@ -47,6 +52,7 @@ async def stream_attempt(
             await queue.put({"kind": "agent", "event": event})
 
     async def run_attempt() -> None:
+        """Execute the attempt and translate its terminal state into a frame."""
         runtime = AgentRuntime(store=state.step_store, emit=publish)
         await queue.put({"kind": "meta", "run_id": run_id})
         try:

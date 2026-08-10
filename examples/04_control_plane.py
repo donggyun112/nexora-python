@@ -34,8 +34,7 @@ SSN = re.compile(r"\d{3}-\d{2}-\d{4}")
 
 
 class Redacting(Files):
-    """A `Tools` wrapper. It runs *inside* the durable step, so the ledger records the masked
-    result — the one place a redaction survives a replay."""
+    """Mask tool results before the durable step records them."""
 
     async def execute(self, name: str, call_id: str, args: Any) -> dict[str, Any]:
         result = await super().execute(name, call_id, args)

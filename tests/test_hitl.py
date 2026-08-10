@@ -187,8 +187,7 @@ def test_a_legacy_tool_originated_suspension_cannot_be_replayed_as_permission() 
 
 
 async def test_a_policy_context_is_one_owned_thing() -> None:
-    """Rules, mode and version travelled separately and so belonged to nobody. As a stage in a
-    chain, a hook's `allow` still does not end anything — the rules run after it and re-validate."""
+    """A permissive hook cannot bypass rules owned by the same policy context."""
     tools = Tools(names=[DEPLOY])
     policy = PolicyContext(rules=[Rule(effect="deny", tool=DEPLOY)], version="v3")
     seen: list[str] = []

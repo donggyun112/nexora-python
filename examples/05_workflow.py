@@ -58,8 +58,7 @@ async def discharge(orchestrator: Orchestrator, patient_id: str, model: Any) -> 
 
 
 class Explodes(Scripted):
-    """A model for the replay attempts. If the draft step ever calls one again, this run dies —
-    a stronger claim than counting turns after the fact."""
+    """Fail if a replay calls the model instead of reusing the draft step."""
 
     def __init__(self) -> None:
         super().__init__(messages=iter(()))

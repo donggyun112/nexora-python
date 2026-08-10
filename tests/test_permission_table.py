@@ -134,12 +134,7 @@ def _kind(decision: dict[str, Any] | None) -> str:
 
 
 async def test_one_definition_of_the_rule_order() -> None:
-    """The drift guard. Claude Code writes 1a-1g twice - `checkRuleBasedPermissions` and
-    `hasPermissionsToUseToolInner` - and two copies of an ordering is a bug waiting to happen.
-
-    Here the "a subscriber said allow" path and the ordinary path call the same function, so
-    there is nothing to keep in sync. The assertion is that the two agree.
-    """
+    """Subscriber and ordinary paths share one permission-rule ordering."""
     rules = [deny("read")]
 
     with_hook = await resolve_rules(

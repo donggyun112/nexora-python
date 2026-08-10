@@ -89,12 +89,7 @@ async def test_nondeterminism_is_captured_by_a_step() -> None:
 
 
 async def test_the_workflow_is_the_control_layer() -> None:
-    """The shape from the reference: the agent drafts with read-only tools, a human signs off,
-    and the mutations are steps the workflow runs itself.
-
-    Interception is not a hook here — `send_to_pharmacy` was never a tool, so there is nothing
-    for the agent to be stopped from doing.
-    """
+    """The agent drafts read-only work while the workflow owns mutating steps."""
     log = MemorySteps()
     effects: list[str] = []
     read_only = Tools(names=["fetch_labs", "review_history"])
@@ -130,9 +125,7 @@ async def test_the_workflow_is_the_control_layer() -> None:
 
 
 async def test_a_suspended_run_is_not_recorded_as_an_outcome() -> None:
-    """Memoising a suspension freezes it: every replay returns `suspended` and the agent never
-    continues, however many approvals arrive. Same class of bug as recording a failure."""
-
+    """A suspension is never memoized as a completed agent outcome."""
     log = MemorySteps()
 
     async def suspended_events() -> Any:

@@ -7,13 +7,15 @@ from typing import Any
 
 
 class DemoTools:
-    """Visible effects for checking execution and ordering."""
+    """Provide harmless tools for checking execution and ordering."""
 
     def __init__(self) -> None:
+        """Initialize note storage and per-call execution counters."""
         self.notes: dict[str, str] = {}
         self.execution_counts: dict[str, int] = {}
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
+        """Execute a demo tool and return a tagged result."""
         self.execution_counts[call_id] = self.execution_counts.get(call_id, 0) + 1
         args = arguments if isinstance(arguments, dict) else {}
         if name == "echo":
@@ -46,9 +48,11 @@ class DemoTools:
         return {"type": "error", "message": f"unknown tool: {name}"}
 
     def get(self, name: str) -> dict[str, Any] | None:
+        """Return a tool definition by name."""
         return next((item for item in self.list() if item["name"] == name), None)
 
     def list(self) -> list[dict[str, Any]]:
+        """Return all available demo tool definitions."""
         string = {"type": "string"}
         return [
             {

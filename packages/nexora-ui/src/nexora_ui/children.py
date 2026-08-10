@@ -31,23 +31,40 @@ async def _capped(turn: int, _text: str, _calls: list[dict[str, Any]]) -> bool:
     return turn >= 3
 
 
-ROSTER: tuple[tuple[str, str], ...] = (
-    ("note-keeper", "Stores and recalls notes. Give it a key and a value, or a key to look up."),
-    ("echoer", "Echoes text back through a durable tool effect. Useful for testing a round trip."),
-    ("flaky", "Calls an API that always fails. Use it to watch a child report a failure."),
+ROSTER: tuple[tuple[str, str, str], ...] = (
+    (
+        "note-keeper",
+        "Stores and recalls notes. Give it a key and a value, or a key to look up.",
+        "Use `remember_note` to store and `recall_note` to look up.",
+    ),
+    (
+        "echoer",
+        "Echoes text back through a durable tool effect. Useful for testing a round trip.",
+        "Put whatever you are given through the `echo` tool.",
+    ),
+    (
+        "flaky",
+        "Calls an API that always fails. Use it to watch a child report a failure.",
+        "Call `simulate_api_failure` once, then report the failure it returned. A task with no "
+        "detail still gets that call — you exist to fail, so never ask the delegator what to do.",
+    ),
 )
-"""Names and model-visible descriptions for console subagents."""
+"""For each console subagent: its name, what the parent reads, and what the child is told.
+
+The third field is why `flaky` fails. Name and description reach the delegating model only; a
+child that is told nothing about its own job answers whatever the roster promised with a question.
+"""
 
 
 def subagents(model: str, store: Any, transcripts: Any) -> list[Subagent]:
     """Build compiled child definitions for the console roster."""
     return [
-        Compiled(name, description, _runner(model, store, transcripts))
-        for name, description in ROSTER
+        Compiled(name, description, _runner(model, store, transcripts, instruction))
+        for name, description, instruction in ROSTER
     ]
 
 
-def _runner(model: str, store: Any, transcripts: Any) -> Any:
+def _runner(model: str, store: Any, transcripts: Any, instruction: str) -> Any:
     """Create a runner backed by durable step and transcript stores."""
 
     async def run(prompt: str, reply: Reply, run_id: str) -> AsyncIterator[dict[str, Any]]:
@@ -58,6 +75,7 @@ def _runner(model: str, store: Any, transcripts: Any) -> Any:
             Answering(DemoTools(), reply),
             prompt,
             transcripts,
+            instruction,
         ):
             yield event
 
@@ -71,6 +89,7 @@ async def _stream_run(
     tools: Any,
     prompt: str,
     transcripts: Any,
+    instruction: str,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run a child and yield its planner events in publication order."""
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -91,7 +110,7 @@ async def _stream_run(
                 tools,
                 prompt,
                 on_event=on_event,
-                system_prompt=CHILD_PROMPT,
+                system_prompt=f"{CHILD_PROMPT}\n\n{instruction}",
                 should_stop_after_turn=_capped,
                 history=already_said,
             )

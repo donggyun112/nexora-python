@@ -1,29 +1,12 @@
-"""A `StepLog` on Postgres. The durability the in-memory one only pretends to have.
-
-Three tables and no ORM. What each column exists for:
-
-* `status` — `running` before the effect, `done` after. The state a two-column log cannot hold,
-  and the reason a crash mid-effect is reported as `Indeterminate` instead of replayed.
-* `(run_id, key)` primary key — the idempotency key is the step name (ADR-002), so a duplicate
-  insert is a database error rather than a second effect.
-* `attempt` — how many times this step has been started. Not used to decide anything; it is the
-  number an operator wants when a step keeps going indeterminate.
-* the lease table — `expires_at` rather than a boolean, so a worker that dies holding the run
-  does not hold it forever. Renewal is the holder re-acquiring.
-* the input table — ordered, idempotent admission from external producers into model context.
-  `claimed` survives a dead worker and `admitted` prevents a live attempt from consuming twice.
-
-ponytail: **not verified against a live database.** The semantics are tested through
-`MemorySteps`, which implements the same Protocol, and the SQL below is a direct translation of
-those tests — but no test in this repo connects to Postgres, so treat the first real run as the
-verification. `SCHEMA` is here so that run is one `psql -f` away.
-"""
+"""Implement the durable step ledger with PostgreSQL."""
 
 from typing import Any
 
 from nexora_store import Fenced, InputRecord, Step
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 
 __all__ = ["SCHEMA", "PostgresSteps"]
 
@@ -67,18 +50,27 @@ create index if not exists nexora_step_running
 
 
 class PostgresSteps:
-    """Durable `StepLog`. Every write is its own committed statement, on purpose.
+    """Persist steps, leases, and queued inputs in PostgreSQL."""
 
-    `start` has to be visible to another process *before* the effect runs, so it cannot share a
-    transaction with the work that follows it. Batching these writes would give back exactly the
-    guarantee they are here to provide.
-    """
+    def __init__(self, pool: AsyncConnectionPool[AsyncConnection[Any]]) -> None:
+        """Initialize the ledger with a pool to borrow a connection from per operation.
 
-    def __init__(self, connection: AsyncConnection[Any]) -> None:
-        self._connection = connection
+        A pool and not a connection, because a transaction boundary cannot be shared. Two runs on
+        one connection commit each other's half-written work, and this ledger's entire guarantee is
+        *when* things commit — `start` before the effect runs, `finish` after it returns (ADR-002).
+        Sharing a connection makes that ordering depend on some other run's commit timing, which is
+        the one thing the ledger exists to make independent.
+
+        The caller owns the pool's lifecycle: open it, close it, size it. This borrows.
+        """
+        self._pool = pool
 
     async def read(self, run_id: str, key: str) -> Step:
-        async with self._connection.cursor(row_factory=dict_row) as cursor:
+        """Return the persisted state of a step."""
+        async with (
+            self._pool.connection() as connection,
+            connection.cursor(row_factory=dict_row) as cursor,
+        ):
             await cursor.execute(
                 "select status, value from nexora_step where run_id = %s and key = %s",
                 (run_id, key),
@@ -91,11 +83,12 @@ class PostgresSteps:
         return Step("done", row["value"])
 
     async def start(self, run_id: str, key: str, token: int = 0) -> None:
-        """Claim the step. A second start of a `done` step is refused, not silently accepted."""
-        await self._fence(run_id, token)
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+        """Record a running step after validating the fencing token."""
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
                 insert into nexora_step (run_id, key, status)
                 values (%s, %s, 'running')
                 on conflict (run_id, key) do update
@@ -105,60 +98,55 @@ class PostgresSteps:
                         finished_at = null
                     where nexora_step.status = 'running'
                 """,
-                (run_id, key),
-            )
-        await self._connection.commit()
+                    (run_id, key),
+                )
 
     async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
-        from psycopg.types.json import Jsonb
-
-        await self._fence(run_id, token)
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+        """Record a completed step after validating the fencing token."""
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
                 insert into nexora_step (run_id, key, status, value, finished_at)
                 values (%s, %s, 'done', %s, now())
                 on conflict (run_id, key) do update
                     set status = 'done', value = excluded.value, finished_at = now()
                 """,
-                (run_id, key, Jsonb(value)),
-            )
-        await self._connection.commit()
+                    (run_id, key, Jsonb(value)),
+                )
 
-    async def _fence(self, run_id: str, token: int) -> None:
-        """Refuse a write from a worker whose lease has been taken over.
+    async def _fence(self, connection: AsyncConnection[Any], run_id: str, token: int) -> None:
+        """Reject stale lease holders while allowing unleased writes with token zero.
 
-        `token=0` opts out — a signal answered from outside the run holds no lease. See
-        `MemorySteps._fence` for why that is safe.
+        Takes the caller's borrowed connection rather than borrowing its own, so that reading the
+        issued token and writing under it are one transaction. On a second connection the check and
+        the write would straddle a commit boundary, and a lease that changed hands in between would
+        be fenced too late — exactly the race the token exists to close.
         """
         if not token:
             return
-        async with self._connection.cursor(row_factory=dict_row) as cursor:
-            await cursor.execute(
-                "select token from nexora_run_lease where run_id = %s", (run_id,)
-            )
+        async with connection.cursor(row_factory=dict_row) as cursor:
+            await cursor.execute("select token from nexora_run_lease where run_id = %s", (run_id,))
             row = await cursor.fetchone()
         issued = row["token"] if row else 0
         if token < issued:
             raise Fenced(run_id, token, issued)
 
     async def forget(self, run_id: str, key: str) -> None:
-        """For `Orchestrator.force_retry`. Only an unfinished step may be cleared."""
-        async with self._connection.cursor() as cursor:
+        """Remove an unfinished step so an explicit retry can proceed."""
+        async with self._pool.connection() as connection, connection.cursor() as cursor:
             await cursor.execute(
                 "delete from nexora_step where run_id = %s and key = %s and status = 'running'",
                 (run_id, key),
             )
-        await self._connection.commit()
 
     async def acquire(self, run_id: str, owner: str, ttl_seconds: float = 60.0) -> int:
-        """Take the lease or extend it, returning the fencing token — 0 if someone else holds it.
-
-        The `where` clause is the whole mechanism: one statement, so two workers racing cannot both
-        win. An expired lease is takeable, because a worker that died must not hold a run forever —
-        and the token increments only on a *takeover*, so the holder renewing keeps its own.
-        """
-        async with self._connection.cursor(row_factory=dict_row) as cursor:
+        """Acquire or renew a run lease and return its fencing token, or zero on contention."""
+        async with (
+            self._pool.connection() as connection,
+            connection.cursor(row_factory=dict_row) as cursor,
+        ):
             await cursor.execute(
                 """
                 insert into nexora_run_lease (run_id, owner, token, expires_at)
@@ -175,20 +163,35 @@ class PostgresSteps:
                 (run_id, owner, ttl_seconds),
             )
             row = await cursor.fetchone()
-        await self._connection.commit()
         return int(row["token"]) if row else 0
 
     async def release(self, run_id: str, owner: str) -> None:
-        async with self._connection.cursor() as cursor:
+        """Expire a run lease held by ``owner``, keeping its token.
+
+        The row is expired rather than deleted, because the token must never go backwards. Deleting
+        it sent the next `acquire` down the `insert ... values (…, 1, …)` path, so a released run
+        handed out token 1 again — and a worker still holding token 1 from before then passed the
+        fence, which is the exact failure `Fenced` exists to prevent. Its own docstring is the
+        specification: *the token increases every time the lease changes hands, so the newest holder
+        always has the highest one.* A delete broke that; an expiry keeps it.
+
+        `owner` is cleared so the next acquirer counts as a change of hands and takes token + 1,
+        and the epoch timestamp makes the row unconditionally available rather than available one
+        clock tick from now.
+        """
+        async with self._pool.connection() as connection, connection.cursor() as cursor:
             await cursor.execute(
-                "delete from nexora_run_lease where run_id = %s and owner = %s", (run_id, owner)
+                """
+                update nexora_run_lease
+                set owner = '', expires_at = to_timestamp(0)
+                where run_id = %s and owner = %s
+                """,
+                (run_id, owner),
             )
-        await self._connection.commit()
 
     async def enqueue_input(self, run_id: str, input_id: str, value: dict[str, Any]) -> bool:
-        from psycopg.types.json import Jsonb
-
-        async with self._connection.cursor() as cursor:
+        """Append an input idempotently and report whether it was inserted."""
+        async with self._pool.connection() as connection, connection.cursor() as cursor:
             await cursor.execute(
                 """
                 insert into nexora_input (run_id, input_id, status, value)
@@ -198,11 +201,14 @@ class PostgresSteps:
                 (run_id, input_id, Jsonb(value)),
             )
             inserted = cursor.rowcount > 0
-        await self._connection.commit()
         return inserted
 
     async def list_inputs(self, run_id: str) -> list[InputRecord]:
-        async with self._connection.cursor(row_factory=dict_row) as cursor:
+        """Return a run's inputs in submission order."""
+        async with (
+            self._pool.connection() as connection,
+            connection.cursor(row_factory=dict_row) as cursor,
+        ):
             await cursor.execute(
                 """
                 select input_id, status, value, sequence
@@ -219,32 +225,34 @@ class PostgresSteps:
         ]
 
     async def claim_input(self, run_id: str, input_id: str, token: int = 0) -> None:
-        await self._fence(run_id, token)
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+        """Mark an input as claimed unless it is already admitted."""
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
                 update nexora_input
                 set status = 'claimed'
                 where run_id = %s and input_id = %s and status <> 'admitted'
                 """,
-                (run_id, input_id),
-            )
-        await self._connection.commit()
+                    (run_id, input_id),
+                )
 
     async def admit_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None:
+        """Mark the selected inputs as admitted."""
         if not input_ids:
             return
-        await self._fence(run_id, token)
-        async with self._connection.cursor() as cursor:
-            await cursor.execute(
-                """
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
                 update nexora_input
                 set status = 'admitted', admitted_at = now()
                 where run_id = %s and input_id = any(%s)
                 """,
-                (run_id, input_ids),
-            )
-        await self._connection.commit()
+                    (run_id, input_ids),
+                )
 
     async def commit_transition(
         self,
@@ -253,13 +261,17 @@ class PostgresSteps:
         inputs: list[tuple[str, dict[str, Any]]],
         token: int = 0,
     ) -> set[str]:
-        """Commit a control transition in one Postgres transaction."""
-        from psycopg.types.json import Jsonb
+        """Atomically finish metadata steps and append idempotent inbox inputs.
 
+        One borrowed connection means one transaction, and the pool's context manager rolls it back
+        on any exception — so the hand-written `try`/`rollback` this used to carry is gone. It was
+        also the wrong shape: rolling back a *shared* connection would have discarded whatever
+        another run had written on it and not yet committed.
+        """
         inserted: set[str] = set()
-        try:
-            await self._fence(run_id, token)
-            async with self._connection.cursor() as cursor:
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            async with connection.cursor() as cursor:
                 for key, value in steps.items():
                     await cursor.execute(
                         """
@@ -282,8 +294,4 @@ class PostgresSteps:
                     )
                     if await cursor.fetchone() is not None:
                         inserted.add(input_id)
-            await self._connection.commit()
-        except BaseException:
-            await self._connection.rollback()
-            raise
         return inserted

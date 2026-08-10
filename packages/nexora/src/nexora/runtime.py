@@ -1,9 +1,11 @@
 """Public runtime facade for durable Nexora agent execution."""
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage, messages_to_dict
+from nexora_store import Transcript
 
 from .background import BackgroundResult
 from .contracts import (
@@ -26,6 +28,7 @@ from .history import (
 )
 from .orchestrator import AgentSuspended, MemorySteps, Orchestrator, StepLog
 from .subagents import Deliver
+from .transcript import TranscriptWriter, active_branch, messages_of
 
 __all__ = ["AgentRuntime", "run"]
 
@@ -39,6 +42,52 @@ _CANCELLED = {
 }
 
 
+@dataclass(slots=True)
+class _RuntimeTranscript:
+    """Keep one runtime attempt aligned with an append-only conversation branch."""
+
+    writer: TranscriptWriter
+    messages: list[BaseMessage]
+    uuids: list[str]
+
+    @classmethod
+    async def open(cls, store: Transcript, run_id: str) -> "_RuntimeTranscript":
+        """Restore a run's active branch and continue writing from its tip."""
+        entries = await store.read(run_id)
+        branch = active_branch(entries)
+        message_entries = [entry for entry in branch if isinstance(entry.get("message"), dict)]
+        restored = messages_of(entries)
+        writer = TranscriptWriter(
+            store,
+            conversation_id=run_id,
+            run_id=run_id,
+            parent_uuid=branch[-1]["uuid"] if branch else None,
+        )
+        await writer.opened()
+        return cls(writer, restored, [str(entry["uuid"]) for entry in message_entries])
+
+    async def replace(self, desired: list[BaseMessage]) -> None:
+        """Move to the common prefix and append the desired model-visible history."""
+        common = 0
+        current = messages_to_dict(self.messages)
+        wanted = messages_to_dict(desired)
+        while common < min(len(current), len(wanted)) and current[common] == wanted[common]:
+            common += 1
+        if common < len(current):
+            await self.writer.rewind(self.uuids[common - 1] if common else None)
+            del self.messages[common:]
+            del self.uuids[common:]
+        await self.append(desired[common:])
+
+    async def append(self, messages: list[BaseMessage]) -> None:
+        """Append exact LangChain messages and retain their resulting branch coordinates."""
+        for message in messages:
+            await self.writer.record(message)
+            self.messages.append(message)
+            assert self.writer.parent_uuid is not None
+            self.uuids.append(self.writer.parent_uuid)
+
+
 class AgentRuntime:
     """Bind the plain planner to durable execution, suspension, recovery, and events."""
 
@@ -49,6 +98,7 @@ class AgentRuntime:
         emit: Emit | None = None,
         owner: str = "local",
         lease_ttl: float = 60.0,
+        transcript: Transcript | None = None,
         model_failure_policy: OnModelFailure | None = None,
         compact_context: CompactContext | None = None,
     ) -> None:
@@ -57,6 +107,7 @@ class AgentRuntime:
         self._emit = emit
         self._owner = owner
         self._lease_ttl = lease_ttl
+        self._transcript = transcript
         self._model_failure_policy = model_failure_policy
         self._compact_context = compact_context
         self.events = RuntimeEvents(emit)
@@ -91,6 +142,7 @@ class AgentRuntime:
         """Start or continue a turn; interactive input cancels a parked tool request."""
         async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
             history = engine_options.pop("history", None)
+            recover_pending = self._transcript is not None
             incoming = (
                 PendingInput("user_prompt", HumanMessage(prompt), prompt_id) if prompt else None
             )
@@ -122,6 +174,7 @@ class AgentRuntime:
                 # answers the call this just cancelled.
                 history = list(waiting.messages)
                 completing = waiting.call["id"] or ""
+                recover_pending = False
             else:
                 if incoming is not None:
                     await orchestrator.enqueue_input(incoming)
@@ -132,6 +185,7 @@ class AgentRuntime:
                 if active.get("state") in {"switching", "resuming"}:
                     history = list(waiting.messages) if history is None else history
                     completing = waiting.call["id"] or ""
+                    recover_pending = False
 
             outcome = await self._drive(
                 orchestrator,
@@ -140,6 +194,7 @@ class AgentRuntime:
                 history=history,
                 controls=controls,
                 on_event=on_event,
+                recover_pending=recover_pending,
                 model_identity=model_identity,
                 **engine_options,
             )
@@ -238,6 +293,7 @@ class AgentRuntime:
                 history=waiting.messages,
                 controls=controls,
                 on_event=on_event,
+                recover_pending=False,
                 model_identity=model_identity,
                 **engine_options,
             )
@@ -285,6 +341,7 @@ class AgentRuntime:
                 history=history,
                 controls=controls,
                 on_event=on_event,
+                recover_pending=False,
                 aborted=aborted,
                 model_identity=model_identity,
                 **engine_options,
@@ -299,37 +356,117 @@ class AgentRuntime:
         history: list[BaseMessage] | None,
         controls: Controls | None,
         on_event: OnAgentEvent | None,
+        recover_pending: bool,
         **engine_options: Any,
     ) -> dict[str, Any]:
         if any(
             name in engine_options
-            for name in ("drain_inputs", "admit_inputs", "invoke_model")
+            for name in ("drain_inputs", "admit_inputs", "invoke_model", "record_messages")
         ):
-            raise TypeError("AgentRuntime owns drain_inputs, admit_inputs, and invoke_model")
+            raise TypeError(
+                "AgentRuntime owns drain_inputs, admit_inputs, invoke_model, and record_messages"
+            )
         engine_options.setdefault("on_model_failure", self._model_failure_policy)
         engine_options.setdefault("compact_context", self._compact_context)
+
+        transcript = (
+            await _RuntimeTranscript.open(self._transcript, orchestrator.run_id)
+            if self._transcript is not None
+            else None
+        )
+        if transcript is not None:
+            if history is None:
+                history = list(transcript.messages)
+            else:
+                await transcript.replace(history)
+
+        prefetched: list[PendingInput] = []
 
         async def drain_inputs() -> list[PendingInput]:
             # Rebuilt per drain, not hoisted: `history` belongs to the caller, and a set computed
             # once would answer for the transcript as it looked before the run rather than now.
-            return await orchestrator.claim_inputs(
+            claimed = list(prefetched)
+            prefetched.clear()
+            claimed += await orchestrator.claim_inputs(
                 {message.id for message in history or [] if message.id is not None}
             )
+            return claimed
 
-        return await drive(
-            react_loop,
-            model,
+        try:
+            if recover_pending:
+                prefetched.extend(
+                    await orchestrator.claim_inputs(
+                        {message.id for message in history or [] if message.id is not None}
+                    )
+                )
+                recovery_history = [
+                    *(history or []),
+                    *(
+                        item.message
+                        for item in prefetched
+                        if isinstance(item.message, ToolMessage)
+                    ),
+                ]
+                await self._recover_pending_inputs(
+                    orchestrator,
+                    recovery_history,
+                    tools,
+                    controls,
+                    engine_options,
+                )
+            outcome = await drive(
+                react_loop,
+                model,
+                tools,
+                history=history,
+                controls=controls,
+                emit=orchestrator.emit,
+                drain_inputs=drain_inputs,
+                admit_inputs=orchestrator.admit_inputs,
+                record_messages=transcript.append if transcript is not None else None,
+                invoke_model=orchestrator.invoke_model,
+                execute_round=orchestrator.execute_round,
+                on_event=on_event,
+                **engine_options,
+            )
+        except AgentSuspended:
+            # The executor prunes unexecuted calls and includes results completed before the
+            # suspension. Persist that canonical continuation rather than the model's wider batch.
+            if transcript is not None:
+                active = await orchestrator.active_continuation()
+                waiting = decode_continuation(active.get("continuation")) if active else None
+                if waiting is not None:
+                    await transcript.replace(list(waiting.messages))
+            raise
+        if transcript is not None:
+            await transcript.writer.closed(outcome)
+        return outcome
+
+    async def _recover_pending_inputs(
+        self,
+        orchestrator: Orchestrator,
+        history: list[BaseMessage],
+        tools: Tools,
+        controls: Controls | None,
+        engine_options: dict[str, Any],
+    ) -> None:
+        """Turn an unanswered transcript tool round into durable queued results."""
+        recovered = await orchestrator.recover_pending(
+            history,
             tools,
-            history=history,
             controls=controls,
-            emit=orchestrator.emit,
-            drain_inputs=drain_inputs,
-            admit_inputs=orchestrator.admit_inputs,
-            invoke_model=orchestrator.invoke_model,
-            execute_round=orchestrator.execute_round,
-            on_event=on_event,
-            **engine_options,
+            aborted=engine_options.get("aborted", lambda: False),
+            retry_running=True,
         )
+        for message in recovered.history[len(history) :]:
+            if isinstance(message, ToolMessage):
+                await orchestrator.enqueue_input(
+                    PendingInput(
+                        "tool_result",
+                        message,
+                        f"tool:{message.tool_call_id}:result",
+                    )
+                )
 
     def _orchestrator(
         self,

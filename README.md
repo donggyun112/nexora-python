@@ -69,9 +69,19 @@ left `running` is indeterminate rather than silently charged twice. Standard Lan
 their identifying parameters automatically; pass `model_identity=` for a custom wrapper whose
 identity cannot be derived from those parameters.
 
-The growing transcript is still not written by `AgentRuntime` automatically. The separate
-transcript store exists, but until it is integrated into the runtime a caller recovering across
-attempts must still supply committed history explicitly.
+Pass a transcript store to make conversation persistence and recovery automatic. The runtime
+records the exact LangChain messages admitted to model history, restores them on the next process,
+and reconstructs an unanswered durable tool round before calling the model again:
+
+```python
+from nexora import AgentRuntime
+from nexora_store import MemoryTranscript
+
+runtime = AgentRuntime(store=steps, transcript=MemoryTranscript())
+```
+
+Use `PostgresTranscript` from `nexora_store_pg` for restart-safe persistence. Without
+`transcript=`, callers may still provide `history=` or use `recover(...)` explicitly.
 
 Transient model recovery is opt-in and bounded at the orchestration boundary. The built-in policy
 retries rate limits and server failures, asks a caller-supplied compactor to handle context
@@ -249,11 +259,10 @@ record of a job surviving a crash its coroutine did not would describe something
 What delegation here does *not* have is the reference's other half: `capability`-based routing to
 a peer over `transport`, its `AgentRegistry`, and `approvalGate`. Those
 depend on subsystems this port has not built — there is no transport to publish an envelope to and
-no registry to resolve a capability against — so a child is reached by name, in-process. Also not
-ported: automatic transcript persistence and attachments. Crash recovery accordingly accepts the
-durable transcript explicitly rather than hiding that missing store. Context compaction is a seam
-rather than a feature: the loop calls a caller-supplied `compact_context` when the provider
-reports context overflow, and ships no compactor of its own.
+no registry to resolve a capability against — so a child is reached by name, in-process.
+Attachments are not ported. Context compaction is a seam rather than a feature: the loop calls a
+caller-supplied `compact_context` when the provider reports context overflow, and ships no
+compactor of its own.
 
 The former graph path remains removed: model and tool effects share the same `StepLog` recovery
 authority instead of introducing a second checkpointer.

@@ -28,6 +28,7 @@ __all__ = [
     "OnSuspend",
     "PendingInput",
     "PreToolUse",
+    "RecordMessages",
     "ShouldStopAfterTurn",
     "StopReason",
     "ToolCall",
@@ -146,6 +147,9 @@ DrainInputs = Callable[[], Awaitable[list[PendingInput]]]
 
 AdmitInputs = Callable[[list[PendingInput]], Awaitable[None]]
 """Commits claimed inputs after they have been appended to the model context."""
+
+RecordMessages = Callable[[list[BaseMessage]], Awaitable[None]]
+"""Persist messages in the exact shape admitted to model-visible history."""
 
 ShouldStopAfterTurn = Callable[[int, str, list[dict[str, Any]]], Awaitable[bool]]
 """Asked after every model round with (turn, text, calls_made). True ends the run.

@@ -129,6 +129,7 @@ LAYERS: dict[str, frozenset[str]] = {
             "engines",
             "history",
             "orchestrator",
+            "transcript",
         }
     ),
 }

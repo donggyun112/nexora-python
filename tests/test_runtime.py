@@ -16,6 +16,8 @@ from nexora.orchestrator import (
     Orchestrator,
 )
 from nexora.tools import InvalidToolResult
+from nexora.transcript import messages_of
+from nexora_store import MemoryTranscript
 
 from .test_loop import Llm, Tools, a_call, says, scripted
 
@@ -137,6 +139,93 @@ async def test_runtime_hides_orchestrator_wiring_but_records_tool_effects() -> N
 
     assert outcome["content"] == "done"
     assert (await store.read("run-1", "c1")).status == "done"
+
+
+async def test_runtime_records_the_complete_model_visible_conversation() -> None:
+    """`TranscriptRecorder.onEvent` — a completed tool round is durable with its answer."""
+    transcripts = MemoryTranscript()
+    runtime = AgentRuntime(store=MemorySteps(), transcript=transcripts)
+
+    await runtime.run(
+        "recorded-conversation",
+        scripted(says("", a_call("c1", "read")), says("finished")),
+        Tools(),
+        "inspect",
+    )
+
+    restored = messages_of(await transcripts.read("recorded-conversation"))
+    assert [type(message) for message in restored] == [
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+        AIMessage,
+    ]
+    asking = restored[1]
+    assert isinstance(asking, AIMessage)
+    assert asking.tool_calls[0]["id"] == "c1"
+    assert restored[2].content == "ok"
+
+
+async def test_a_new_runtime_restores_history_without_a_history_argument() -> None:
+    """`react.ts` memory.getHistory expression — stored turns seed the next model call."""
+    steps = MemorySteps()
+    transcripts = MemoryTranscript()
+    await AgentRuntime(store=steps, transcript=transcripts).run(
+        "continued-conversation",
+        scripted(says("first answer")),
+        Tools(),
+        "first question",
+    )
+
+    model = scripted(says("second answer"))
+    outcome = await AgentRuntime(store=steps, transcript=transcripts).run(
+        "continued-conversation",
+        model,
+        Tools(),
+        "second question",
+    )
+
+    assert [message.content for message in model.seen[0]] == [
+        "first question",
+        "first answer",
+        "second question",
+    ]
+    assert outcome["content"] == "second answer"
+
+
+async def test_runtime_recovers_an_unanswered_transcript_round_automatically() -> None:
+    """An unanswered stored tool call recovers without explicit history or model replay."""
+
+    class FailsOnFirstToolMessage(MemoryTranscript):
+        failed = False
+
+        async def append(self, entry: dict[str, Any]) -> bool:
+            if entry.get("type") == "tool" and not self.failed:
+                self.failed = True
+                raise RuntimeError("transcript stopped before the tool answer")
+            return await super().append(entry)
+
+    steps = MemorySteps()
+    transcripts = FailsOnFirstToolMessage()
+    tools = Tools()
+    with pytest.raises(RuntimeError, match="before the tool answer"):
+        await AgentRuntime(store=steps, transcript=transcripts).run(
+            "automatic-recovery",
+            scripted(says("", a_call("c1", "read")), says("unused")),
+            tools,
+            "inspect",
+        )
+
+    model = scripted(says("recovered"))
+    outcome = await AgentRuntime(store=steps, transcript=transcripts).run(
+        "automatic-recovery",
+        model,
+        tools,
+    )
+
+    assert tools.ran == ["read"]
+    assert isinstance(model.seen[0][-1], ToolMessage)
+    assert outcome["content"] == "recovered"
 
 
 async def test_a_committed_model_reply_is_replayed_without_calling_the_provider_again() -> None:
@@ -331,6 +420,42 @@ async def test_runtime_parks_and_resumes_without_exposing_the_ledger() -> None:
 
     assert resumed.ran == ["deploy"]
     assert outcome["content"] == "deployed"
+
+
+async def test_suspension_and_resume_keep_one_automatic_transcript() -> None:
+    """A parked assistant call and its resumed answer remain one replay-valid conversation."""
+    steps = MemorySteps()
+    transcripts = MemoryTranscript()
+    runtime = AgentRuntime(store=steps, transcript=transcripts)
+
+    async def ask(_call: Any) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "recorded-suspension",
+            scripted(says("", a_call("c1", "deploy"))),
+            Tools(names=["deploy"]),
+            "ship",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(ask))),
+        )
+
+    await AgentRuntime(store=steps, transcript=transcripts).resume(
+        "recorded-suspension",
+        "approval-1",
+        {"type": "text", "text": "approved"},
+        scripted(says("deployed")),
+        Tools(names=["deploy"]),
+    )
+
+    restored = messages_of(await transcripts.read("recorded-suspension"))
+    assert [type(message) for message in restored] == [
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+        AIMessage,
+    ]
+    assert restored[2].content == "ok"
 
 
 async def test_new_interactive_input_cancels_pending_effect_before_switching() -> None:

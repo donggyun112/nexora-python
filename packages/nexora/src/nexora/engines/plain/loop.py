@@ -35,6 +35,7 @@ from ...contracts.types import (
     ModelStepError,
     OnModelFailure,
     PendingInput,
+    RecordMessages,
     ShouldStopAfterTurn,
     StopReason,
     ToolCall,
@@ -71,6 +72,7 @@ async def react_loop(
     emit: Emit | None = None,
     drain_inputs: DrainInputs | None = None,
     admit_inputs: AdmitInputs | None = None,
+    record_messages: RecordMessages | None = None,
     should_stop_after_turn: ShouldStopAfterTurn | None = None,
     on_model_failure: OnModelFailure | None = None,
     compact_context: CompactContext | None = None,
@@ -144,7 +146,14 @@ async def react_loop(
                     return
                 case Proceed(more):
                     pending_inputs += [PendingInput("control", message) for message in more]
-        await _commit_inputs(messages, pending_inputs, admit_inputs, emit, turn)
+        await _commit_inputs(
+            messages,
+            pending_inputs,
+            admit_inputs,
+            record_messages,
+            emit,
+            turn,
+        )
 
         # ── Reason ───────────────────────────────────────────────────────────
         reply: AIMessageChunk | None = None
@@ -213,7 +222,9 @@ async def react_loop(
         requested_tool_calls = select_for_execution(tools, list(reply.tool_calls) if reply else [])
 
         if not requested_tool_calls:
-            messages.append(_assistant_turn(reply, turn_text, []))
+            assistant = _assistant_turn(reply, turn_text, [])
+            messages.append(assistant)
+            await _record(record_messages, [assistant])
             # The caller's turn cap covers tool-free rounds too. Without this check an
             # always-vetoing `before_finish` gate can bypass the only iteration bound the loop
             # exposes.
@@ -253,7 +264,8 @@ async def react_loop(
             return
 
         # ── Act ──────────────────────────────────────────────────────────────
-        messages.append(_assistant_turn(reply, turn_text, requested_tool_calls))
+        assistant = _assistant_turn(reply, turn_text, requested_tool_calls)
+        messages.append(assistant)
         for call in requested_tool_calls:
             calls_made.append({"name": call["name"], "input": call["args"]})
             yield {
@@ -278,6 +290,11 @@ async def react_loop(
                 subject=subject,
             ),
         )
+        # `record_pending` and the durable effects land before this write. If the process died
+        # earlier, the durable model step replays this exact assistant turn on the next attempt;
+        # recording it before execution would leave a suspended or failed round as transcript
+        # fact before its durable boundary had accepted it.
+        await _record(record_messages, [assistant])
         for call, result, refused in resolved:
             event = tool_result(call, result)
             event["executed"] = not refused
@@ -295,6 +312,10 @@ async def react_loop(
         ]
 
         if aborted():
+            await _record(
+                record_messages,
+                [*round_.answers, *(message for _, message in round_.images)],
+            )
             yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
 
@@ -305,6 +326,13 @@ async def react_loop(
             turn, turn_text, calls_made
         )
         if round_.ended_by_tool or policy_says_stop:
+            # There is no next model round whose input admission could persist these answers.
+            # `TranscriptRecorder.onEvent` in the TypeScript runtime likewise flushes a complete
+            # tool-result group immediately rather than leaving it one step behind.
+            await _record(
+                record_messages,
+                [*round_.answers, *(message for _, message in round_.images)],
+            )
             reason: StopReason = "tool" if round_.ended_by_tool else "policy"
             yield await _done(emit, last_text or "(stopped after turn)", calls_made, reason, spent)
             return
@@ -314,12 +342,14 @@ async def _commit_inputs(
     messages: list[BaseMessage],
     inputs: list[PendingInput],
     admit_inputs: AdmitInputs | None,
+    record_messages: RecordMessages | None,
     emit: Emit | None,
     turn: int,
 ) -> None:
     """Append accepted inputs and record the one point where they enter model context."""
     for item in inputs:
         messages.append(item.message)
+    await _record(record_messages, [item.message for item in inputs])
     if inputs and admit_inputs is not None:
         await admit_inputs(inputs)
     for item in inputs:
@@ -333,6 +363,12 @@ async def _commit_inputs(
                     "message": messages_to_dict([item.message])[0],
                 },
             )
+
+
+async def _record(record_messages: RecordMessages | None, messages: list[BaseMessage]) -> None:
+    """Persist one ordered message group when the runtime supplied a transcript writer."""
+    if record_messages is not None and messages:
+        await record_messages(messages)
 
 
 @dataclass(frozen=True, slots=True)

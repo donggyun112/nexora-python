@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Any, NamedTuple, Protocol
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from nexora_store import Contended, Fenced, Indeterminate
 
@@ -296,12 +296,21 @@ class Concurrent:
 
 
 class Absorbed(NamedTuple):
-    """Normalized tool-round state consumed by the planner."""
+    """Normalized tool-round state consumed by the planner.
+
+    Attributes:
+        answers: One tool answer per completed call, in call order.
+        completed: Rendered results carried into a suspension record.
+        suspended: The call that parked the round, if any.
+        ended_by_tool: Whether a terminating call succeeded.
+        images: ``(call id, message)`` pairs re-entering images the answers could only name.
+    """
 
     answers: list[BaseMessage]
     completed: list[dict[str, Any]]
     suspended: tuple[ToolCall, dict[str, Any]] | None
     ended_by_tool: bool
+    images: list[tuple[str, BaseMessage]]
 
 
 def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
@@ -310,6 +319,7 @@ def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
     completed: list[dict[str, Any]] = []
     suspended: tuple[ToolCall, dict[str, Any]] | None = None
     ended_by_tool = False
+    images: list[tuple[str, BaseMessage]] = []
 
     for call, result, _refused in resolved:
         if result.get("type") == "suspend":
@@ -325,10 +335,12 @@ def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
                 status="error" if failed else "success",
             )
         )
+        if blocks := image_blocks(result):
+            images.append((call["id"] or "", image_message(call["name"], call["id"] or "", blocks)))
         if not failed and terminates_loop(tools, call):
             ended_by_tool = True
 
-    return Absorbed(answers, completed, suspended, ended_by_tool)
+    return Absorbed(answers, completed, suspended, ended_by_tool, images)
 
 
 def tool_result(call: ToolCall, result: dict[str, Any]) -> dict[str, Any]:
@@ -487,10 +499,54 @@ def _flag(tools: Tools, call: ToolCall, name: str) -> bool:
     return bool(flag(call["args"]) if callable(flag) else flag)
 
 
+def image_blocks(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every image a tool result carries, as LangChain image content blocks.
+
+    A ``content`` result yields one block per image it holds; an ``image`` result yields one.
+    """
+    match result:
+        case {"type": "content", "blocks": list(blocks)}:
+            return [block for item in blocks if (block := _image_block(item)) is not None]
+        case _:
+            single = _image_block(result)
+            return [single] if single is not None else []
+
+
+def _image_block(result: Any) -> dict[str, Any] | None:
+    """Translate one tool-result image into a content block, or None if it is not an image."""
+    match result:
+        case {"type": "image", "data": str(data), "mime_type": str(mime_type)}:
+            return {"type": "image", "base64": data, "mime_type": mime_type}
+        case _:
+            return None
+
+
+def image_message(name: str, call_id: str, blocks: list[dict[str, Any]]) -> HumanMessage:
+    """Re-enter a tool's images as visual context, since its answer can only name them.
+
+    A user message rather than blocks inside the tool answer: providers disagree on whether a
+    tool result may carry images at all, and this is the shape all of them accept.
+    """
+    one = len(blocks) == 1
+    return HumanMessage(
+        content=[
+            {
+                "type": "text",
+                "text": (
+                    f"Tool {name} returned {'an image' if one else f'{len(blocks)} images'} "
+                    f"for call {call_id}. Use {'this image' if one else 'these images'} "
+                    "as visual context for the current task."
+                ),
+            },
+            *blocks,
+        ]
+    )
+
+
 def render_for_model(result: dict[str, Any]) -> str:
     """Flatten a tool result to the text the model sees.
 
-    Images are summarized, never inlined: the caller attaches them as separate image blocks,
+    Images are summarized, never inlined: `image_message` re-attaches them as their own blocks,
     and serializing them here would leak base64 into the transcript.
     """
     match result:

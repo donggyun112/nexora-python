@@ -740,7 +740,7 @@ class Orchestrator:
         )
         absorbed = absorb_round(tools, resolved)
         return RecoveredTools(
-            [*history, *absorbed.answers],
+            [*history, *absorbed.answers, *(message for _, message in absorbed.images)],
             resolved,
             absorbed.completed,
             absorbed.suspended,

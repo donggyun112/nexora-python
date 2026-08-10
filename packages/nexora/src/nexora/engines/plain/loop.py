@@ -32,6 +32,7 @@ from ...contracts.types import (
     PendingInput,
     ShouldStopAfterTurn,
     StopReason,
+    ToolCall,
     Tools,
 )
 from ...controls import Controls, Ctx, Halt, Proceed
@@ -157,6 +158,8 @@ async def react_loop(
                 chunk = item
                 # Chunks add, and the sum reassembles tool arguments that arrive as fragments.
                 reply = chunk if reply is None else reply + chunk
+                for thought in _reasoning_of(chunk):
+                    yield {"type": "thinking", "content": thought}
                 if delta := chunk.text:
                     yield {"type": "text", "text": delta}
                 if aborted():
@@ -200,7 +203,7 @@ async def react_loop(
         requested_tool_calls = select_for_execution(tools, list(reply.tool_calls) if reply else [])
 
         if not requested_tool_calls:
-            messages.append(AIMessage(turn_text))
+            messages.append(_assistant_turn(reply, turn_text, []))
             # The caller's turn cap covers tool-free rounds too. Without this check an
             # always-vetoing `before_finish` gate can bypass the only iteration bound the loop
             # exposes.
@@ -240,7 +243,7 @@ async def react_loop(
             return
 
         # ── Act ──────────────────────────────────────────────────────────────
-        messages.append(AIMessage(content=turn_text, tool_calls=list(requested_tool_calls)))
+        messages.append(_assistant_turn(reply, turn_text, requested_tool_calls))
         for call in requested_tool_calls:
             calls_made.append({"name": call["name"], "input": call["args"]})
             yield {
@@ -274,6 +277,11 @@ async def react_loop(
         carried_inputs += [
             PendingInput("tool_result", answer, str(completed["id"]))
             for answer, completed in zip(round_.answers, round_.completed, strict=True)
+        ]
+        # After the answers, never among them: an image message is a second message about a call
+        # already answered, and a tool answer that has not landed yet cannot be commented on.
+        carried_inputs += [
+            PendingInput("tool_image", message, call_id) for call_id, message in round_.images
         ]
 
         if aborted():
@@ -372,6 +380,55 @@ async def _model_stream(
                 continue
             yield _FailedModel(error, kind, partial)
         return
+
+
+_CALL_BLOCKS = frozenset({"tool_call", "tool_use", "tool_call_chunk", "invalid_tool_call"})
+"""Content blocks that restate a tool call. `tool_calls` is this loop's single source for those."""
+
+
+def _assistant_turn(reply: AIMessageChunk | None, text: str, calls: list[ToolCall]) -> AIMessage:
+    """The turn as the provider streamed it, so its own blocks travel back with it.
+
+    Rebuilt from `text` alone it would lose them — reasoning above all, which the next request has
+    to return unmodified, signature included, or the provider rejects the turn. Call blocks are the
+    one exclusion: `calls` may be a narrowed subset of what the model asked for, and LangChain
+    renders that set back into whatever shape the provider reads.
+    """
+    if reply is None:
+        return AIMessage(content=text, tool_calls=list(calls))
+    kept = (
+        [
+            block
+            for block in reply.content
+            if not (isinstance(block, dict) and block.get("type") in _CALL_BLOCKS)
+        ]
+        if isinstance(reply.content, list)
+        else reply.content
+    )
+    return AIMessage(
+        content=kept or text,
+        tool_calls=list(calls),
+        id=reply.id,
+        # Where a provider without content blocks puts its reasoning — same fact, other shelf.
+        additional_kwargs=dict(reply.additional_kwargs),
+    )
+
+
+def _reasoning_of(chunk: AIMessageChunk) -> list[str]:
+    """The reasoning a chunk carries, which `.text` excludes by design and so needs its own read.
+
+    Both spellings are read: the standard `reasoning` block, and the provider-native `thinking`
+    one that reaches us whenever no block translator normalized it first.
+    """
+    if not isinstance(chunk.content, list):
+        return []
+    return [
+        text
+        for block in chunk.content
+        if isinstance(block, dict)
+        and block.get("type") in ("reasoning", "thinking")
+        and (text := str(block.get("reasoning") or block.get("thinking") or ""))
+    ]
 
 
 def _text_of(reply: AIMessageChunk | None) -> str:

@@ -216,6 +216,55 @@ async def test_a_tool_result_reaches_the_caller_unchanged() -> None:
     assert next(e for e in events if e["type"] == "tool_result")["result"] == multimodal
 
 
+async def test_a_tool_image_re_enters_model_context() -> None:
+    """react.ts toolImageMessages — an image only named in text is one the model never received."""
+    multimodal: dict[str, Any] = {
+        "type": "content",
+        "blocks": [
+            {"type": "text", "text": "page 1"},
+            {"type": "image", "data": "xxx", "mime_type": "image/png"},
+        ],
+    }
+    llm = scripted(says("", a_call("c1", "render")), says("fin"))
+
+    await run(llm, Tools(results={"render": multimodal}, names=["render"]))
+
+    assert [
+        block
+        for message in llm.seen[1]
+        for block in (message.content if isinstance(message.content, list) else [])
+        if isinstance(block, dict) and block.get("type") == "image"
+    ] == [{"type": "image", "base64": "xxx", "mime_type": "image/png"}]
+
+
+async def test_the_assistant_turn_carries_the_provider_blocks_into_the_next_request() -> None:
+    """A reasoning block has to return unmodified; rebuilt from `.text` it never comes back."""
+    thought: dict[str, Any] = {"type": "reasoning", "reasoning": "읽자", "signature": "sig"}
+
+    class Blocks(Llm):
+        """Streams a signed reasoning block beside the call it justifies."""
+
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            self.seen.append(list(messages))
+            reply = next(self.messages)
+            assert isinstance(reply, AIMessage)
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content=[thought, {"type": "text", "text": str(reply.content)}],
+                    tool_calls=reply.tool_calls,
+                )
+            )
+
+    model = Blocks(messages=iter((says("읽을게요", a_call("c1", "read")), says("끝"))))
+    model.seen = []
+
+    await run(model, durable=False)
+
+    replayed = next(m for m in model.seen[1] if isinstance(m, AIMessage))
+    assert replayed.content[0] == thought, "verbatim — the signature is what the provider checks"
+    assert [c["id"] for c in replayed.tool_calls] == ["c1"], "and the call still rides along"
+
+
 async def test_the_system_prompt_reaches_the_provider() -> None:
     llm = scripted(says("ok"))
 
@@ -441,6 +490,31 @@ async def test_a_provider_streaming_content_blocks_still_streams_to_the_caller()
 
     assert [e["text"] for e in events if e["type"] == "text"] == ["hello ", "world"]
     assert events[-1]["content"] == "hello world", "and the turn text still adds up"
+
+
+async def test_reasoning_streams_as_its_own_event() -> None:
+    """react.ts streamLlm thinking_delta — `.text` drops reasoning, so it needs its own event."""
+
+    class Thinks(Llm):
+        """Streams a thought before the answer, in both the standard and native block spellings."""
+
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            for block in (
+                {"type": "reasoning", "reasoning": "먼저 계획"},
+                {"type": "thinking", "thinking": "그 다음"},
+                {"type": "text", "text": "답"},
+            ):
+                yield ChatGenerationChunk(message=AIMessageChunk(content=[block]))
+
+    model = Thinks(messages=iter(()))
+    model.seen = []
+    events = await run(model, durable=False)
+
+    assert [e for e in events if e["type"] == "thinking"] == [
+        {"type": "thinking", "content": "먼저 계획"},
+        {"type": "thinking", "content": "그 다음"},
+    ]
+    assert events[-1]["content"] == "답", "and reasoning stays out of the answer"
 
 
 async def test_streaming_emits_no_deprecated_langchain_call() -> None:

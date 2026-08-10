@@ -42,8 +42,7 @@ async def test_a_batch_that_all_declared_itself_safe_runs_together() -> None:
 
 
 async def test_one_undeclared_call_makes_the_whole_round_sequential() -> None:
-    """All-or-nothing. The flag is a claim about neighbours that also declared themselves, so a
-    neighbour that did not is exactly the case it cannot cover."""
+    """One undeclared call makes the entire batch execute sequentially."""
     tools = Traced(defs={"read": SAFE, "write": {}}, names=["read", "write"])
 
     await run(tools, "read", "read", "write")
@@ -114,3 +113,26 @@ async def test_a_concurrent_tool_cannot_return_a_suspension() -> None:
     # effect landing with nothing awaiting it, and no step to show for it.
     assert tools.trace.count("end:a") == 1
     assert tools.trace.count("end:c") == 1
+
+
+async def test_a_raising_tool_does_not_take_the_batch_down_with_it() -> None:
+    """react.ts catches per call, so one thrown tool costs one result and not the round."""
+
+    class Breaking(Traced):
+        async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
+            if name == "boom":
+                raise RuntimeError("disk on fire")
+            return await super().execute(name, call_id, arguments)
+
+    tools = Breaking(defs={"read": SAFE, "boom": SAFE}, names=["read", "boom"])
+    calls = [a_call("a", "read"), a_call("b", "boom"), a_call("c", "read")]
+    llm = scripted(says("", *calls), says("fin"))
+
+    results = {
+        event["id"]: event["result"]
+        async for event in react_loop(llm, Concurrent(tools))
+        if event["type"] == "tool_result"
+    }
+
+    assert results["b"] == {"type": "error", "message": "RuntimeError: disk on fire"}
+    assert results["a"]["type"] == "text" and results["c"]["type"] == "text"

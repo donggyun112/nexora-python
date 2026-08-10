@@ -29,6 +29,12 @@
     it is declared concurrency-safe.
 - Suspension records carry only what the pause can change. Anything deterministically
   reconstructible from the conversation stays out; external facts go in.
+- **A tool that raises failed; the round did not.** The exception becomes that call's `error`
+  result, its step commits `done`, and the model is told so it can try something else — one
+  boundary, `_execute_validated` in `tools.py`, matching `tool-executor.ts`. A runtime signal is
+  not a tool failure and passes through: `ControlSignal` (so, any `Suspended`) and the ledger's
+  `Contended`/`Fenced`/`Indeterminate`. Never catch broadly anywhere else — a second catch above
+  that boundary converts exactly the signals it deliberately let through.
 
 ## Development
 

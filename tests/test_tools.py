@@ -13,6 +13,7 @@ from nexora.contracts import BaseMessage, ToolCall
 from nexora.history import suspend_history_snapshot
 from nexora.tools import (
     InvalidToolCall,
+    as_model_tools,
     render_for_model,
     require_call_ids,
     select_for_execution,
@@ -168,7 +169,25 @@ def test_a_round_with_an_unkeyable_call_is_refused_whole() -> None:
 
 
 def test_selection_refuses_the_round_before_announcing_a_single_call() -> None:
-    """`select_for_execution` runs before the engine appends the assistant message and before any
-    `tool_call` event — the last moment at which refusing costs nothing."""
+    """Invalid call identifiers reject the round before any call is announced."""
     with pytest.raises(InvalidToolCall):
         select_for_execution(Defs(), [a_call("read", "c1"), a_call("read", "c1")])
+
+
+# ── What reaches the model is ordered ────────────────────────────────────────
+
+
+def _definition(name: str) -> dict[str, Any]:
+    return {"name": name, "description": f"{name} something", "parameters": {"type": "object"}}
+
+
+def test_the_same_tool_set_binds_in_the_same_order_however_it_was_listed() -> None:
+    """registry.ts:96 — tool definitions bind in deterministic name order."""
+    listed = [_definition(n) for n in ("write", "read", "Bash", "grep")]
+
+    names = [tool["function"]["name"] for tool in as_model_tools(listed)]
+
+    assert names == ["Bash", "grep", "read", "write"]
+    assert names == [
+        tool["function"]["name"] for tool in as_model_tools(list(reversed(listed)))
+    ]

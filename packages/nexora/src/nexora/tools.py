@@ -11,9 +11,18 @@ from typing import Any, NamedTuple, Protocol
 
 from langchain_core.messages import ToolMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from nexora_store import Contended, Fenced, Indeterminate
 
 from .contracts.events import EventType
-from .contracts.types import Aborted, BaseMessage, BatchTools, Emit, ToolCall, Tools
+from .contracts.types import (
+    Aborted,
+    BaseMessage,
+    BatchTools,
+    ControlSignal,
+    Emit,
+    ToolCall,
+    Tools,
+)
 from .controls import Continue, Controls, Ctx, Deny, Suspend, ToolDecision
 
 
@@ -31,20 +40,11 @@ class Resolved(NamedTuple):
     """The gate stood in for the call. The tool never ran."""
 
 
-class RoundSuspended(Exception):
-    """A permission gate parked a tool round before the effect boundary.
-
-    Agent engines do not interpret this. A durable orchestrator catches it, commits the
-    continuation, and terminates the agent attempt.
-
-    Which is why it reaching a caller means there is no orchestrator to catch it. A loop driven
-    without one is a supported way to use this package — `react_loop` defaults to the plain
-    `execute_calls` and never touches a ledger — but parking a call is the one thing it cannot do,
-    because a suspension is only a suspension if the continuation was written down somewhere. The
-    message says so, since by then the caller is looking at an exception rather than a docstring.
-    """
+class RoundSuspended(ControlSignal):
+    """Report a tool round suspended without an orchestrator to persist it."""
 
     def __init__(self, resolved: list[Resolved]) -> None:
+        """Initialize the error with results completed before suspension."""
         super().__init__(
             "tool round suspended, and nothing here can park it: a suspension has to commit its "
             "continuation. Drive the loop through `AgentRuntime`, pass "
@@ -103,12 +103,7 @@ def validate_tool_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
 
 
 class ExecuteRound(Protocol):
-    """Who owns a requested tool round.
-
-    Engines discover the position and consume successful results. An orchestrator owns everything
-    in between — policy, durable intent, execution order, suspension and recovery. Suspension is
-    terminal control flow and therefore never returns to the agent as an ordinary result.
-    """
+    """Define execution ownership for one requested tool round."""
 
     async def __call__(
         self,
@@ -119,7 +114,9 @@ class ExecuteRound(Protocol):
         turn: int = 0,
         controls: Controls | None = None,
         ctx: Ctx | None = None,
-    ) -> list[Resolved]: ...
+    ) -> list[Resolved]:
+        """Execute a tool round and return results in model call order."""
+        ...
 
 
 async def execute_calls(
@@ -164,10 +161,7 @@ async def execute_calls(
         result = (
             stood_in
             if stood_in is not None
-            else validate_tool_result(
-                call["name"],
-                await tools.execute(call["name"], call["id"] or "", call["args"]),
-            )
+            else await _execute_validated(tools, call["name"], call["id"] or "", call["args"])
         )
         # A policy result stands in for an effect; it must not claim that the tool ran. Actual
         # executions are recorded before append so a failed record leaves the call unresolved.
@@ -241,38 +235,15 @@ async def record_resolved(
 
 
 class Stepped:
-    """Every tool call is a durable step, keyed by its call id.
-
-    The call id is already the idempotency key (ADR-002), so it is already the step name — nothing
-    new to invent. What that buys, on a run that resumes:
-
-        c1  finished before the suspension  → the ledger returns its recorded result, no execution
-        c2  the one that suspended          → runs now that the answer exists
-        c3  the round never reached it      → runs, because the ledger says it never started
-
-    So the calls the model asked for and never got are not lost and not re-derived. There is no
-    list of "never ran" anywhere, because "did this happen" is a question the step ledger answers.
-
-    **Wrap the innermost executor**, so every other layer runs on top of the ledger rather than
-    beside it:
-
-        Concurrent(Stepped(my_tools, orchestrator))
-
-    That nesting gives both properties for free: `Concurrent` decides which calls run together and
-    calls `execute` for each, and each of those is a step. The other order would put the ledger
-    outside a batch, which cannot record a partly-finished round.
-
-    Used by itself, restarting the loop asks the model for the round again. The cheaper recovery
-    path is ``Orchestrator.recover_pending``: it reads the already-persisted assistant tool calls,
-    restores completed results from this ledger, executes only absent calls, and hands the model
-    a completed history without replaying the model turn.
-    """
+    """Wrap each tool call in a durable step keyed by its call identifier."""
 
     def __init__(self, tools: Tools, orchestrator: Any) -> None:
+        """Initialize the wrapper with an executor and orchestrator."""
         self._tools = tools
         self._orchestrator = orchestrator
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
+        """Execute or replay a tool call through its durable step."""
         result: dict[str, Any] = await self._orchestrator.run(
             call_id,
             lambda: _execute_validated(self._tools, name, call_id, arguments),
@@ -280,47 +251,41 @@ class Stepped:
         return result
 
     def get(self, name: str) -> dict[str, Any] | None:
+        """Return a wrapped tool definition by name."""
         return self._tools.get(name)
 
     def list(self) -> list[dict[str, Any]]:
+        """Return all wrapped tool definitions."""
         return self._tools.list()
 
 
 class Concurrent:
-    """A `BatchTools` that runs a round together when every call in it declared itself safe.
-
-    The opt-in half of ADR-002: sequential is the default because a retried batch has to replay in
-    the same order, and concurrency is something a tool asks for by setting `is_concurrency_safe`
-    in its definition.
-
-    **All-or-nothing per batch.** One call that has not declared itself makes the whole round
-    sequential. That is what makes the flag a claim a tool author can actually evaluate — "safe
-    beside anything else that also declared itself" — rather than one about every possible
-    neighbour. It also sidesteps the case a per-tool flag cannot express: two calls to the same
-    write tool, each fine alone and not fine together.
-
-    Wrap a plain executor and hand the result to the loop:
-
-        react_loop(model, Concurrent(my_tools), prompt)
-
-    ponytail: no grouping. A batch of five safe reads and one write runs all six one at a time,
-    where a grouping pass would run the reads together and the write after. Add that when a real
-    workload shows mixed batches are common — the seam is this class, and nothing above it changes.
-    """
+    """Execute a batch concurrently only when every call opts in to concurrency."""
 
     def __init__(self, tools: Tools, aborted: Aborted = lambda: False) -> None:
+        """Initialize the wrapper with an executor and cancellation predicate."""
         self._tools = tools
         self._aborted = aborted
+        # Who turns a raise into an error result. `Stepped` already did it around the user's tool,
+        # inside the step, which is the only place that can tell a failed tool from a failed
+        # runtime. Catching a second time out here would convert exactly what it let through — a
+        # lost lease, an indeterminate step, a store that died mid-write — into a sentence the
+        # model reads as a bad file path and moves past.
+        self._converts_failures = not isinstance(tools, Stepped)
 
     async def execute_batch(self, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Execute a batch concurrently when safe and sequentially otherwise."""
         if concurrency_safe_batch(self._tools, [_as_tool_call(call) for call in calls]):
             if self._aborted():
                 return []
-            # `return_exceptions` so a raise does not abandon the calls beside it. Plain `gather`
-            # propagates the first exception and leaves the rest running: their effects still land,
-            # after the round is over and with nothing awaiting them. Cancelling instead would be
-            # worse — a tool cut mid-write leaves the ledger saying it never ran. So the round is
-            # awaited whole, every finished call reaches its step, and then the failure is raised.
+            # A tool's own failure is an error result by the time it gets here, so what still
+            # raises is a runtime signal or a broken tool result — either way the round ends.
+            # `return_exceptions` so that ending does not abandon the calls beside it. Plain
+            # `gather` propagates the first exception and leaves the rest running: their effects
+            # still land, after the round is over and with nothing awaiting them. Cancelling
+            # instead would be worse — a tool cut mid-write leaves the ledger saying it never ran.
+            # So the round is awaited whole, every finished call reaches its step, and then the
+            # failure is raised.
             together: list[dict[str, Any]] = []
             for outcome in await asyncio.gather(
                 *(self._one(call) for call in calls), return_exceptions=True
@@ -340,19 +305,21 @@ class Concurrent:
         return resolved
 
     async def _one(self, call: dict[str, Any]) -> dict[str, Any]:
-        result = validate_tool_result(
-            call["name"],
-            await self._tools.execute(call["name"], call["call_id"], call["input"]),
-        )
+        result = await self.execute(call["name"], call["call_id"], call["input"])
         return {"call_id": call["call_id"], "result": result}
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
-        return await _execute_validated(self._tools, name, call_id, arguments)
+        """Execute one validated tool call."""
+        if self._converts_failures:
+            return await _execute_validated(self._tools, name, call_id, arguments)
+        return validate_tool_result(name, await self._tools.execute(name, call_id, arguments))
 
     def get(self, name: str) -> dict[str, Any] | None:
+        """Return a wrapped tool definition by name."""
         return self._tools.get(name)
 
     def list(self) -> list[dict[str, Any]]:
+        """Return all wrapped tool definitions."""
         return self._tools.list()
 
 
@@ -425,8 +392,17 @@ def as_model_tools(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
     there is nothing here to write. It replaced two hand-rolled copies of the conversion, one per
     engine, which had **already drifted** — they disagreed about what an empty `parameters` should
     default to. One definition is the point; the fact that it is a one-liner is the reward.
+
+    **Sorted by name** (`registry.ts:96`). Providers cache on a prefix of the request, and the tool
+    schemas sit in it, so a `Tools.list()` that returns the same set in a different order is a cache
+    miss for every turn after it — paid in tokens, invisible in behaviour. `list()` is the host's to
+    implement and cannot be made to promise an order, so the guarantee belongs at the one place the
+    definitions cross into a model call rather than in each implementation.
     """
-    return [convert_to_openai_tool(definition) for definition in available]
+    return [
+        convert_to_openai_tool(definition)
+        for definition in sorted(available, key=lambda d: str(d.get("name", "")))
+    ]
 
 
 def tool_payload(turn: int, call: ToolCall, **extra: Any) -> dict[str, Any]:
@@ -509,11 +485,37 @@ def _in_call_order(
     return ordered
 
 
+_PASSES_THROUGH = (ControlSignal, Contended, Fenced, Indeterminate)
+"""The runtime's own signals. Everything else a tool raises is that tool's failure."""
+
+
 async def _execute_validated(
     tools: Tools, name: str, call_id: str, arguments: Any
 ) -> dict[str, Any]:
-    """Validate inside the durable step so an invalid result is never committed as done."""
-    return validate_tool_result(name, await tools.execute(name, call_id, arguments))
+    """Run one tool. A raise becomes the error result the model can read.
+
+    Every path that reaches a tool comes through here, so this is the only place that has to
+    catch. react.ts catches per call (`tool-executor.ts:165`) and so does this: a tool that raises
+    is one failed effect, not a failed round. Letting the exception escape instead ended the run
+    in the caller's event loop and discarded the sibling calls' results, which had already been
+    computed — the model was never told what went wrong, so it could never try something else.
+
+    Caught here rather than at each call site because the exception is also a fact the *ledger*
+    needs. Inside the durable step, an error result commits as `done`, and the call is not
+    re-run. That is the honest record: we watched the tool fail, which is a different thing from
+    the crash `Indeterminate` exists for, where nobody watched anything.
+
+    Validation stays outside the `try`. `InvalidToolResult` is our contract with the tool author,
+    not the tool's report about the world, and answering a broken tool with `[ERROR]` would hide
+    the bug behind a message the model reads as a bad file path.
+    """
+    try:
+        result = await tools.execute(name, call_id, arguments)
+    except _PASSES_THROUGH:
+        raise
+    except Exception as failure:
+        result = {"type": "error", "message": f"{type(failure).__name__}: {failure}"}
+    return validate_tool_result(name, result)
 
 
 def select_for_execution(tools: Tools, calls: list[ToolCall]) -> list[ToolCall]:

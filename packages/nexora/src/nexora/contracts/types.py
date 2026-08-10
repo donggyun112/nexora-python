@@ -21,8 +21,14 @@ __all__ = [
     "AdmitInputs",
     "BaseMessage",
     "BatchTools",
+    "CompactContext",
+    "ControlSignal",
     "DrainInputs",
     "Emit",
+    "ModelErrorKind",
+    "ModelFailure",
+    "ModelFailureAction",
+    "OnModelFailure",
     "OnSuspend",
     "PendingInput",
     "PreToolUse",
@@ -32,17 +38,67 @@ __all__ = [
     "Tools",
 ]
 
+class ControlSignal(Exception):
+    """The runtime saying this attempt cannot continue. Never reported as a tool failure.
+
+    A tool that raises is a failed effect: the model is told and may try something else. A
+    suspension is not that. Rendering one as `[ERROR] ...` would strand a durable pause as a
+    sentence the model reads and moves past, and the human whose answer it was waiting for would
+    never be asked. So the tool boundary catches everything except this.
+
+    Here rather than beside the classes that raise it, because the boundary that has to let it
+    through is `tools.py`, which sits below them. The ledger's own signals (`Contended`, `Fenced`,
+    `Indeterminate`) mean the same thing and pass through the same way; they cannot inherit this
+    because `nexora-store` depends on nothing, so that boundary names them separately.
+    """
+
+
 StopReason = Literal["completed", "aborted", "tool", "policy"]
 """Why a run ended, carried on the terminal `done` event.
 
 `aborted` matters most: a cancelled run must leave a record, not just a stream that stops.
 """
 
+ModelErrorKind = Literal[
+    "rate_limit",
+    "context_overflow",
+    "max_output_tokens",
+    "authentication",
+    "server",
+    "invalid_request",
+    "unknown",
+]
+"""Stable model-failure categories used by retry and compaction policy."""
+
+ModelFailureAction = Literal["retry", "compact", "fail"]
+"""A caller-owned recovery decision for one failed model request."""
+
+
+class ModelFailure(NamedTuple):
+    """Structured input to model recovery policy, independent of provider prose."""
+
+    error_type: str
+    error_kind: ModelErrorKind
+    message: str
+    partial: str
+    attempt: int
+
+
+OnModelFailure = Callable[[ModelFailure], Awaitable[ModelFailureAction]]
+"""Choose bounded recovery for a model request; returning `fail` preserves the error event."""
+
+CompactContext = Callable[
+    [list[BaseMessage], ModelFailure], Awaitable[list[BaseMessage]]
+]
+"""Replace model-visible context after policy chooses `compact`."""
+
 
 class Tools(Protocol):
     """Runs tool calls and describes them. Implementations own permissions and sandboxing."""
 
-    async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]: ...
+    async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
+        """Execute a tool call and return its tagged result."""
+        ...
 
     def get(self, name: str) -> dict[str, Any] | None:
         """The tool's definition, read for its `is_exclusive` / `terminates_loop` flags."""
@@ -137,7 +193,7 @@ AdmitInputs = Callable[[list[PendingInput]], Awaitable[None]]
 """Commits claimed inputs after they have been appended to the model context."""
 
 ShouldStopAfterTurn = Callable[[int, str, list[dict[str, Any]]], Awaitable[bool]]
-"""Asked after every tool round with (turn, text, calls_made). True ends the run.
+"""Asked after every model round with (turn, text, calls_made). True ends the run.
 
 This is also where an iteration cap lives — the loop does not impose one.
 """

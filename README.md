@@ -62,10 +62,16 @@ The loop keeps only planner control flow — model, delegated effect round, stop
 intent, effect ordering, suspension and recovery live at the mediated execution boundary. There
 is no alternate graph engine and no graph checkpointer.
 
-Model invocation is the current exception to that durable effect boundary: the planner streams the
-provider directly, and neither the model result nor the growing transcript is checkpointed by
-`StepLog`. Until the separate transcript store and a durable model-invocation contract exist, a
-caller recovering after that boundary must supply the committed transcript explicitly.
+Model invocation crosses that durable effect boundary too. Each request is keyed by a stable
+fingerprint of the model identity, bound tool definitions and model-visible messages; completed
+stream chunks are recorded in `StepLog` and replayed without calling the provider again. A request
+left `running` is indeterminate rather than silently charged twice. Standard LangChain models use
+their identifying parameters automatically; pass `model_identity=` for a custom wrapper whose
+identity cannot be derived from those parameters.
+
+The growing transcript is still not written by `AgentRuntime` automatically. The separate
+transcript store exists, but until it is integrated into the runtime a caller recovering across
+attempts must still supply committed history explicitly.
 
 Transient model recovery is opt-in and bounded at the orchestration boundary. The built-in policy
 retries rate limits and server failures, asks a caller-supplied compactor to handle context
@@ -109,7 +115,7 @@ Internally, those responsibilities split cleanly:
   results and resume answers enter the planner through one queue contract.
 - **Effect executors:** perform mediated tool operations, and delegation composes over them
   as a `Tools` wrapper. Sandbox effects have their place here and no implementation yet.
-  Model invocation is still direct planner I/O and is not yet a durable step.
+  Streamed model invocation is a durable step beside those tool effects.
 - **Events:** expose the same lifecycle to audit, UI and monitoring consumers.
 
 ## Development
@@ -241,7 +247,7 @@ without the caller knowing which happened. `check_tasks`, `read_task_output`, `c
 record of a job surviving a crash its coroutine did not would describe something no longer running.
 
 What delegation here does *not* have is the reference's other half: `capability`-based routing to
-a peer over `transport`, its `AgentRegistry`, `approvalGate`, and authority attenuation. Those
+a peer over `transport`, its `AgentRegistry`, and `approvalGate`. Those
 depend on subsystems this port has not built — there is no transport to publish an envelope to and
 no registry to resolve a capability against — so a child is reached by name, in-process. Also not
 ported: automatic transcript persistence and attachments. Crash recovery accordingly accepts the
@@ -249,8 +255,8 @@ durable transcript explicitly rather than hiding that missing store. Context com
 rather than a feature: the loop calls a caller-supplied `compact_context` when the provider
 reports context overflow, and ships no compactor of its own.
 
-Measured locally over 100 zero-I/O rounds (best of three), the direct durable path costs about
-260µs per round. The former graph path was removed despite equivalent effect safety.
+The former graph path remains removed: model and tool effects share the same `StepLog` recovery
+authority instead of introducing a second checkpointer.
 
 ## License
 

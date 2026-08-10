@@ -85,6 +85,7 @@ class AgentRuntime:
         rules_version: str = "",
         prompt_id: str | None = None,
         input_mode: InputMode = "interactive",
+        model_identity: str | None = None,
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Start or continue a turn; interactive input cancels a parked tool request."""
@@ -139,6 +140,7 @@ class AgentRuntime:
                 history=history,
                 controls=controls,
                 on_event=on_event,
+                model_identity=model_identity,
                 **engine_options,
             )
             if completing is not None:
@@ -186,6 +188,7 @@ class AgentRuntime:
         on_event: OnAgentEvent | None = None,
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
+        model_identity: str | None = None,
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Route an answer by the suspension's external `pending_id` and resume its call."""
@@ -235,6 +238,7 @@ class AgentRuntime:
                 history=waiting.messages,
                 controls=controls,
                 on_event=on_event,
+                model_identity=model_identity,
                 **engine_options,
             )
             await orchestrator.complete_continuation(tool_call_id)
@@ -253,6 +257,7 @@ class AgentRuntime:
         on_event: OnAgentEvent | None = None,
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
+        model_identity: str | None = None,
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Recover an interrupted tool round and continue without replaying its model turn."""
@@ -281,6 +286,7 @@ class AgentRuntime:
                 controls=controls,
                 on_event=on_event,
                 aborted=aborted,
+                model_identity=model_identity,
                 **engine_options,
             )
 
@@ -295,8 +301,11 @@ class AgentRuntime:
         on_event: OnAgentEvent | None,
         **engine_options: Any,
     ) -> dict[str, Any]:
-        if "drain_inputs" in engine_options or "admit_inputs" in engine_options:
-            raise TypeError("AgentRuntime owns drain_inputs and admit_inputs")
+        if any(
+            name in engine_options
+            for name in ("drain_inputs", "admit_inputs", "invoke_model")
+        ):
+            raise TypeError("AgentRuntime owns drain_inputs, admit_inputs, and invoke_model")
         engine_options.setdefault("on_model_failure", self._model_failure_policy)
         engine_options.setdefault("compact_context", self._compact_context)
 
@@ -316,6 +325,7 @@ class AgentRuntime:
             emit=orchestrator.emit,
             drain_inputs=drain_inputs,
             admit_inputs=orchestrator.admit_inputs,
+            invoke_model=orchestrator.invoke_model,
             execute_round=orchestrator.execute_round,
             on_event=on_event,
             **engine_options,

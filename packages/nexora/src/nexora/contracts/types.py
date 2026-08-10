@@ -4,10 +4,10 @@ Messages and tool calls use LangChain types. Tool results are tagged mappings wh
 ``text``, ``image``, ``content``, ``error``, or ``suspend``.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Literal, NamedTuple, Protocol, runtime_checkable
 
-from langchain_core.messages import BaseMessage, ToolCall
+from langchain_core.messages import AIMessageChunk, BaseMessage, ToolCall
 
 __all__ = [
     "Aborted",
@@ -18,9 +18,12 @@ __all__ = [
     "ControlSignal",
     "DrainInputs",
     "Emit",
+    "InvokeModel",
     "ModelErrorKind",
     "ModelFailure",
     "ModelFailureAction",
+    "ModelStepError",
+    "ModelStreamFactory",
     "OnModelFailure",
     "OnSuspend",
     "PendingInput",
@@ -66,6 +69,15 @@ class ModelFailure(NamedTuple):
     attempt: int
 
 
+class ModelStepError(Exception):
+    """Carry a durable-boundary failure past provider failure classification."""
+
+    def __init__(self, cause: Exception) -> None:
+        """Preserve the original ledger or codec error for the runtime caller."""
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 OnModelFailure = Callable[[ModelFailure], Awaitable[ModelFailureAction]]
 """Choose bounded recovery for a model request; returning `fail` preserves the error event."""
 
@@ -73,6 +85,14 @@ CompactContext = Callable[
     [list[BaseMessage], ModelFailure], Awaitable[list[BaseMessage]]
 ]
 """Replace model-visible context after policy chooses `compact`."""
+
+ModelStreamFactory = Callable[[], AsyncIterator[AIMessageChunk]]
+"""Open one provider stream only when its durable result is not already recorded."""
+
+InvokeModel = Callable[
+    [str, ModelStreamFactory], AsyncIterator[AIMessageChunk]
+]
+"""Execute or replay one model request under a stable durable step identifier."""
 
 
 class Tools(Protocol):

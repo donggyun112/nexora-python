@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
 from uuid import uuid4
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    ToolMessage,
+    message_to_dict,
+    messages_from_dict,
+)
 from nexora_store import (
     ClearableSteps,
     Contended,
@@ -31,6 +37,8 @@ from .contracts.types import (
     ModelErrorKind,
     ModelFailure,
     ModelFailureAction,
+    ModelStepError,
+    ModelStreamFactory,
     OnSuspend,
     PendingInput,
     ToolCall,
@@ -460,6 +468,73 @@ class Orchestrator:
         await self._log.finish(self.run_id, step, result, self._token)
         return result
 
+    async def invoke_model(
+        self,
+        step: str,
+        factory: ModelStreamFactory,
+    ) -> AsyncIterator[AIMessageChunk]:
+        """Execute or replay one streamed model request as a durable effect step.
+
+        A provider failure before its first chunk is known not to have exposed output, so its
+        intent is cleared for the loop's bounded retry policy. Once a chunk was visible, an
+        interrupted request remains ``running`` and recovery raises ``Indeterminate`` rather than
+        risking a duplicate model charge and a different answer.
+        """
+        try:
+            self._claim(step)
+            await self._renew()
+            record = await self._log.read(self.run_id, step)
+        except Exception as error:
+            raise ModelStepError(error) from error
+
+        if record.status == "done":
+            try:
+                yield_chunks = _decode_model_chunks(record.value)
+            except Exception as error:
+                raise ModelStepError(error) from error
+            for chunk in yield_chunks:
+                yield chunk
+            return
+        if record.status == "running":
+            raise ModelStepError(Indeterminate(self.run_id, step))
+
+        try:
+            await self._log.start(self.run_id, step, self._token)
+        except Exception as error:
+            raise ModelStepError(error) from error
+
+        chunks: list[dict[str, Any]] = []
+        try:
+            stream = factory()
+            try:
+                async for chunk in stream:
+                    chunks.append(message_to_dict(chunk))
+                    yield chunk
+            finally:
+                close = getattr(stream, "aclose", None)
+                if close is not None:
+                    await close()
+        except ControlSignal:
+            raise
+        except Exception:
+            if not chunks:
+                try:
+                    await self._clear(step)
+                    self._seen.discard(step)
+                except Exception as error:
+                    raise ModelStepError(error) from error
+            raise
+
+        try:
+            await self._log.finish(
+                self.run_id,
+                step,
+                {"type": "model_result", "chunks": chunks},
+                self._token,
+            )
+        except Exception as error:
+            raise ModelStepError(error) from error
+
     async def execute_round(
         self,
         tools: Tools,
@@ -858,3 +933,16 @@ def _unanswered_tool_calls(history: list[BaseMessage]) -> list[ToolCall]:
         }
         return [call for call in message.tool_calls if (call["id"] or "") not in answered]
     return []
+
+
+def _decode_model_chunks(value: Any) -> list[AIMessageChunk]:
+    """Validate and decode a model-step payload stored as JSON-compatible message mappings."""
+    if not isinstance(value, dict) or value.get("type") != "model_result":
+        raise RuntimeError("durable model step has an invalid result envelope")
+    chunks = value.get("chunks")
+    if not isinstance(chunks, list) or not all(isinstance(item, dict) for item in chunks):
+        raise RuntimeError("durable model step has invalid chunks")
+    decoded = messages_from_dict(chunks)
+    if not all(isinstance(message, AIMessageChunk) for message in decoded):
+        raise RuntimeError("durable model step contains a non-chunk message")
+    return cast(list[AIMessageChunk], decoded)

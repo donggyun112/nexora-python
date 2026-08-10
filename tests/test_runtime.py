@@ -8,7 +8,13 @@ from langchain_core.outputs import ChatGenerationChunk
 from nexora import AgentRuntime, ModelFailurePolicy, ToolCall, run
 from nexora.contracts import EventType, PendingInput
 from nexora.controls import ControlPlane, Permissions, gate
-from nexora.orchestrator import AgentFailed, AgentSuspended, MemorySteps, Orchestrator
+from nexora.orchestrator import (
+    AgentFailed,
+    AgentSuspended,
+    Indeterminate,
+    MemorySteps,
+    Orchestrator,
+)
 from nexora.tools import InvalidToolResult
 
 from .test_loop import Llm, Tools, a_call, says, scripted
@@ -131,6 +137,91 @@ async def test_runtime_hides_orchestrator_wiring_but_records_tool_effects() -> N
 
     assert outcome["content"] == "done"
     assert (await store.read("run-1", "c1")).status == "done"
+
+
+async def test_a_committed_model_reply_is_replayed_without_calling_the_provider_again() -> None:
+    """A crash after model commit must resume the tool round chosen by that exact reply."""
+
+    class CrashesBeforePendingRound(MemorySteps):
+        failed = False
+
+        async def finish(
+            self, run_id: str, key: str, value: Any, token: int = 0
+        ) -> None:
+            if key == "agent:pending-round" and not self.failed:
+                self.failed = True
+                raise RuntimeError("worker stopped after the model step")
+            await super().finish(run_id, key, value, token)
+
+    store = CrashesBeforePendingRound()
+    runtime = AgentRuntime(store=store)
+    tools = Tools()
+
+    with pytest.raises(RuntimeError, match="after the model step"):
+        await runtime.run(
+            "durable-model-replay",
+            scripted(says("", a_call("c1", "read"))),
+            tools,
+            "go",
+            prompt_id="prompt-1",
+            model_identity="test-model",
+        )
+
+    resumed_model = scripted(says("finished"))
+    outcome = await runtime.run(
+        "durable-model-replay",
+        resumed_model,
+        tools,
+        "go",
+        prompt_id="prompt-1",
+        model_identity="test-model",
+    )
+
+    assert tools.ran == ["read"]
+    assert len(resumed_model.seen) == 1
+    assert isinstance(resumed_model.seen[0][-1], ToolMessage)
+    assert outcome["content"] == "finished"
+
+
+async def test_an_uncommitted_completed_model_call_is_indeterminate_on_retry() -> None:
+    """A provider answer followed by a failed ledger commit must never call the model twice."""
+
+    class CrashesOnModelCommit(MemorySteps):
+        failed_key = ""
+
+        async def finish(
+            self, run_id: str, key: str, value: Any, token: int = 0
+        ) -> None:
+            if key.startswith("agent:model:") and not self.failed_key:
+                self.failed_key = key
+                raise RuntimeError("model result commit failed")
+            await super().finish(run_id, key, value, token)
+
+    store = CrashesOnModelCommit()
+    runtime = AgentRuntime(store=store)
+
+    with pytest.raises(RuntimeError, match="model result commit failed"):
+        await runtime.run(
+            "indeterminate-model",
+            scripted(says("visible answer")),
+            Tools(),
+            "go",
+            prompt_id="prompt-1",
+            model_identity="test-model",
+        )
+
+    retry_model = scripted(says("must not run"))
+    with pytest.raises(Indeterminate, match="agent:model:"):
+        await runtime.run(
+            "indeterminate-model",
+            retry_model,
+            Tools(),
+            "go",
+            prompt_id="prompt-1",
+            model_identity="test-model",
+        )
+
+    assert retry_model.seen == []
 
 
 async def test_invalid_tool_suspension_is_not_committed_as_a_completed_effect() -> None:

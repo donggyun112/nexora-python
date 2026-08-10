@@ -5,6 +5,15 @@ documentation corrections belong in the commit log, not here.
 
 ## Unreleased
 
+### Added
+
+- **Model invocations are durable effect steps.** A request is identified by its model, bound tools
+  and model-visible context. Completed stream chunks are replayed from `StepLog` after a crash
+  without calling the provider again; a request left `running` raises `Indeterminate` rather than
+  risking a duplicate charge and a different answer. Failures before the first visible chunk are
+  cleared so the existing bounded retry and compaction policy can still act. Custom model wrappers
+  can supply a stable `model_identity` when LangChain identifying parameters are insufficient.
+
 ### Packaging
 
 **`nexora` is now a uv workspace of five distributions.** What was split out is what has its own

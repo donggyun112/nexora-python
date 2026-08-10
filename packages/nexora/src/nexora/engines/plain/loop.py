@@ -5,11 +5,13 @@ cancellation, input admission, and iteration limits are supplied through explici
 Behavior is ported from ``packages/architectures/src/react.ts``.
 """
 
+import hashlib
+import json
 from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.messages import (
     AIMessage,
@@ -24,10 +26,13 @@ from ...contracts.types import (
     AdmitInputs,
     BaseMessage,
     CompactContext,
+    ControlSignal,
     DrainInputs,
     Emit,
+    InvokeModel,
     ModelErrorKind,
     ModelFailure,
+    ModelStepError,
     OnModelFailure,
     PendingInput,
     ShouldStopAfterTurn,
@@ -69,6 +74,8 @@ async def react_loop(
     should_stop_after_turn: ShouldStopAfterTurn | None = None,
     on_model_failure: OnModelFailure | None = None,
     compact_context: CompactContext | None = None,
+    invoke_model: InvokeModel | None = None,
+    model_identity: str | None = None,
     execute_round: ExecuteRound = execute_calls,
 ) -> AsyncIterator[dict[str, Any]]:
     """Reason, act, repeat. Yields events as they happen.
@@ -86,6 +93,7 @@ async def react_loop(
     ]
     available = tools.list()
     bound = model.bind_tools(as_model_tools(available)) if available else model
+    request_identity = _model_request_identity(model, available, model_identity)
     calls_made: list[dict[str, Any]] = []
     spent = _Spend()
     last_text = ""
@@ -149,6 +157,8 @@ async def react_loop(
                 on_model_failure,
                 compact_context,
                 emit,
+                invoke_model,
+                request_identity,
             )
         ) as model_stream:
             async for item in model_stream:
@@ -341,6 +351,8 @@ async def _model_stream(
     on_failure: OnModelFailure | None,
     compact_context: CompactContext | None,
     emit: Emit | None,
+    invoke_model: InvokeModel | None,
+    request_identity: dict[str, Any],
 ) -> AsyncGenerator[AIMessageChunk | _FailedModel, None]:
     """Stream one model round with caller-owned retry and compaction policy."""
     attempts: Counter[ModelErrorKind] = Counter()
@@ -349,10 +361,22 @@ async def _model_stream(
         try:
             # Closing an abandoned stream reaches the provider instead of waiting for garbage
             # collection while it keeps generating billable tokens.
-            async with aclosing(bound.astream(messages)) as stream:
+            def factory() -> AsyncIterator[AIMessageChunk]:
+                return cast(AsyncIterator[AIMessageChunk], bound.astream(messages))
+
+            source = (
+                invoke_model(_model_step_key(request_identity, messages), factory)
+                if invoke_model is not None
+                else factory()
+            )
+            async with aclosing(cast(Any, source)) as stream:
                 async for chunk in stream:
                     reply = chunk if reply is None else reply + chunk
                     yield chunk
+        except ControlSignal:
+            raise
+        except ModelStepError as interrupted:
+            raise interrupted.cause from interrupted
         except Exception as error:
             kind = _model_error_kind(error)
             partial = _text_of(reply)
@@ -380,6 +404,55 @@ async def _model_stream(
                 continue
             yield _FailedModel(error, kind, partial)
         return
+
+
+def _model_request_identity(
+    model: Any,
+    tools: list[dict[str, Any]],
+    explicit: str | None,
+) -> dict[str, Any]:
+    """Describe the stable parts of a provider request that are not in its messages."""
+    if explicit is not None:
+        selected: Any = explicit
+    else:
+        selected = {
+            "class": f"{type(model).__module__}.{type(model).__qualname__}",
+            "parameters": getattr(model, "_identifying_params", {}),
+        }
+    return {"model": _stable_value(selected), "tools": _stable_value(tools)}
+
+
+def _model_step_key(identity: dict[str, Any], messages: list[BaseMessage]) -> str:
+    """Derive one model effect id from its provider, tools, and model-visible context."""
+    encoded = messages_to_dict(messages)
+    for item in encoded:
+        data = item.get("data")
+        if isinstance(data, dict):
+            item["data"] = {
+                key: value
+                for key, value in data.items()
+                if key not in {"id", "response_metadata", "usage_metadata"}
+            }
+    body = {**identity, "messages": _stable_value(encoded)}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    digest = hashlib.sha256(canonical.encode()).hexdigest()[:32]
+    return f"agent:model:{digest}"
+
+
+def _stable_value(value: Any) -> Any:
+    """Normalize provider identifiers and JSON-like request fields for deterministic hashing."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _stable_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_stable_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_stable_value(item) for item in value), key=repr)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 _CALL_BLOCKS = frozenset({"tool_call", "tool_use", "tool_call_chunk", "invalid_tool_call"})

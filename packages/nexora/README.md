@@ -23,7 +23,10 @@ the model turn and a permission gate can park a run for days without holding a w
 The core also exports ordered `FallbackChatModel` selection and the
 `WorkspaceProvider`/`WorkspaceSession` boundary. `HostWorkspaceProvider` is a usable path-confined
 local implementation and deliberately identifies itself as non-isolated; use a container or
-remote provider for untrusted execution and enforced network policy.
+remote provider for untrusted execution and enforced network policy. `RemoteSandboxClient`
+implements the Nexora sandbox HTTP wire, while `ContinuousWorkspaceProvider` persists the latest
+session state by conversation. Passing either provider as `AgentRuntime(workspace_provider=...)`
+acquires it per attempt and injects it into `ContextualTools` automatically.
 
 Install what you need beside it:
 

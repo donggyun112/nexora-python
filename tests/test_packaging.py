@@ -110,7 +110,8 @@ LAYERS: dict[str, frozenset[str]] = {
     # Provider selection and workspace lifecycle adapt external runtimes without reaching the
     # planner or durable execution layers.
     "providers": frozenset(),
-    "workspace": frozenset(),
+    "workspace": frozenset({"contracts"}),
+    "sandbox_remote": frozenset({"workspace"}),
     "controls": frozenset({"contracts"}),
     "tools": frozenset({"contracts", "controls"}),
     # Beside `tools`, not above it: a subagent wrapper composes a `Tools` the way a host does, and
@@ -134,6 +135,7 @@ LAYERS: dict[str, frozenset[str]] = {
             "history",
             "orchestrator",
             "transcript",
+            "workspace",
         }
     ),
 }

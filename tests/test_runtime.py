@@ -5,7 +5,14 @@ from typing import Any, ClassVar
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk
-from nexora import AgentRuntime, ModelFailurePolicy, ToolCall, run
+from nexora import (
+    AgentRuntime,
+    HostWorkspaceProvider,
+    ModelFailurePolicy,
+    ToolCall,
+    ToolContext,
+    run,
+)
 from nexora.contracts import EventType, PendingInput
 from nexora.controls import ControlPlane, Permissions, gate
 from nexora.orchestrator import (
@@ -41,6 +48,33 @@ def _flaky(*turns: AIMessage, failures: int) -> _FlakyModel:
     model = _FlakyModel(messages=iter(turns), failures=failures)
     model.seen = []
     return model
+
+
+class _WorkspaceTools(Tools):
+    def __init__(
+        self,
+        context: ToolContext,
+        *,
+        seen: list[ToolContext] | None = None,
+        names: list[str] | None = None,
+    ) -> None:
+        super().__init__(names=names)
+        self.context = context
+        self.contexts = seen if seen is not None else []
+
+    def get_context(self) -> ToolContext:
+        return self.context
+
+    def with_context(self, context: ToolContext) -> "_WorkspaceTools":
+        return _WorkspaceTools(context, seen=self.contexts, names=self.names)
+
+    async def execute(self, name: str, call_id: str, args: Any) -> dict[str, Any]:
+        self.contexts.append(self.context)
+        assert self.context.workspace is not None
+        await self.context.workspace.fs.write_file(
+            "tool-location.txt", self.context.workdir.encode()
+        )
+        return await super().execute(name, call_id, args)
 
 
 async def test_top_level_run_is_the_default_agent_entry_point() -> None:
@@ -139,6 +173,33 @@ async def test_runtime_hides_orchestrator_wiring_but_records_tool_effects() -> N
 
     assert outcome["content"] == "done"
     assert (await store.read("run-1", "c1")).status == "done"
+
+
+async def test_runtime_injects_the_acquired_workspace_into_tools(tmp_path: Any) -> None:
+    root = tmp_path / "workspace"
+    tools = _WorkspaceTools(ToolContext(workdir=str(tmp_path)))
+    runtime = AgentRuntime(workspace_provider=HostWorkspaceProvider(root=root))
+
+    await runtime.run(
+        "workspace-run",
+        scripted(says("", a_call("c1", "read")), says("done")),
+        tools,
+        "inspect",
+    )
+
+    assert tools.contexts[0].workspace is not None
+    assert (root / "tool-location.txt").read_text() == str(root)
+
+
+async def test_runtime_fails_closed_when_tools_cannot_accept_workspace_context(
+    tmp_path: Any,
+) -> None:
+    runtime = AgentRuntime(
+        workspace_provider=HostWorkspaceProvider(root=tmp_path / "workspace")
+    )
+
+    with pytest.raises(TypeError, match="ContextualTools"):
+        await runtime.run("workspace-run", scripted(says("unused")), Tools(), "inspect")
 
 
 async def test_runtime_records_the_complete_model_visible_conversation() -> None:
@@ -489,6 +550,37 @@ async def test_suspension_and_resume_keep_one_automatic_transcript() -> None:
         AIMessage,
     ]
     assert restored[2].content == "ok"
+
+
+async def test_resumed_effect_uses_the_reacquired_workspace(tmp_path: Any) -> None:
+    root = tmp_path / "workspace"
+    runtime = AgentRuntime(
+        store=MemorySteps(), workspace_provider=HostWorkspaceProvider(root=root)
+    )
+
+    async def ask(_call: Any) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "workspace-resume",
+            scripted(says("", a_call("c1", "deploy"))),
+            _WorkspaceTools(ToolContext(workdir=str(tmp_path)), names=["deploy"]),
+            "ship",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(ask))),
+        )
+
+    resumed = _WorkspaceTools(ToolContext(workdir=str(tmp_path)), names=["deploy"])
+    await runtime.resume(
+        "workspace-resume",
+        "approval-1",
+        {"type": "text", "text": "approved"},
+        scripted(says("deployed")),
+        resumed,
+    )
+
+    assert resumed.contexts[0].workspace is not None
+    assert (root / "tool-location.txt").exists()
 
 
 async def test_transcript_backed_suspension_persists_only_a_cursor() -> None:

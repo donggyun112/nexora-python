@@ -131,6 +131,38 @@ shell-free trusted commands, and optional durable tar snapshots. It reports `iso
 fails closed when a command requires OS isolation or an egress allowlist. Untrusted commands use a
 container, mount-namespace, or remote provider implementing the same contract.
 
+The included `RemoteSandboxClient` speaks the same provider-neutral HTTP wire as the TypeScript
+sandbox server: remote exec and filesystem operations, live-session reattach, tar hydrate for cold
+recovery, optional fixed roots, manifests, and seed directories. Wrap it with
+`ContinuousWorkspaceProvider` to retain one workspace across conversation turns:
+
+```python
+import os
+
+from nexora import (
+    AgentRuntime,
+    ContinuousWorkspaceProvider,
+    MemoryWorkspaceStateStore,
+    RemoteSandboxClient,
+)
+
+remote = RemoteSandboxClient(
+    "https://sandbox.example.com",
+    token=os.environ["SANDBOX_TOKEN"],
+)
+workspaces = ContinuousWorkspaceProvider(
+    remote,
+    MemoryWorkspaceStateStore(),  # replace with a durable implementation in production
+    "conversation-7",
+)
+runtime = AgentRuntime(workspace_provider=workspaces)
+```
+
+When a provider is configured, tools must implement `ContextualTools`. The runtime acquires the
+session before model/tool execution, replaces the tool context's `workdir` and `workspace`, and
+always calls session cleanup after completion, suspension, cancellation, or failure. A tool set
+that cannot accept this context is rejected before execution; there is no unjailed fallback.
+
 Messages, tool calls and chat models are LangChain's — owning our own versions of those bought
 translation layers and little else.
 

@@ -1,6 +1,7 @@
 """Public runtime facade for durable Nexora agent execution."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -31,6 +32,7 @@ from .history import (
 from .orchestrator import AgentSuspended, MemorySteps, Orchestrator, StepLog
 from .subagents import Deliver
 from .transcript import TranscriptWriter, active_branch, messages_at, messages_of
+from .workspace import ContextualTools, ToolContext, WorkspaceProvider, WorkspaceSeed
 
 __all__ = ["AgentRuntime", "run"]
 
@@ -103,6 +105,9 @@ class AgentRuntime:
         owner: str = "local",
         lease_ttl: float = 60.0,
         transcript: Transcript | None = None,
+        workspace_provider: WorkspaceProvider | None = None,
+        workspace_manifest: Mapping[str, Any] | None = None,
+        workspace_seed_dirs: Sequence[WorkspaceSeed] = (),
         model_failure_policy: OnModelFailure | None = None,
         compact_context: CompactContext | None = None,
     ) -> None:
@@ -112,6 +117,9 @@ class AgentRuntime:
         self._owner = owner
         self._lease_ttl = lease_ttl
         self._transcript = transcript
+        self._workspace_provider = workspace_provider
+        self._workspace_manifest = workspace_manifest
+        self._workspace_seed_dirs = tuple(workspace_seed_dirs)
         self._model_failure_policy = model_failure_policy
         self._compact_context = compact_context
         self.events = RuntimeEvents(emit)
@@ -266,46 +274,47 @@ class AgentRuntime:
             ):
                 raise LookupError(f"no active suspension for pending id {pending_id!r}")
             tool_call_id = waiting.call["id"] or ""
-            result = await orchestrator.resume_effect(
-                tools,
-                waiting.call,
-                answer,
-                waiting.request,
-                waiting.rules_version,
-                aborted=engine_options.get("aborted", lambda: False),
-                turn=waiting.turn,
-                controls=controls,
-                # The parked subject, unless the caller names one. A different person approving
-                # does not change who the run acts for, and the effect is about to run under that
-                # authority — so the record's subject is the default, not the resumer's.
-                ctx=Ctx(
+            async with self._workspace_tools(run_id, tools) as active_tools:
+                result = await orchestrator.resume_effect(
+                    active_tools,
+                    waiting.call,
+                    answer,
+                    waiting.request,
+                    waiting.rules_version,
+                    aborted=engine_options.get("aborted", lambda: False),
                     turn=waiting.turn,
-                    messages=list(waiting.messages),
-                    subject=str(engine_options.get("subject") or waiting.subject),
-                ),
-            )
-            answer_message = suspension_result_message(
-                waiting.call["id"] or "",
-                result,
-                name=waiting.call.get("name", ""),
-            )
-            await orchestrator.continue_with_input(
-                tool_call_id,
-                active["continuation"],
-                PendingInput("resume_result", answer_message, f"resume:{pending_id}")
-            )
-            outcome = await self._drive(
-                orchestrator,
-                model,
-                tools,
-                history=waiting.messages,
-                controls=controls,
-                on_event=on_event,
-                recover_pending=False,
-                conversation_id=conversation,
-                model_identity=model_identity,
-                **engine_options,
-            )
+                    controls=controls,
+                    # The parked subject, unless the caller names one. A different person approving
+                    # does not change who the run acts for, and the effect is about to run under
+                    # that authority — the record's subject is the default, not the resumer's.
+                    ctx=Ctx(
+                        turn=waiting.turn,
+                        messages=list(waiting.messages),
+                        subject=str(engine_options.get("subject") or waiting.subject),
+                    ),
+                )
+                answer_message = suspension_result_message(
+                    waiting.call["id"] or "",
+                    result,
+                    name=waiting.call.get("name", ""),
+                )
+                await orchestrator.continue_with_input(
+                    tool_call_id,
+                    active["continuation"],
+                    PendingInput("resume_result", answer_message, f"resume:{pending_id}"),
+                )
+                outcome = await self._drive_active(
+                    orchestrator,
+                    model,
+                    active_tools,
+                    history=waiting.messages,
+                    controls=controls,
+                    on_event=on_event,
+                    recover_pending=False,
+                    conversation_id=conversation,
+                    model_identity=model_identity,
+                    **engine_options,
+                )
             await orchestrator.complete_continuation(tool_call_id)
             return outcome
 
@@ -327,10 +336,13 @@ class AgentRuntime:
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Recover an interrupted tool round and continue without replaying its model turn."""
-        async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
+        async with (
+            self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator,
+            self._workspace_tools(run_id, tools) as active_tools,
+        ):
             recovered = await orchestrator.recover_pending(
                 history,
-                tools,
+                active_tools,
                 controls=controls,
                 aborted=aborted,
                 retry_running=retry_running,
@@ -344,10 +356,10 @@ class AgentRuntime:
                             f"tool:{message.tool_call_id}:result",
                         )
                     )
-            return await self._drive(
+            return await self._drive_active(
                 orchestrator,
                 model,
-                tools,
+                active_tools,
                 history=history,
                 controls=controls,
                 on_event=on_event,
@@ -359,6 +371,33 @@ class AgentRuntime:
             )
 
     async def _drive(
+        self,
+        orchestrator: Orchestrator,
+        model: Any,
+        tools: Tools,
+        *,
+        history: list[BaseMessage] | None,
+        controls: Controls | None,
+        on_event: OnAgentEvent | None,
+        recover_pending: bool,
+        conversation_id: str,
+        **engine_options: Any,
+    ) -> dict[str, Any]:
+        """Acquire one attempt workspace and drive all tool effects through its context."""
+        async with self._workspace_tools(orchestrator.run_id, tools) as active_tools:
+            return await self._drive_active(
+                orchestrator,
+                model,
+                active_tools,
+                history=history,
+                controls=controls,
+                on_event=on_event,
+                recover_pending=recover_pending,
+                conversation_id=conversation_id,
+                **engine_options,
+            )
+
+    async def _drive_active(
         self,
         orchestrator: Orchestrator,
         model: Any,
@@ -460,6 +499,39 @@ class AgentRuntime:
         if transcript is not None:
             await transcript.writer.closed(outcome)
         return outcome
+
+    @asynccontextmanager
+    async def _workspace_tools(
+        self, run_id: str, tools: Tools
+    ) -> AsyncIterator[Tools]:
+        """Inject a provider-acquired session and guarantee end-of-attempt cleanup."""
+        if self._workspace_provider is None:
+            yield tools
+            return
+        if not isinstance(tools, ContextualTools):
+            raise TypeError(
+                "workspace_provider requires ContextualTools with get_context() and with_context()"
+            )
+        context = tools.get_context()
+        if not isinstance(context, ToolContext):
+            raise TypeError("ContextualTools.get_context() must return ToolContext")
+        workspace = await self._workspace_provider.acquire(
+            run_id=run_id,
+            base_workdir=context.workdir,
+            manifest=self._workspace_manifest,
+            seed_dirs=self._workspace_seed_dirs,
+        )
+        rebound = tools.with_context(
+            ToolContext(
+                workdir=str(workspace.root),
+                workspace=workspace,
+                metadata=context.metadata,
+            )
+        )
+        try:
+            yield rebound
+        finally:
+            await workspace.cleanup()
 
     async def _decode_waiting(
         self, active: dict[str, Any] | None, conversation_id: str

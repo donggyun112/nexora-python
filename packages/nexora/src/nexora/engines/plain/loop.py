@@ -24,8 +24,9 @@ reassembly of tool arguments that arrive as JSON fragments all happen below this
 """
 
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import aclosing
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import (
@@ -40,8 +41,12 @@ from ...contracts.types import (
     Aborted,
     AdmitInputs,
     BaseMessage,
+    CompactContext,
     DrainInputs,
     Emit,
+    ModelErrorKind,
+    ModelFailure,
+    OnModelFailure,
     PendingInput,
     ShouldStopAfterTurn,
     StopReason,
@@ -58,6 +63,26 @@ from ...tools import (
 )
 
 
+@dataclass(slots=True)
+class _Spend:
+    """What a run cost, accumulated across its turns.
+
+    One object rather than a counter and a string because every terminal path reports both, and
+    the alternative was another parameter threaded through ten `_done` calls. `Counter` and not a
+    plain dict for the tokens: `.update()` adds instead of overwriting, and a key nobody reported
+    stays absent rather than becoming a zero somebody has to interpret.
+
+    Kept per model, because one run is not always answered by one model — the same reason
+    `_model_of` reads the name off the reply instead of the bound model. A single total plus the
+    last name seen prices the whole run at that model's rate, which is wrong by whatever the rates
+    differ by. Tokens reported before any model was named key on `""`: unattributed is a fact, and
+    charging them to whichever model came later would be a guess.
+    """
+
+    by_model: dict[str, Counter[str]] = field(default_factory=dict)
+    model: str = ""
+
+
 async def react_loop(
     model: Any,
     tools: Tools,
@@ -70,6 +95,8 @@ async def react_loop(
     drain_inputs: DrainInputs | None = None,
     admit_inputs: AdmitInputs | None = None,
     should_stop_after_turn: ShouldStopAfterTurn | None = None,
+    on_model_failure: OnModelFailure | None = None,
+    compact_context: CompactContext | None = None,
     execute_round: ExecuteRound = execute_calls,
 ) -> AsyncIterator[dict[str, Any]]:
     """Reason, act, repeat. Yields events as they happen.
@@ -78,7 +105,6 @@ async def react_loop(
     committed transcript baseline, so initial prompts, steers and asynchronous results all cross
     the same admission point and produce the same audit fact.
     """
-
     messages: list[BaseMessage] = [
         *([SystemMessage(system_prompt)] if system_prompt else []),
         *(history or []),
@@ -86,7 +112,7 @@ async def react_loop(
     available = tools.list()
     bound = model.bind_tools(as_model_tools(available)) if available else model
     calls_made: list[dict[str, Any]] = []
-    spent: Counter[str] = Counter()
+    spent = _Spend()
     last_text = ""
     turn = -1
     carried_inputs: list[PendingInput] = []
@@ -137,56 +163,45 @@ async def react_loop(
 
         # ── Reason ───────────────────────────────────────────────────────────
         reply: AIMessageChunk | None = None
-        try:
-            # `aclosing` is what makes an abort reach the provider. Leaving an `async for` does
-            # not close the generator it was iterating — Python waits for garbage collection —
-            # so abandoning a stream leaves the HTTP connection open and the model generating
-            # tokens nobody will read, and still billed. Closing it throws `GeneratorExit` down
-            # into the transport, which ends the request.
-            #
-            # It also covers the caller: if whoever is iterating `react_loop` walks away, this
-            # generator is closed, and that closes the provider stream too.
-            async with aclosing(bound.astream(messages)) as stream:
-                async for chunk in stream:
-                    # Chunks add, and the sum reassembles tool arguments that arrived as JSON
-                    # fragments — the one part of streaming worth not writing ourselves.
-                    reply = chunk if reply is None else reply + chunk
-                    # `.text` and not `.content`: a provider may stream content blocks rather than
-                    # a plain string, and reading `content` directly meant a block-shaped chunk
-                    # produced no `text` event at all — the caller saw an empty answer until the
-                    # run finished. The property concatenates the text blocks and ignores the rest.
-                    if delta := chunk.text:
-                        yield {"type": "text", "text": delta}
-                    # Checked per chunk, not just per round: a SIGTERM arriving early in a long
-                    # generation should not wait out the rest of it. Still a poll at a point the
-                    # loop chose — a callback firing at an arbitrary await would make the step
-                    # sequence depend on timing, and a replay could not reproduce it.
-                    if aborted():
-                        yield await _done(
-                            emit, _text_of(reply), calls_made, "aborted", spent, mid_turn=True
-                        )
-                        return
-        except Exception as failure:
-            # A provider failure ends the run as a reported error rather than an exception
-            # escaping into the caller's event loop. Cancellation is not an `Exception`, so it
-            # still propagates.
-            #
-            # Either way the text this turn had already streamed travels with the ending. It is
-            # the fragment a person watching has already read, and dropping it leaves their screen
-            # holding words no transcript knows about. `_text_of(reply)` and not `last_text`: the
-            # fragment belongs to the turn that died, not to the one before it.
-            fragment = _text_of(reply)
+        failed: _FailedModel | None = None
+        async with aclosing(
+            _model_stream(
+                bound,
+                messages,
+                aborted,
+                on_model_failure,
+                compact_context,
+                emit,
+            )
+        ) as model_stream:
+            async for item in model_stream:
+                if isinstance(item, _FailedModel):
+                    failed = item
+                    break
+                chunk = item
+                # Chunks add, and the sum reassembles tool arguments that arrive as fragments.
+                reply = chunk if reply is None else reply + chunk
+                if delta := chunk.text:
+                    yield {"type": "text", "text": delta}
+                if aborted():
+                    yield await _done(
+                        emit, _text_of(reply), calls_made, "aborted", spent, mid_turn=True
+                    )
+                    return
+        if failed is not None:
             if aborted():
-                yield await _done(emit, fragment, calls_made, "aborted", spent, mid_turn=True)
+                yield await _done(
+                    emit, failed.partial, calls_made, "aborted", spent, mid_turn=True
+                )
             else:
-                # A failed run has to reach the event log too, or the audit record just stops.
-                # `partial`, never `content`: an unfinished turn is not an answer. Nobody knows
-                # whether this one was about to call a tool, so a host may show the fragment but
-                # must not append it as a completed assistant turn. Absent when there is none, the
-                # way `usage` is — an empty fragment is not a fact worth carrying.
-                cut: dict[str, Any] = {"reason": "error", "message": str(failure)}
-                if fragment:
-                    cut["partial"] = fragment
+                cut: dict[str, Any] = {
+                    "reason": "error",
+                    "message": str(failed.error),
+                    "error_type": type(failed.error).__name__,
+                    "error_kind": failed.kind,
+                }
+                if failed.partial:
+                    cut["partial"] = failed.partial
                 if emit is not None:
                     await emit(EventType.STOP_FAILURE, cut)
                 yield {"type": "error", **{k: v for k, v in cut.items() if k != "reason"}}
@@ -194,7 +209,13 @@ async def react_loop(
 
         turn_text = _text_of(reply)
         last_text = turn_text
-        spent.update(_usage_of(reply))
+        # Kept, not overwritten with a blank: a provider that names the model on some turns and not
+        # others should not erase what it already told us.
+        spent.model = _model_of(reply) or spent.model
+        # Resolved first, then charged, so a turn the provider did not label lands on the model
+        # already known rather than on a second, nameless bucket.
+        if counts := _usage_of(reply):
+            spent.by_model.setdefault(spent.model, Counter()).update(counts)
 
         if aborted():
             yield await _done(emit, last_text, calls_made, "aborted", spent)
@@ -204,6 +225,14 @@ async def react_loop(
 
         if not requested_tool_calls:
             messages.append(AIMessage(turn_text))
+            # The caller's turn cap covers tool-free rounds too. Without this check an
+            # always-vetoing `before_finish` gate can bypass the only iteration bound the loop
+            # exposes.
+            if should_stop_after_turn is not None and await should_stop_after_turn(
+                turn, turn_text, calls_made
+            ):
+                yield await _done(emit, turn_text, calls_made, "policy", spent)
+                return
             # A steer that landed while the turn was finishing cancels the stop.
             if drain_inputs and (late_inputs := list(await drain_inputs())):
                 # Preserve their arrival order, but commit them only beside the next model call.
@@ -215,8 +244,6 @@ async def react_loop(
                 # The last word. A verifier that says "not done yet" gets another round, which is
                 # why this sits after the late-input check and not instead of it: an arriving steer
                 # and a policy objection are different reasons to keep going, and both may apply.
-                # A gate that vetoes forever runs forever — this loop caps nothing by design, and
-                # `should_stop_after_turn` is not consulted on a round that asked for no tools.
                 match await controls.before_finish(
                     Ctx(
                         turn=turn,
@@ -276,8 +303,8 @@ async def react_loop(
             return
 
         # ── Stop? ────────────────────────────────────────────────────────────
-        # Always asked, even when a tool already ended the run: the hook is where budget and
-        # verification accounting lives, and it must see every completed round.
+        # Also asked above on tool-free rounds. Even a terminating tool reaches it: the hook is
+        # where budget and verification accounting lives, and it must see every completed round.
         policy_says_stop = should_stop_after_turn is not None and await should_stop_after_turn(
             turn, turn_text, calls_made
         )
@@ -312,20 +339,195 @@ async def _commit_inputs(
             )
 
 
+@dataclass(frozen=True, slots=True)
+class _FailedModel:
+    """A terminal provider failure returned by `_model_stream` to the event loop."""
+
+    error: Exception
+    kind: ModelErrorKind
+    partial: str
+
+
+async def _model_stream(
+    bound: Any,
+    messages: list[BaseMessage],
+    aborted: Aborted,
+    on_failure: OnModelFailure | None,
+    compact_context: CompactContext | None,
+    emit: Emit | None,
+) -> AsyncGenerator[AIMessageChunk | _FailedModel, None]:
+    """Stream one model round, applying caller-owned recovery before exposing failure.
+
+    Recovery stays inside the round so a retry cannot replay earlier tool effects. Once any text
+    was yielded, recovery fails closed: a second generation would duplicate text the consumer has
+    already displayed and could diverge from the unfinished first answer.
+    """
+    attempts: Counter[ModelErrorKind] = Counter()
+    while True:
+        reply: AIMessageChunk | None = None
+        try:
+            # Closing an abandoned stream reaches the provider instead of waiting for garbage
+            # collection while it keeps generating billable tokens.
+            async with aclosing(bound.astream(messages)) as stream:
+                async for chunk in stream:
+                    reply = chunk if reply is None else reply + chunk
+                    yield chunk
+        except Exception as error:
+            kind = _model_error_kind(error)
+            partial = _text_of(reply)
+            attempts[kind] += 1
+            failure = ModelFailure(
+                type(error).__name__,
+                kind,
+                str(error),
+                partial,
+                attempts[kind],
+            )
+            action = (
+                await on_failure(failure)
+                if on_failure is not None and not partial and not aborted()
+                else "fail"
+            )
+            if action == "retry":
+                continue
+            if action == "compact" and compact_context is not None:
+                if emit is not None:
+                    await emit(EventType.PRE_COMPACT, {"reason": kind})
+                messages[:] = await compact_context(list(messages), failure)
+                if emit is not None:
+                    await emit(EventType.POST_COMPACT, {"reason": kind})
+                continue
+            yield _FailedModel(error, kind, partial)
+        return
+
+
 def _text_of(reply: AIMessageChunk | None) -> str:
     """The assistant text of a turn, whatever shape the provider streamed it in."""
     return reply.text if reply is not None else ""
 
 
+def _model_of(reply: AIMessageChunk | None) -> str:
+    """The model that answered, when the provider named it.
+
+    Read off the reply rather than the bound model, because those are different facts and the
+    billed one is here: an alias resolves to a dated snapshot, and a provider-side fallback can
+    answer on a model nobody asked for. A cost record naming what was requested rather than what
+    ran is a cost record that reconciles against nothing.
+    """
+    metadata = getattr(reply, "response_metadata", None) if reply is not None else None
+    if not metadata:
+        return ""
+    return str(metadata.get("model_name") or metadata.get("model") or "")
+
+
+def _model_error_kind(failure: Exception) -> ModelErrorKind:
+    """Classify a provider failure without depending on its human-readable message."""
+    markers = {type(failure).__name__}
+    for attribute in ("code", "type"):
+        if value := getattr(failure, attribute, None):
+            markers.add(str(value))
+    body = getattr(failure, "body", None)
+    if isinstance(body, Mapping):
+        markers.update(_error_markers(body))
+
+    compact = {
+        "".join(character for character in marker.lower() if character.isalnum())
+        for marker in markers
+    }
+    if any("ratelimit" in marker or marker == "429" for marker in compact):
+        return "rate_limit"
+    if any(
+        token in marker
+        for marker in compact
+        for token in ("contextlength", "contextwindow", "contextoverflow", "prompttoolong")
+    ):
+        return "context_overflow"
+    if any("maxoutputtoken" in marker or marker == "maxtokenserror" for marker in compact):
+        return "max_output_tokens"
+    if any(
+        token in marker
+        for marker in compact
+        for token in ("authentication", "unauthorized", "permissiondenied")
+    ):
+        return "authentication"
+    if any(
+        token in marker
+        for marker in compact
+        for token in (
+            "internalserver",
+            "servererror",
+            "apiconnection",
+            "apitimeout",
+            "overloaded",
+        )
+    ):
+        return "server"
+    if any("invalidrequest" in marker or "badrequest" in marker for marker in compact):
+        return "invalid_request"
+
+    status = _status_code_of(failure)
+    if status == 429:
+        return "rate_limit"
+    if status is not None and status >= 500:
+        return "server"
+    if status == 400:
+        return "invalid_request"
+    return "unknown"
+
+
+def _error_markers(body: Mapping[Any, Any]) -> set[str]:
+    """Collect structured provider error codes from one response body."""
+    markers = {str(body[key]) for key in ("code", "type") if body.get(key)}
+    nested = body.get("error")
+    if isinstance(nested, Mapping):
+        markers.update(str(nested[key]) for key in ("code", "type") if nested.get(key))
+    return markers
+
+
+def _status_code_of(failure: Exception) -> int | None:
+    """Read an HTTP status exposed directly or through a provider response object."""
+    status = getattr(failure, "status_code", None)
+    if status is None and (response := getattr(failure, "response", None)) is not None:
+        status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
 def _usage_of(reply: AIMessageChunk | None) -> dict[str, int]:
-    """Token counts if the provider reported any. Absent and zero are different facts."""
+    """Token counts if the provider reported any. Absent and zero are different facts.
+
+    The cache lines are separated out because the three input kinds are priced differently — a
+    cache read costs about a tenth of a fresh input token and a cache write about a quarter more,
+    so a caller that multiplies one input number by one rate is wrong by up to an order of
+    magnitude on a cached prompt. Names follow `LLMUsage` in the TypeScript contract:
+    `cachedTokens` is the read, `cacheWriteTokens` the creation.
+
+    **Whether `prompt_tokens` already contains the cache counts depends on the provider, and this
+    function does not decide.** LangChain documents `input_tokens` as the sum of every input type,
+    which would include them; Anthropic's own API treats the three as disjoint and expects them
+    added (`UsageInfo::total_input` in the Claude Code reference does exactly that). Subtracting
+    under the wrong convention double-counts, so `total_tokens` is carried through as the
+    discriminator: `prompt + completion == total` means the cache counts are already inside
+    `prompt`, and needing the cache counts to reach `total` means they are not. Storing the
+    reported total instead of a derived "fresh" figure keeps that decision at the query, where it
+    can be fixed, rather than baked into a column that was written wrong.
+    """
     usage = getattr(reply, "usage_metadata", None) if reply is not None else None
     if not usage:
         return {}
-    return {
+    details = usage.get("input_token_details") or {}
+    counts = {
         "prompt_tokens": usage.get("input_tokens", 0),
         "completion_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+        "cached_tokens": details.get("cache_read", 0),
+        "cache_write_tokens": details.get("cache_creation", 0),
     }
+    # A provider that reports no caching at all should not grow two zero-valued keys — the same
+    # rule the whole `usage` dict follows one level up.
+    return {name: count for name, count in counts.items() if count or name in _ALWAYS_REPORTED}
+
+
+_ALWAYS_REPORTED = frozenset({"prompt_tokens", "completion_tokens"})
 
 
 async def _done(
@@ -333,7 +535,7 @@ async def _done(
     content: str,
     calls_made: list[dict[str, Any]],
     reason: StopReason,
-    spent: Counter[str],
+    spent: _Spend,
     *,
     mid_turn: bool = False,
 ) -> dict[str, Any]:
@@ -358,6 +560,22 @@ async def _done(
     }
     if mid_turn:
         done["interrupted_mid_turn"] = True
-    if spent:
-        done["usage"] = dict(spent)
+    # Summed with `update` and not `+`: adding Counters drops non-positive counts, and a provider
+    # that reported a zero said something different from a provider that reported nothing.
+    total: Counter[str] = Counter()
+    for counts in spent.by_model.values():
+        total.update(counts)
+    if total:
+        done["usage"] = dict(total)
+    # Beside `usage` rather than inside it, matching `done` in react.ts — and load-bearing for the
+    # cost side: rates are per-model, so a token count without the model it was spent on cannot be
+    # priced. Absent when the provider never named one.
+    if spent.model:
+        done["model"] = spent.model
+    # Only when more than one model answered. With one, `usage` and `model` already say the whole
+    # thing and a breakdown repeating them is a second answer to the same question; with two, the
+    # flat total is unpriceable on its own. The store keys its token rows by model for exactly
+    # this case; what shape they take there is its problem, not this event's.
+    if len(spent.by_model) > 1:
+        done["usage_by_model"] = {name: dict(counts) for name, counts in spent.by_model.items()}
     return done

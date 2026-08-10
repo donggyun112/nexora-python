@@ -3,13 +3,13 @@
 from typing import Any
 
 import pytest
-
 from nexora import AgentRuntime
 from nexora.contracts import ToolCall
 from nexora.controls import ControlPlane, Permissions, gate
 from nexora.driver import drive
 from nexora.engines.plain import react_loop
-from nexora.orchestrator import AgentSuspended, MemorySteps
+from nexora.orchestrator import AgentFailed, AgentSuspended, MemorySteps, run_agent
+
 from tests.test_loop import Tools, a_call, says, scripted
 
 DEPLOY = "deploy"
@@ -77,3 +77,21 @@ async def test_events_can_be_watched_while_the_value_is_collected() -> None:
     assert outcome["content"] == "done"
     assert seen[:2] == ["tool_call", "tool_result"]
     assert seen[-1] == "done"
+
+
+async def test_failure_classification_reaches_the_orchestrator_policy_boundary() -> None:
+    """The stream adapter preserves both diagnostic and stable policy classifications."""
+
+    async def failed_events() -> Any:
+        yield {
+            "type": "error",
+            "message": "too large",
+            "error_type": "ProviderPromptError",
+            "error_kind": "context_overflow",
+        }
+
+    with pytest.raises(AgentFailed) as raised:
+        await run_agent(failed_events())
+
+    assert raised.value.error_type == "ProviderPromptError"
+    assert raised.value.error_kind == "context_overflow"

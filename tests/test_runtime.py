@@ -1,23 +1,121 @@
 """The public Agent Runtime facade over the single plain planner."""
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-
-from nexora import AgentRuntime, ToolCall, run
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
+from nexora import AgentRuntime, ModelFailurePolicy, ToolCall, run
 from nexora.contracts import EventType, PendingInput
 from nexora.controls import ControlPlane, Permissions, gate
 from nexora.orchestrator import AgentFailed, AgentSuspended, MemorySteps, Orchestrator
 from nexora.tools import InvalidToolResult
 
-from .test_loop import Tools, a_call, says, scripted
+from .test_loop import Llm, Tools, a_call, says, scripted
+
+
+class _ServerError(RuntimeError):
+    status_code = 503
+
+
+class _FlakyModel(Llm):
+    failures: int = 0
+    calls: int = 0
+
+    def _stream(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise _ServerError("unavailable")
+        yield from super()._stream(messages, *args, **kwargs)
+
+
+def _flaky(*turns: AIMessage, failures: int) -> _FlakyModel:
+    model = _FlakyModel(messages=iter(turns), failures=failures)
+    model.seen = []
+    return model
 
 
 async def test_top_level_run_is_the_default_agent_entry_point() -> None:
     outcome = await run(scripted(says("done")), Tools(), "hello")
 
     assert outcome["content"] == "done"
+
+
+async def test_runtime_retries_a_transient_model_failure_inside_the_same_round() -> None:
+    model = _flaky(says("done"), failures=1)
+    runtime = AgentRuntime(model_failure_policy=ModelFailurePolicy(max_retries=1))
+
+    outcome = await runtime.run("retry-model", model, Tools(), "hello")
+
+    assert outcome["content"] == "done"
+    assert model.calls == 2
+
+
+async def test_model_retry_stops_at_the_policy_bound() -> None:
+    model = _flaky(failures=3)
+    runtime = AgentRuntime(model_failure_policy=ModelFailurePolicy(max_retries=2))
+
+    with pytest.raises(AgentFailed) as raised:
+        await runtime.run("bounded-model-retry", model, Tools(), "hello")
+
+    assert raised.value.error_kind == "server"
+    assert model.calls == 3
+
+
+async def test_context_overflow_compacts_once_and_retries_the_same_round() -> None:
+    class ContextOverflow(RuntimeError):
+        body: ClassVar[dict[str, Any]] = {
+            "error": {"code": "context_length_exceeded"}
+        }
+
+    class TooLarge(_FlakyModel):
+        def _stream(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                raise ContextOverflow("too large")
+            yield from Llm._stream(self, messages, *args, **kwargs)
+
+    model = TooLarge(messages=iter([says("small enough")]))
+    model.seen = []
+    emitted: list[str] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        emitted.append(event_type)
+
+    async def compact(messages: list[Any], failure: Any) -> list[Any]:
+        assert failure.error_kind == "context_overflow"
+        return [HumanMessage("summary")]
+
+    runtime = AgentRuntime(
+        emit=emit,
+        model_failure_policy=ModelFailurePolicy(max_compactions=1),
+        compact_context=compact,
+    )
+    outcome = await runtime.run("compact-model", model, Tools(), "hello")
+
+    assert outcome["content"] == "small enough"
+    assert [message.content for message in model.seen[-1]] == ["summary"]
+    assert [event for event in emitted if "compact" in event] == [
+        "pre_compact",
+        "post_compact",
+    ]
+
+
+async def test_partial_model_output_is_never_automatically_retried() -> None:
+    class Partial(_FlakyModel):
+        def _stream(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+            self.calls += 1
+            yield ChatGenerationChunk(message=AIMessageChunk(content="visible"))
+            raise _ServerError("stream broke")
+
+    model = Partial(messages=iter([]))
+    runtime = AgentRuntime(model_failure_policy=ModelFailurePolicy(max_retries=5))
+
+    with pytest.raises(AgentFailed) as raised:
+        await runtime.run("partial-model", model, Tools(), "hello")
+
+    assert raised.value.partial == "visible"
+    assert model.calls == 1
 
 
 async def test_runtime_hides_orchestrator_wiring_but_records_tool_effects() -> None:
@@ -300,12 +398,7 @@ async def test_runtime_recovers_a_tool_round_without_replaying_the_model() -> No
 
 
 async def test_recovery_does_not_re_decide_a_refusal_the_transcript_already_answered() -> None:
-    """The other half of the rule the test below states, and the reason a `Deny` needs no ledger
-    entry of its own: a refusal is an answer, and an answered call is not part of the pending
-    round. The gate re-runs only for calls with nothing in the transcript — record the refusal in
-    the ledger instead and `recover_pending` would replay it as a completed step, journalling an
-    effect that never happened.
-    """
+    """Recovery does not re-evaluate a refusal already answered in the transcript."""
     store = MemorySteps()
     requested = [a_call("c1", "rm"), a_call("c2", "read")]
     tools = Tools(names=["rm", "read"])

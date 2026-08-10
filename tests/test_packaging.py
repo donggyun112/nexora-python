@@ -93,9 +93,7 @@ def test_no_distribution_imports_beyond_what_it_declares() -> None:
 
 
 def test_every_declared_workspace_dependency_is_actually_imported() -> None:
-    """The other direction, which caught a real mistake: `nexora-ui` was given a dependency on
-    `nexora-permissions` that it never imported, so the console would have installed a rule table
-    it does not use."""
+    """Every declared workspace dependency is imported by its distribution."""
     for dist in distributions():
         reached = set(_imported_modules(dist.source))
         for declared in dist.declared:
@@ -106,14 +104,32 @@ def test_every_declared_workspace_dependency_is_actually_imported() -> None:
 
 LAYERS: dict[str, frozenset[str]] = {
     "contracts": frozenset(),
+    # Reaches nothing, like `contracts`, and for the same kind of reason: a registry of detached
+    # jobs is `asyncio.Task` bookkeeping. Knowing what a subagent is would make it one.
+    "background": frozenset(),
     "controls": frozenset({"contracts"}),
     "tools": frozenset({"contracts", "controls"}),
+    # Below `tools`, not beside it: delegation wraps a `Tools` the way a host composes one, and
+    # reaching the execution boundary would make a child's launch a second kind of tool round.
+    "delegate": frozenset({"background", "contracts"}),
     "history": frozenset({"contracts", "tools"}),
+    # Peer of `history`, not above it: both are codecs between a message and an opaque payload some
+    # store holds. Reaching `tools` would mean the transcript had an opinion about executing one.
+    "transcript": frozenset({"contracts"}),
     "orchestrator": frozenset({"contracts", "controls", "history", "tools"}),
     "engines": frozenset({"contracts", "controls", "tools"}),
     "driver": frozenset({"contracts", "orchestrator"}),
     "runtime": frozenset(
-        {"contracts", "controls", "driver", "engines", "history", "orchestrator"}
+        {
+            "background",
+            "contracts",
+            "controls",
+            "delegate",
+            "driver",
+            "engines",
+            "history",
+            "orchestrator",
+        }
     ),
 }
 """What each subpackage of `nexora` may reach. Absent from a value means absent from the layer.

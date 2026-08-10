@@ -67,6 +67,26 @@ provider directly, and neither the model result nor the growing transcript is ch
 `StepLog`. Until the separate transcript store and a durable model-invocation contract exist, a
 caller recovering after that boundary must supply the committed transcript explicitly.
 
+Transient model recovery is opt-in and bounded at the orchestration boundary. The built-in policy
+retries rate limits and server failures, asks a caller-supplied compactor to handle context
+overflow, and fails authentication, invalid requests, unknown failures, or any request that
+already streamed visible text:
+
+```python
+from nexora import AgentRuntime, ModelFailurePolicy
+
+async def compact_context(messages, failure):
+    return await summarize_for_model(messages)
+
+runtime = AgentRuntime(
+    model_failure_policy=ModelFailurePolicy(max_retries=2, max_compactions=1),
+    compact_context=compact_context,
+)
+```
+
+No policy means no automatic recovery. Supply `ModelFailurePolicy.backoff` when a retry must wait
+for provider or scheduler timing; the runtime deliberately does not invent a delay.
+
 Messages, tool calls and chat models are LangChain's — owning our own versions of those bought
 translation layers and little else.
 
@@ -74,6 +94,9 @@ What Nexora owns is everything the loop decides and everything around it: the co
 contract (hooks, event vocabulary, and the semantics ported from the TypeScript reference),
 tool execution and ordering, permission policy, authority attenuation, sandboxed workspaces,
 delegation, handraise, tenancy, transport, stores, and observability.
+
+That is the boundary, not the changelog. What of it this port has actually built is the list
+further down.
 
 Internally, those responsibilities split cleanly:
 
@@ -84,8 +107,9 @@ Internally, those responsibilities split cleanly:
   source of truth rather than a second durability mechanism beside a graph checkpointer.
 - **Input ledger:** owns pending/claimed/admitted input order. Initial prompts, steers, background
   results and resume answers enter the planner through one queue contract.
-- **Effect executors:** perform mediated tool, sandbox and delegation operations. Model invocation
-  is still direct planner I/O and is not yet a durable step.
+- **Effect executors:** perform mediated tool operations. Sandbox and delegation effects have
+  their place here and no implementation yet. Model invocation is still direct planner I/O and
+  is not yet a durable step.
 - **Events:** expose the same lifecycle to audit, UI and monitoring consumers.
 
 ## Development
@@ -145,9 +169,20 @@ values under opaque keys, so implementing one needs neither a message type nor `
 `nexora-permissions` is optional because nothing in the core imports it.
 
 The runtime covers the reference's stop conditions, exclusive and terminating tools, steering,
-permission suspension/resume, durable tool effects, and interrupted-round reconstruction.
-Automatic transcript persistence, context compaction, and attachments are not ported yet; crash
-recovery currently accepts the durable transcript explicitly rather than hiding that missing store.
+permission suspension/resume, durable tool effects, interrupted-round reconstruction, and
+per-call tool failure — a tool that raises is reported to the model as an error result, the way
+`tool-executor.ts` catches per call, rather than ending the round.
+
+Not ported: **subagent delegation and background tasks**. The reference's `delegate` tool and
+its `BackgroundTaskRegistry` have no counterpart here; `SUBAGENT_START`/`SUBAGENT_STOP` are event
+names with nothing yet to publish them. The seam they would need does exist — a settled
+background result is an ordinary `PendingInput` on the durable queue, which is the same boundary
+a steer crosses — so what is missing is the registry, the leash (`check_tasks`/`cancel_task`),
+and the tool itself, not a place to put them. Also not ported: automatic transcript persistence
+and attachments. Crash recovery accordingly accepts the durable transcript explicitly rather than
+hiding that missing store. Context compaction is a seam rather than a feature: the loop calls a
+caller-supplied `compact_context` when the provider reports context overflow, and ships no
+compactor of its own.
 
 Measured locally over 100 zero-I/O rounds (best of three), the direct durable path costs about
 260µs per round. The former graph path was removed despite equivalent effect safety.

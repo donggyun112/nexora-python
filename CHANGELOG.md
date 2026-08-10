@@ -34,6 +34,19 @@ declares, and each layer inside `nexora` against what it is allowed to reach.
 
 ### Fixed
 
+- **Model failures retain a stable policy classification at the orchestrator boundary.** Error
+  events now carry both the provider exception class (`error_type`) and a normalized
+  `error_kind`; `AgentFailed` preserves both instead of discarding the classification before
+  retry or compaction policy can inspect it. `ModelFailurePolicy` now applies bounded transient
+  retries or caller-supplied context compaction inside the failed model round, so recovery does
+  not replay earlier tool effects. Failures after streamed text are never retried automatically.
+
+- **Caller turn limits now cover tool-free rounds and `before_finish` vetoes.**
+  `should_stop_after_turn` previously ran only after tool execution, so a verifier that always
+  returned `Proceed` could bypass the caller's only iteration bound. The hook now observes every
+  completed model round and ends a capped tool-free run with `stop_reason="policy"` before another
+  model call.
+
 - **`Controls.before_finish` is actually called now.** The protocol method, the `FinishPolicy`
   composer and the `ControlPlane` slot all existed with no caller anywhere, so a registered
   verifier silently did nothing. `react_loop` now asks it on a round the model ended without tool

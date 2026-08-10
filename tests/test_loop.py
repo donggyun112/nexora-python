@@ -292,6 +292,24 @@ async def test_the_caller_sets_the_iteration_cap() -> None:
     assert len(llm.seen) == 2
 
 
+async def test_the_caller_cap_stops_a_finish_verifier_that_always_vetoes() -> None:
+    """A tool-free finish veto cannot bypass the caller's iteration cap."""
+    llm = scripted(*[says(f"attempt {turn}") for turn in range(5)])
+
+    async def veto(ctx: Any, reason: Any) -> Proceed:
+        return Proceed([HumanMessage("keep going")])
+
+    events = await run(
+        llm,
+        durable=False,
+        controls=ControlPlane(before_finish=FinishPolicy(veto)),
+        should_stop_after_turn=cap(2),
+    )
+
+    assert len(llm.seen) == 2
+    assert [event["stop_reason"] for event in events if event["type"] == "done"] == ["policy"]
+
+
 async def test_steer_arriving_at_the_end_resumes_instead_of_completing() -> None:
     """react.ts:152 — a late steer cancels the stop and buys another model call."""
     llm = scripted(says("almost"), says("really done"))
@@ -393,9 +411,7 @@ async def test_a_verifier_vetoes_the_finish_and_the_run_goes_around_again() -> N
 
 
 async def test_a_gate_cannot_relabel_an_ending_it_did_not_object_to() -> None:
-    """`FinishPolicy` returns the engine's reason, not the gate's. A verifier decides whether the
-    run continues and nothing else — otherwise a gate could quietly file a completion as a policy
-    stop, and the terminal event is what an operator reads to tell those apart."""
+    """A finish verifier can veto completion but cannot replace its stop reason."""
 
     async def relabel(ctx: Any, reason: Any) -> Halt:
         return Halt("policy")
@@ -410,10 +426,7 @@ async def test_a_gate_cannot_relabel_an_ending_it_did_not_object_to() -> None:
 
 
 async def test_a_provider_streaming_content_blocks_still_streams_to_the_caller() -> None:
-    """Not every provider streams a bare string. Reading `chunk.content` directly meant a
-    block-shaped chunk produced no `text` event at all: the answer arrived only in the terminal
-    event, so a UI showed nothing until the run finished. `.text` is shape-agnostic.
-    """
+    """Block-shaped provider chunks still produce incremental text events."""
 
     class Blocks(Llm):
         def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
@@ -509,7 +522,14 @@ async def test_a_failure_with_nothing_streamed_carries_no_fragment() -> None:
 
     events = await run(DiesFirst(messages=iter([])), durable=False)
 
-    assert events == [{"type": "error", "message": "429 rate limited"}]
+    assert events == [
+        {
+            "type": "error",
+            "message": "429 rate limited",
+            "error_type": "RuntimeError",
+            "error_kind": "unknown",
+        }
+    ]
 
 
 async def test_abort_leaves_a_record_instead_of_a_stream_that_just_stops() -> None:
@@ -549,7 +569,53 @@ async def test_a_provider_failure_is_reported_not_raised() -> None:
 
     events = await run(Broken(messages=iter([])), durable=False)
 
-    assert events == [{"type": "error", "message": "429 rate limited"}]  # and nothing after it
+    # and nothing after it
+    assert events == [
+        {
+            "type": "error",
+            "message": "429 rate limited",
+            "error_type": "RuntimeError",
+            "error_kind": "unknown",
+        }
+    ]
+
+
+async def test_a_failure_carries_the_class_that_says_which_kind_it_was() -> None:
+    """A caller choosing between retry, compaction and giving up cannot read `message` for it.
+
+    The name comes off the exception, so a provider SDK's own distinction between a rate limit and
+    an over-long prompt survives the loop instead of flattening into one `error`.
+    """
+
+    class PromptTooLongError(RuntimeError):
+        pass
+
+    class Overflows(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            raise PromptTooLongError("prompt is too long: 210000 tokens > 200000 maximum")
+            yield  # pragma: no cover — makes this a generator
+
+    events = await run(Overflows(messages=iter([])), durable=False)
+
+    assert events[-1]["error_type"] == "PromptTooLongError"
+
+
+async def test_structured_provider_codes_become_stable_policy_categories() -> None:
+    """Provider-specific exception details normalize without parsing their message text."""
+
+    class BadRequestError(RuntimeError):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            self.body = {"error": {"code": "context_length_exceeded"}}
+
+    class Overflows(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            raise BadRequestError("wording that policy must never parse")
+            yield  # pragma: no cover — makes this a generator
+
+    events = await run(Overflows(messages=iter([])), durable=False)
+
+    assert events[-1]["error_kind"] == "context_overflow"
 
 
 async def test_an_abort_cuts_a_generation_instead_of_waiting_it_out() -> None:
@@ -665,8 +731,7 @@ async def test_leaving_a_stream_closes_it_so_the_abort_reaches_the_provider() ->
 
 
 async def test_a_deny_beats_an_allow_whatever_the_order() -> None:
-    """The invariant a subscription cannot promise. A permissive stage is an opinion, and every
-    stage after it is still consulted — which is what stops a hook from being the last word."""
+    """A denial wins regardless of where an allowance appears in the gate chain."""
     tools = Tools(names=["rm"])
     seen: list[str] = []
 
@@ -698,8 +763,7 @@ async def test_a_deny_beats_an_allow_whatever_the_order() -> None:
 
 
 async def test_a_record_that_cannot_be_written_stops_the_run() -> None:
-    """Fail-closed, and the reason it is a call rather than an event: `EventStream` would log
-    this and carry on, and the next resume could not tell which calls already ran."""
+    """A failed result record stops the run instead of losing durable state."""
 
     async def broken(call: dict[str, Any], result: dict[str, Any]) -> None:
         raise RuntimeError("disk full")
@@ -867,6 +931,7 @@ class UsageLlm(Llm):
                 content=reply.content,
                 tool_calls=reply.tool_calls,
                 usage_metadata=reply.usage_metadata,
+                response_metadata=reply.response_metadata,
             )
         )
 
@@ -883,6 +948,30 @@ def _spent(text: str, prompt: int, completion: int, *calls: ToolCall) -> AIMessa
     )
 
 
+def _cached(prompt: int, read: int, write: int) -> AIMessage:
+    """A turn whose input total is partly served from the prompt cache."""
+    return AIMessage(
+        content="fin",
+        usage_metadata={
+            "input_tokens": prompt,
+            "output_tokens": 1,
+            "total_tokens": prompt + 1,
+            "input_token_details": {"cache_read": read, "cache_creation": write},
+        },
+    )
+
+
+def _served_by(model: str) -> AIMessage:
+    return AIMessage(content="fin", response_metadata={"model_name": model})
+
+
+def _spent_by(model: str, prompt: int, completion: int, *calls: ToolCall) -> AIMessage:
+    """A turn that reports both what it cost and which model answered it."""
+    reply = _spent("" if calls else "fin", prompt, completion, *calls)
+    reply.response_metadata = {"model_name": model}
+    return reply
+
+
 async def test_usage_is_summed_across_rounds() -> None:
     """A budget policy needs the whole run's cost, not the last round's."""
     llm = UsageLlm(
@@ -892,7 +981,11 @@ async def test_usage_is_summed_across_rounds() -> None:
 
     events = await run(llm)
 
-    assert events[-1]["usage"] == {"prompt_tokens": 40, "completion_tokens": 7}
+    assert events[-1]["usage"] == {
+        "prompt_tokens": 40,
+        "completion_tokens": 7,
+        "total_tokens": 47,
+    }
 
 
 async def test_usage_is_absent_rather_than_zero_when_nothing_reported_it() -> None:
@@ -900,3 +993,125 @@ async def test_usage_is_absent_rather_than_zero_when_nothing_reported_it() -> No
     events = await run(scripted(says("hi")))
 
     assert "usage" not in events[-1]
+
+
+async def test_cached_input_is_reported_apart_from_the_prompt_total() -> None:
+    """Cache reads and writes are priced at different rates from a fresh input token.
+
+    One input number times one rate is wrong by up to an order of magnitude on a cached prompt.
+    """
+    llm = UsageLlm(messages=iter([_cached(prompt=1000, read=800, write=100)]))
+    llm.seen = []
+
+    events = await run(llm)
+
+    assert events[-1]["usage"] == {
+        "prompt_tokens": 1000,
+        "completion_tokens": 1,
+        "total_tokens": 1001,
+        "cached_tokens": 800,
+        "cache_write_tokens": 100,
+    }
+
+
+async def test_the_reported_total_discriminates_the_provider_convention() -> None:
+    """Whether `prompt_tokens` already contains the cache counts is a per-provider convention.
+
+    LangChain documents `input_tokens` as the sum of every input kind; Anthropic's own API treats
+    the three as disjoint and adds them. Subtracting under the wrong one double-counts, so the
+    reported total travels with the parts and the reader compares instead of assuming.
+    """
+    llm = UsageLlm(messages=iter([_cached(prompt=1000, read=800, write=100)]))
+    llm.seen = []
+
+    usage = (await run(llm))[-1]["usage"]
+
+    inclusive = usage["prompt_tokens"] + usage["completion_tokens"]
+    disjoint = inclusive + usage["cached_tokens"] + usage["cache_write_tokens"]
+    assert usage["total_tokens"] in (inclusive, disjoint)
+
+
+async def test_done_names_the_model_that_answered() -> None:
+    """react.ts:160 — the terminal event names the model that answered."""
+    llm = UsageLlm(messages=iter([_served_by("claude-opus-4-7-20260101")]))
+    llm.seen = []
+
+    events = await run(llm)
+
+    assert events[-1]["model"] == "claude-opus-4-7-20260101"
+
+
+async def test_a_later_turn_that_names_no_model_does_not_erase_the_one_already_known() -> None:
+    """A provider may report the model on the first chunk of a run and on none after it."""
+    llm = UsageLlm(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[a_call("c1", "read")],
+                    response_metadata={"model_name": "claude-opus-4-7"},
+                ),
+                AIMessage(content="fin"),
+            ]
+        )
+    )
+    llm.seen = []
+
+    events = await run(llm)
+
+    assert events[-1]["model"] == "claude-opus-4-7"
+
+
+async def test_tokens_are_charged_to_the_model_that_earned_them() -> None:
+    """Two models in one run — an alias resolving mid-run, or a provider-side fallback.
+
+    `usage` alone plus one model name prices every token at that model's rate. The breakdown is
+    what makes the run priceable at all when the rates differ.
+    """
+    llm = UsageLlm(
+        messages=iter(
+            [
+                _spent_by("claude-opus-4-7", 10, 2, a_call("c1", "read")),
+                _spent_by("claude-haiku-4-5", 30, 5),
+            ]
+        )
+    )
+    llm.seen = []
+
+    events = await run(llm)
+
+    assert events[-1]["usage"] == {
+        "prompt_tokens": 40,
+        "completion_tokens": 7,
+        "total_tokens": 47,
+    }
+    assert events[-1]["usage_by_model"] == {
+        "claude-opus-4-7": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        "claude-haiku-4-5": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35},
+    }
+
+
+async def test_a_turn_that_names_no_model_is_charged_to_the_one_already_known() -> None:
+    """A provider that stops repeating the name has not switched models.
+
+    Charging those tokens to a nameless bucket instead would split one model's run in two and read
+    as a fallback that never happened — a second key here is the failure.
+    """
+    llm = UsageLlm(
+        messages=iter(
+            [
+                _spent_by("claude-opus-4-7", 10, 2, a_call("c1", "read")),
+                _spent("fin", 30, 5),
+            ]
+        )
+    )
+    llm.seen = []
+
+    events = await run(llm)
+
+    assert events[-1]["usage"] == {
+        "prompt_tokens": 40,
+        "completion_tokens": 7,
+        "total_tokens": 47,
+    }
+    assert "usage_by_model" not in events[-1], "one model answered — the breakdown adds nothing"

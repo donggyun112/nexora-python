@@ -9,9 +9,19 @@ from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from .contracts import BaseMessage, EventType, PendingInput, RuntimeEvents, Tools
+from .background import BackgroundResult
+from .contracts import (
+    BaseMessage,
+    CompactContext,
+    EventType,
+    OnModelFailure,
+    PendingInput,
+    RuntimeEvents,
+    Tools,
+)
 from .contracts.types import Aborted, Emit, OnSuspend
 from .controls import Controls, Ctx
+from .delegate import Deliver
 from .driver import drive
 from .engines.plain import react_loop
 from .history import (
@@ -48,13 +58,37 @@ class AgentRuntime:
         emit: Emit | None = None,
         owner: str = "local",
         lease_ttl: float = 60.0,
+        model_failure_policy: OnModelFailure | None = None,
+        compact_context: CompactContext | None = None,
     ) -> None:
+        """Initialize persistence, events, leases, and bounded model-failure recovery."""
         self._store = store if store is not None else MemorySteps()
         self._emit = emit
         self._owner = owner
         self._lease_ttl = lease_ttl
+        self._model_failure_policy = model_failure_policy
+        self._compact_context = compact_context
         self.events = RuntimeEvents(emit)
         """Lifecycle events emitted by the host at the boundary where they actually occur."""
+
+    def background_sink(self, run_id: str) -> Deliver:
+        """Where a settled background task's answer re-enters this run.
+
+        The reference needs two delivery paths — `ctx.steerSelf` folds a result into the turn that
+        is still running, `ctx.deliverResult` starts a new one after it ended — because the two
+        land in different places. Here they are the same place: the durable input queue, which the
+        planner drains at every round boundary and which keeps what arrives after the last one.
+        So a result that beats the turn's end is folded in, a result that misses it waits for the
+        next `run`, and the caller does not have to know which happened.
+        """
+
+        async def deliver(result: BackgroundResult) -> None:
+            arrival = PendingInput(
+                "background_result", HumanMessage(result.as_message()), result.task_id
+            )
+            await self.submit(run_id, arrival)
+
+        return deliver
 
     async def run(
         self,
@@ -262,6 +296,8 @@ class AgentRuntime:
     ) -> dict[str, Any]:
         if "drain_inputs" in engine_options or "admit_inputs" in engine_options:
             raise TypeError("AgentRuntime owns drain_inputs and admit_inputs")
+        engine_options.setdefault("on_model_failure", self._model_failure_policy)
+        engine_options.setdefault("compact_context", self._compact_context)
 
         async def drain_inputs() -> list[PendingInput]:
             # Rebuilt per drain, not hoisted: `history` belongs to the caller, and a set computed

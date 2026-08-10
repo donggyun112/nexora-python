@@ -25,6 +25,7 @@ import a transcript type to store opaque values.
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
 from uuid import uuid4
 
@@ -43,7 +44,11 @@ from .contracts.events import EventType, RuntimeEvents
 from .contracts.types import (
     Aborted,
     BaseMessage,
+    ControlSignal,
     Emit,
+    ModelErrorKind,
+    ModelFailure,
+    ModelFailureAction,
     OnSuspend,
     PendingInput,
     ToolCall,
@@ -78,6 +83,7 @@ __all__ = [
     "Indeterminate",
     "InputRecord",
     "MemorySteps",
+    "ModelFailurePolicy",
     "Orchestrator",
     "RecoveredTools",
     "Step",
@@ -87,12 +93,63 @@ __all__ = [
 ]
 
 
-class AgentFailed(Exception):
-    """A run ended in `error`. Raised so a step cannot record a failure as an outcome."""
+@dataclass(frozen=True, slots=True)
+class ModelFailurePolicy:
+    """Bound automatic model recovery without restarting the agent loop.
 
-    def __init__(self, message: str, partial: str = "") -> None:
+    Rate limits and transient server failures retry the same model round. Context overflow asks
+    the loop to invoke its configured compactor. Authentication, invalid requests, unknown
+    failures, and any failure after text was streamed fail closed.
+
+    `attempt` is counted per stable error kind and starts at one. Set either bound to zero to
+    disable that recovery path. `backoff` may await a scheduler or timer before a retry; Nexora
+    does not guess a provider's delay policy.
+    """
+
+    max_retries: int = 2
+    max_compactions: int = 1
+    backoff: Callable[[ModelFailure], Awaitable[None]] | None = None
+
+    def __post_init__(self) -> None:
+        """Reject negative bounds instead of turning them into surprising comparisons."""
+        if self.max_retries < 0 or self.max_compactions < 0:
+            raise ValueError("model failure recovery bounds must be non-negative")
+
+    async def __call__(self, failure: ModelFailure) -> ModelFailureAction:
+        """Return the recovery action for one classified provider failure."""
+        if failure.partial:
+            return "fail"
+        if (
+            failure.error_kind == "context_overflow"
+            and failure.attempt <= self.max_compactions
+        ):
+            return "compact"
+        if (
+            failure.error_kind in {"rate_limit", "server"}
+            and failure.attempt <= self.max_retries
+        ):
+            if self.backoff is not None:
+                await self.backoff(failure)
+            return "retry"
+        return "fail"
+
+
+class AgentFailed(Exception):
+    """Report an agent run that ended with an error event."""
+
+    def __init__(
+        self,
+        message: str,
+        partial: str = "",
+        *,
+        error_type: str = "UnknownError",
+        error_kind: ModelErrorKind = "unknown",
+    ) -> None:
+        """Initialize the error with its message and streamed partial text."""
         super().__init__(message)
         self.partial = partial
+        self.error_type = error_type
+        self.error_kind = error_kind
         """Text the dying turn had streamed. Not an answer — nobody knows whether that turn was
         about to call a tool — but it is what a person already read, and the only copy of it."""
 
@@ -125,7 +182,12 @@ async def run_agent(
         if on_event is not None:
             await on_event(event)
         if event["type"] == "error":
-            raise AgentFailed(event["message"], event.get("partial", ""))
+            raise AgentFailed(
+                event["message"],
+                event.get("partial", ""),
+                error_type=event.get("error_type", "UnknownError"),
+                error_kind=event.get("error_kind", "unknown"),
+            )
         if event["type"] == "suspended":
             raise AgentSuspended(event["pending_id"], event["tool_call_id"])
         if event["type"] == "done":
@@ -136,43 +198,33 @@ async def run_agent(
 
 
 class AgentAborted(Exception):
-    """The run was interrupted. Raised so a step does not record an interruption as its result.
-
-    Distinct from `AgentFailed` because the cause is outside the agent — a deploy, a shutdown, an
-    operator — and a supervisor usually wants to retry it rather than report it.
-    """
+    """Report a run interrupted before producing an outcome."""
 
     def __init__(self, partial: str = "") -> None:
+        """Initialize the interruption with any streamed partial text."""
         super().__init__("the run was aborted")
         self.partial = partial
         """Whatever text had streamed before the interruption. Not an answer; sometimes a clue."""
 
 
-class Suspended(Exception):
-    """A signal has no answer yet, so this attempt stops here.
+class Suspended(ControlSignal):
+    """Report an attempt waiting for an unresolved external signal.
 
-    Not a failure. The caller records it as "waiting", and resuming means calling the workflow
-    again once `resolve` has written the answer.
+    A `ControlSignal` so a tool that suspends the attempt from inside its own body still stops the
+    attempt, instead of being reported to the model as a tool that failed.
     """
 
     def __init__(self, signal: str) -> None:
+        """Initialize the suspension with its signal identifier."""
         super().__init__(f"waiting for signal: {signal}")
         self.signal = signal
 
 
 class AgentSuspended(Suspended):
-    """A tool inside the agent asked for an answer, so the run stopped mid-round.
-
-    A `Suspended`, because it is the same thing from the workflow's side: this attempt ends,
-    nothing is recorded, and it resumes when the answer exists.
-
-    The orchestrator persists the continuation before this reaches the agent driver. Once an
-    approval arrives, a new attempt runs the answer-aware `on_resume` control under current policy,
-    then executes the call only when its durable step is still absent. No generator, worker, or
-    lease stays alive while the approval is outstanding.
-    """
+    """Report an agent tool call suspended with a persisted continuation."""
 
     def __init__(self, pending_id: str, tool_call_id: str) -> None:
+        """Initialize the suspension with external and tool-call identifiers."""
         super().__init__(pending_id)
         self.pending_id = pending_id
         self.tool_call_id = tool_call_id
@@ -189,25 +241,10 @@ class RecoveredTools(NamedTuple):
 
 
 class Orchestrator:
-    """One attempt at a workflow. Same `run_id` to resume; hold the lease while attempting.
+    """Coordinate one durable workflow attempt under an exclusive run lease.
 
-        async with Orchestrator("patient-7", log, owner=worker_id) as o:
-            ...
-
-    Entering acquires the run's lease and leaving releases it. Without it two workers replaying
-    the same run both see every step as `absent` and both do the effects — the failure a per-step
-    record cannot catch, because neither worker is wrong about what it read.
-
-    The lease is renewed at every step boundary and every write carries its fencing token. The
-    renewal is for availability: a run whose steps are each shorter than the TTL never lets the
-    lease lapse. The token is for correctness, and it is the one that matters — a worker can stall
-    inside one long step past its TTL, and no renewal schedule prevents that. When it wakes up its
-    writes are `Fenced`.
-
-    ponytail: renewal happens on `run`/`signal`, not on a background heartbeat. A single step that
-    outlives the TTL still lets another worker in; the token makes that harmless rather than
-    impossible. A heartbeat task is the upgrade if long single steps become normal, and it changes
-    nothing about the fencing.
+    The lease renews at step boundaries, and every protected write carries its fencing token.
+    Reuse the same ``run_id`` when resuming the workflow.
     """
 
     def __init__(
@@ -222,6 +259,7 @@ class Orchestrator:
         on_agent_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         rules_version: str = "",
     ) -> None:
+        """Initialize one durable run attempt and its execution controls."""
         self.run_id = run_id
         self.owner = owner
         self._ttl = ttl
@@ -400,12 +438,14 @@ class Orchestrator:
             await self._log.admit_inputs(self.run_id, input_ids, self._token)
 
     async def __aenter__(self) -> "Orchestrator":
+        """Acquire the run lease and return this orchestrator."""
         self._token = await self._log.acquire(self.run_id, self.owner, self._ttl)
         if not self._token:
             raise Contended(self.run_id)
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
+        """Release the run lease when the attempt exits."""
         await self._log.release(self.run_id, self.owner)
         self._token = 0
 

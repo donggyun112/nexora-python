@@ -8,6 +8,7 @@ from time import monotonic
 from typing import Any, Literal, NamedTuple, Protocol, runtime_checkable
 
 __all__ = [
+    "ClearableSteps",
     "Contended",
     "Fenced",
     "Indeterminate",
@@ -115,6 +116,25 @@ class StepLog(Protocol):
         """Atomically finish metadata steps and append idempotent inbox inputs."""
         ...
 
+@runtime_checkable
+class ClearableSteps(StepLog, Protocol):
+    """A ledger that can drop a step's intent, so an ambiguous effect can be retried.
+
+    Declared rather than discovered, for the reason `BatchTools` is: `getattr(log, "forget", None)`
+    was behaviour without a contract — nothing type-checked it and nothing said what it promised.
+    What it promises: **only an unfinished step is removed.** A `done` step keeps its recorded
+    result, or clearing one would re-run an effect whose answer is already known.
+
+    Optional because it is a recovery affordance, not part of recording an effect. A store without
+    it makes `Indeterminate` terminal, which is a legitimate posture: someone has to decide that a
+    charge is safe to repeat, and refusing to offer the button is one way to make them.
+    """
+
+    async def forget(self, run_id: str, key: str) -> None:
+        """Remove an unfinished step. A `done` step is left alone."""
+        ...
+
+
 class MemorySteps:
     """Implement ``StepLog`` with process-local dictionaries."""
 
@@ -150,8 +170,14 @@ class MemorySteps:
         self._entries[run_id, key] = Step("done", value)
 
     async def forget(self, run_id: str, key: str) -> None:
-        """Remove a stored step."""
-        self._entries.pop((run_id, key), None)
+        """Remove an unfinished step, keeping a recorded result.
+
+        The `done` guard is the durable store's `and status = 'running'`. Without it this store
+        dropped committed results too, so clearing a step that had actually finished re-ran its
+        effect here and did nothing there — the divergence the conformance suite exists to catch.
+        """
+        if self._entries.get((run_id, key), Step("absent")).status != "done":
+            self._entries.pop((run_id, key), None)
 
     async def acquire(self, run_id: str, owner: str, ttl_seconds: float = 60.0) -> int:
         """Acquire or renew a process-local run lease, honouring its TTL.

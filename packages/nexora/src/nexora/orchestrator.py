@@ -24,6 +24,7 @@ which is why it is the one that got its own module: a `StepLog` implementation s
 import a transcript type to store opaque values.
 """
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
@@ -31,6 +32,7 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, ToolMessage
 from nexora_store import (
+    ClearableSteps,
     Contended,
     Fenced,
     Indeterminate,
@@ -458,7 +460,8 @@ class Orchestrator:
         """Do this once, ever. On replay the recorded value comes back and `fn` is not called.
 
         `step` is the identity of the effect, so it is also its idempotency key — for a tool call
-        that means the `call_id`, which is what ADR-002 already made the key.
+        that means the `call_id`, because a crash between executing a tool and recording its result
+        is indistinguishable from never running it, and the id is the only name both sides share.
 
         The intent is written **before** the effect and the result after, so a crash in between is
         visible as `running` rather than as "never happened". That case raises `Indeterminate`
@@ -477,6 +480,14 @@ class Orchestrator:
             result = fn()
             if isinstance(result, Awaitable):
                 result = await result
+        except asyncio.CancelledError:
+            # Cancellation is not the step's report about itself. The decision was made above it —
+            # a shutdown, a cancelled parent, `cancel_task` on the subagent that launched this —
+            # and it can land after the effect already has. So the intent stands, and the next
+            # attempt reads `running` and raises `Indeterminate`: the same fact a crash leaves,
+            # because it is the same fact. Clearing it here made a graceful stop more dangerous
+            # than `kill -9`, which is the one comparison that has to come out the other way.
+            raise
         except BaseException:
             # A raise and a crash are not the same fact. A raise means the step *reported* that it
             # did not complete, so the intent is cleared and the next attempt retries. A crash
@@ -683,7 +694,7 @@ class Orchestrator:
 
         Recovery first inspects every call. `done` results are restored from the ledger; `absent`
         calls are gated and executed. A `running` call is retried with the same tool-call id by
-        default — ADR-002 makes that id the receiver's idempotency key. Set `retry_running=False`
+        default, that id being the receiver's idempotency key. Set `retry_running=False`
         to surface `Indeterminate` instead when a tool cannot honour that contract. No new effect
         begins until every ambiguous step has either been cleared for keyed retry or rejected.
         Calls are merged in the model's original order; only batches whose tools all opted into
@@ -781,9 +792,8 @@ class Orchestrator:
         )
 
     async def _clear(self, step: str) -> None:
-        forget = getattr(self._log, "forget", None)
-        if forget is not None:
-            await forget(self.run_id, step)
+        if isinstance(self._log, ClearableSteps):
+            await self._log.forget(self.run_id, step)
 
     async def force_retry(self, step: str) -> None:
         """Clear an `Indeterminate` step's intent so the next attempt runs it again.
@@ -792,7 +802,7 @@ class Orchestrator:
         automatically only for tool calls, whose call id is the required receiver idempotency key;
         `recover_pending(retry_running=False)` disables that policy.
         """
-        if getattr(self._log, "forget", None) is None:
+        if not isinstance(self._log, ClearableSteps):
             raise NotImplementedError(f"{type(self._log).__name__} cannot clear a step")
         await self._clear(step)
         self._seen.discard(step)
@@ -816,8 +826,8 @@ class Orchestrator:
         not: `nexora.history.encode_continuation` turns messages into something this can store
         without learning what a message is.
 
-        Keyed by the call id, already the idempotency key (ADR-002), so a second suspension of the
-        same call overwrites and there is nothing to reconcile.
+        Keyed by the call id, already the idempotency key, so a second suspension of the same call
+        overwrites and there is nothing to reconcile.
         """
         await self._log.finish(self.run_id, _suspend_key(key), payload, self._token)
 

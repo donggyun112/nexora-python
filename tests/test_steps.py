@@ -1,10 +1,10 @@
 """The step ledger's two jobs: never run an effect twice, and never guess when it is unknown."""
 
+import asyncio
 from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage
-
 from nexora.contracts import PendingInput
 from nexora.orchestrator import (
     Contended,
@@ -61,6 +61,34 @@ async def test_a_raise_is_not_a_crash_and_does_retry() -> None:
     assert (await log.read("run-1b", "draft")).status == "absent"
     assert await Orchestrator("run-1b", log).run("draft", flaky) == "ok"
     assert len(attempts) == 2
+
+
+async def test_a_cancelled_step_is_a_crash_and_not_a_report() -> None:
+    """The step never said it did not complete — something above it stopped waiting.
+
+    A shutdown or a cancelled parent can arrive after the effect landed, so clearing the intent
+    here charges the card twice on the next attempt. `Indeterminate` is the honest answer, the
+    same one a killed worker gets.
+    """
+    log = MemorySteps()
+    charges: list[str] = []
+
+    async def charge() -> str:
+        charges.append("card")
+        await asyncio.sleep(10)  # the effect landed; the worker is stopped before it can record
+        return "receipt"
+
+    o = Orchestrator("run-1c", log)
+    task = asyncio.ensure_future(o.run("charge", charge))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert (await log.read("run-1c", "charge")).status == "running"
+    with pytest.raises(Indeterminate):
+        await Orchestrator("run-1c", log).run("charge", charge)
+    assert charges == ["card"]
 
 
 async def test_force_retry_is_the_explicit_way_out() -> None:
@@ -211,6 +239,7 @@ async def test_a_tools_wrapper_runs_inside_the_step_so_the_ledger_records_what_i
     module docstring becomes another promise the code does not keep.
     """
     from nexora import AgentRuntime
+
     from tests.test_loop import Tools, a_call, says, scripted
 
     class Masking(Tools):
@@ -240,6 +269,7 @@ async def test_an_interruption_is_not_recorded_as_the_answer() -> None:
     """
     from nexora.engines.plain import react_loop
     from nexora.orchestrator import AgentAborted, run_agent
+
     from tests.test_loop import Tools, says, scripted
 
     log = MemorySteps()

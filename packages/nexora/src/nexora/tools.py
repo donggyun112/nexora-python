@@ -1,9 +1,4 @@
-"""Reading tool definitions and tool results.
-
-Everything the loop needs to know *about* a tool, as opposed to how to run one. Pure — the
-loop's two trickiest rules (exclusive calls, terminating calls) are verifiable here without
-driving a turn.
-"""
+"""Tool definition normalization, execution, gating, and result handling."""
 
 import asyncio
 import json
@@ -27,17 +22,11 @@ from .controls import Continue, Controls, Ctx, Deny, Suspend, ToolDecision
 
 
 class Resolved(NamedTuple):
-    """How one call ended, and enough about it for the engine to publish the right event.
-
-    `refused` is the part the result alone cannot tell: an `error` from the gate and an `error`
-    from a tool look identical as results, but one is `permission_denied` and the other is
-    `post_tool_use_failure`. The engine publishes, so the engine needs to know which.
-    """
+    """Tool call outcome with permission-gate provenance."""
 
     call: ToolCall
     result: dict[str, Any]
     refused: bool
-    """The gate stood in for the call. The tool never ran."""
 
 
 class RoundSuspended(ControlSignal):
@@ -62,18 +51,16 @@ class InvalidToolCall(RuntimeError):
 
 
 def require_call_ids(calls: list[ToolCall]) -> list[ToolCall]:
-    """Refuse a round whose calls cannot be told apart. Checked before any effect.
+    """Validate that every call in a round has a unique identifier.
 
-    The call id is the idempotency key, so it is also the step name. LangChain types it
-    as optional and a provider or adapter can hand over a round with a missing or repeated one —
-    and then the ledger cannot say which call a result belongs to.
+    Args:
+        calls: Tool calls to validate before execution.
 
-    The whole round is refused rather than the offending call filtered out, for two reasons. A
-    filtered call would sit in the assistant message forever with no `ToolMessage` answering it,
-    which is exactly what `_unanswered_tool_calls` reads as "still pending". And a result cannot be
-    returned for a call with no id at all: `ToolMessage` needs one. Refusing early is also what
-    keeps the round from half-executing — the failure this replaced ran the first tool and raised
-    `duplicate step name` on the second, after the effect.
+    Returns:
+        The original call list.
+
+    Raises:
+        InvalidToolCall: If an identifier is missing or duplicated.
     """
     seen: set[str] = set()
     for position, call in enumerate(calls):
@@ -128,20 +115,10 @@ async def execute_calls(
     controls: Controls | None = None,
     ctx: Ctx | None = None,
 ) -> list[Resolved]:
-    """Run a round of calls and return their outcomes in the order the model issued them.
+    """Execute a gated tool round and preserve model call order.
 
-    `controls` is the engine's contract with whoever owns policy — `pre_tool_use` decides,
-    `after_tool_call` records. Both are awaited calls whose return value this function acts on,
-    which is what lets the *order* of the stages behind them be the policy. Events are published
-    after each decision so a UI and an audit log can see it; answering one changes nothing.
-
-    A `BatchTools` executor gets the allowed calls at once and applies its own concurrency
-    policy — only it knows which of its tools are safe to run together, since safety is a
-    property of a pair of calls and not of one tool. Otherwise the calls run one at a time,
-    which is the fail-closed default.
-
-    Either way the round is cut short by a suspend or an abort: the remaining calls are simply
-    absent from the result, and the model re-issues them on resume.
+    Batch-capable executors own their concurrency policy. Other executors run calls sequentially.
+    Suspension or cancellation ends the round without synthesizing results for unexecuted calls.
     """
     here = ctx if ctx is not None else Ctx(turn=turn)
     if isinstance(tools, BatchTools):
@@ -176,12 +153,7 @@ async def execute_calls(
 
 
 def _stands_in_for(decision: ToolDecision) -> dict[str, Any] | None:
-    """The result a refusal supplies, or None when the call may run.
-
-    A `Deny` and a `Suspend` both carry a tool-result-shaped dict, so downstream needs no special
-    case: the model sees a failed call either way. `Resolved.refused` keeps the difference the
-    result cannot, because the *event* differs even when the result does not.
-    """
+    """Return the synthetic tool result supplied by a denial or suspension."""
     match decision:
         case Deny(result) | Suspend(result):
             return result
@@ -324,32 +296,16 @@ class Concurrent:
 
 
 class Absorbed(NamedTuple):
-    """A finished round read into the four things the loop does next.
-
-    Pulled out of the loop because it is the only part of a round that is pure — given the
-    outcomes, everything here is derivable, so it is testable without driving a turn and the
-    `while` stays about control flow. The live and recovery paths both call it, so a round has one
-    interpretation.
-    """
+    """Normalized tool-round state consumed by the planner."""
 
     answers: list[BaseMessage]
-    """`ToolMessage`s for the calls that resolved. A suspension contributes none — its answer
-    arrives on resume."""
     completed: list[dict[str, Any]]
     suspended: tuple[ToolCall, dict[str, Any]] | None
-    """The first suspension, if any. The round is still absorbed whole before it is reported."""
     ended_by_tool: bool
-    """A terminating tool succeeded. Only on success — a failed one gets a recovery round."""
 
 
 def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
-    """Read a round's outcomes. Does not stop at a suspension.
-
-    Calls that already finished are external facts, so dropping them because a *different* call
-    suspended means the resumed run re-issues them — a second write, a second charge. react.ts
-    absorbs the whole batch and stops after (`suspended ??=`, inside its loop over `toolResults`);
-    so does this.
-    """
+    """Normalize a complete tool round without dropping results before suspension."""
     answers: list[BaseMessage] = []
     completed: list[dict[str, Any]] = []
     suspended: tuple[ToolCall, dict[str, Any]] | None = None
@@ -387,19 +343,9 @@ def tool_result(call: ToolCall, result: dict[str, Any]) -> dict[str, Any]:
 
 
 def as_model_tools(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Our `{name, description, parameters}` definitions in the shape `bind_tools` accepts.
+    """Normalize and sort tool definitions for LangChain model binding.
 
-    `convert_to_openai_tool` is LangChain's own normalizer and already recognises this shape, so
-    there is nothing here to write. It replaced two hand-rolled copies of the conversion, one per
-    engine, which had **already drifted** — they disagreed about what an empty `parameters` should
-    default to. One definition is the point; the fact that it is a one-liner is the reward.
-
-    **Sorted by name** (`registry.ts`'s `assemble`). Providers cache on a prefix of the request,
-    and the tool
-    schemas sit in it, so a `Tools.list()` that returns the same set in a different order is a cache
-    miss for every turn after it — paid in tokens, invisible in behaviour. `list()` is the host's to
-    implement and cannot be made to promise an order, so the guarantee belongs at the one place the
-    definitions cross into a model call rather than in each implementation.
+    Sorting stabilizes provider request prefixes and improves prompt-cache reuse.
     """
     return [
         convert_to_openai_tool(definition)
@@ -408,13 +354,7 @@ def as_model_tools(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def tool_payload(ctx: Ctx, call: ToolCall, **extra: Any) -> dict[str, Any]:
-    """The payload shape every tool event shares. One definition, so the engines cannot drift.
-
-    Takes the whole `Ctx` and not a bare `turn` so that `subject` rides along everywhere at once.
-    Passed per field, an audit stamp is only ever on the events somebody remembered to add it to,
-    and the one it is missing from is the one an incident asks about. Omitted when the host named
-    nobody, rather than reported as an empty string that reads like a finding.
-    """
+    """Build the common payload for tool lifecycle events."""
     return {
         "turn": ctx.turn,
         "call_id": call["id"],
@@ -433,11 +373,7 @@ async def _execute_batched(
     ctx: Ctx,
     controls: Controls | None,
 ) -> list[Resolved]:
-    """Decide every call first, then hand the executor only what it may run.
-
-    Gating has to finish before the batch starts: once the executor is running calls
-    concurrently there is no way to stop the ones a later answer would have refused.
-    """
+    """Gate a batch before dispatch and record results in call order."""
     decided: list[tuple[ToolCall, dict[str, Any] | None]] = []
     for call in calls:
         if aborted():
@@ -473,12 +409,7 @@ def _in_call_order(
     *,
     incomplete_ok: bool = False,
 ) -> list[tuple[ToolCall, dict[str, Any]]]:
-    """Re-sort a batch executor's results, keeping only what it actually answered.
-
-    A suspend means the executor stopped early, so calls it never reported are dropped rather
-    than faked. A call reported as missing when nothing suspended is a broken executor, and
-    surfaces as an error result instead of vanishing.
-    """
+    """Reorder batch results and handle missing executor responses."""
     by_id = {result["call_id"]: result for result in batch_results}
     suspended = any(r["result"].get("type") == "suspend" for r in batch_results)
     answered = [c for c in calls if c["id"] in by_id] if suspended or incomplete_ok else calls
@@ -501,23 +432,9 @@ _PASSES_THROUGH = (ControlSignal, Contended, Fenced, Indeterminate)
 async def _execute_validated(
     tools: Tools, name: str, call_id: str, arguments: Any
 ) -> dict[str, Any]:
-    """Run one tool. A raise becomes the error result the model can read.
+    """Execute one tool and convert tool exceptions into model-visible errors.
 
-    Every path that reaches a tool comes through here, so this is the only place that has to
-    catch. react.ts catches per call (`executeBatch` in `tool-executor.ts`) and so does this: a
-    tool that raises
-    is one failed effect, not a failed round. Letting the exception escape instead ended the run
-    in the caller's event loop and discarded the sibling calls' results, which had already been
-    computed — the model was never told what went wrong, so it could never try something else.
-
-    Caught here rather than at each call site because the exception is also a fact the *ledger*
-    needs. Inside the durable step, an error result commits as `done`, and the call is not
-    re-run. That is the honest record: we watched the tool fail, which is a different thing from
-    the crash `Indeterminate` exists for, where nobody watched anything.
-
-    Validation stays outside the `try`. `InvalidToolResult` is our contract with the tool author,
-    not the tool's report about the world, and answering a broken tool with `[ERROR]` would hide
-    the bug behind a message the model reads as a bad file path.
+    Runtime control signals and invalid result contracts propagate to the caller.
     """
     try:
         result = await tools.execute(name, call_id, arguments)

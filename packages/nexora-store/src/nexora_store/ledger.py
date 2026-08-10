@@ -118,16 +118,9 @@ class StepLog(Protocol):
 
 @runtime_checkable
 class ClearableSteps(StepLog, Protocol):
-    """A ledger that can drop a step's intent, so an ambiguous effect can be retried.
+    """Optional ledger capability for removing unfinished step intent.
 
-    Declared rather than discovered, for the reason `BatchTools` is: `getattr(log, "forget", None)`
-    was behaviour without a contract — nothing type-checked it and nothing said what it promised.
-    What it promises: **only an unfinished step is removed.** A `done` step keeps its recorded
-    result, or clearing one would re-run an effect whose answer is already known.
-
-    Optional because it is a recovery affordance, not part of recording an effect. A store without
-    it makes `Indeterminate` terminal, which is a legitimate posture: someone has to decide that a
-    charge is safe to repeat, and refusing to offer the button is one way to make them.
+    Implementations must preserve completed steps so recorded effects are never replayed.
     """
 
     async def forget(self, run_id: str, key: str) -> None:
@@ -151,14 +144,7 @@ class MemorySteps:
         return self._entries.get((run_id, key), Step("absent"))
 
     async def start(self, run_id: str, key: str, token: int = 0) -> None:
-        """Record a running step after validating the fencing token.
-
-        A step that is already `done` is left alone. This is the recovery path: replaying a run that
-        already committed this step must not reopen it, or the effect runs a second time and the
-        recorded result is thrown away. The durable store expresses the same rule as
-        `where nexora_step.status = 'running'` on its upsert; this store used to overwrite
-        unconditionally, which made the in-memory ledger the only one that could lose a result.
-        """
+        """Record running intent without reopening a completed step."""
         self._fence(run_id, token)
         if self._entries.get((run_id, key), Step("absent")).status == "done":
             return
@@ -170,25 +156,15 @@ class MemorySteps:
         self._entries[run_id, key] = Step("done", value)
 
     async def forget(self, run_id: str, key: str) -> None:
-        """Remove an unfinished step, keeping a recorded result.
-
-        The `done` guard is the durable store's `and status = 'running'`. Without it this store
-        dropped committed results too, so clearing a step that had actually finished re-ran its
-        effect here and did nothing there — the divergence the conformance suite exists to catch.
-        """
+        """Remove unfinished step intent while preserving completed results."""
         if self._entries.get((run_id, key), Step("absent")).status != "done":
             self._entries.pop((run_id, key), None)
 
     async def acquire(self, run_id: str, owner: str, ttl_seconds: float = 60.0) -> int:
-        """Acquire or renew a process-local run lease, honouring its TTL.
+        """Acquire or renew a run lease using a monotonic TTL.
 
-        `ttl_seconds` used to be ignored entirely, which made the one scenario the lease exists for
-        unreachable here: a worker stalls past its TTL, another takes the run over, and the first
-        wakes up still believing it holds the run. A store that never expires a lease can never
-        hand it over, so no test against it could cover the takeover — and the durable store does
-        expire, via `expires_at < now()`.
-
-        `monotonic` and not wall time: a clock stepping backwards must not resurrect a dead lease.
+        Returns:
+            Current fencing token, or ``0`` when another owner holds the lease.
         """
         held = self._leases.get(run_id)
         expired = held is not None and held[2] <= monotonic()
@@ -203,13 +179,7 @@ class MemorySteps:
         return self._tokens[run_id]
 
     async def release(self, run_id: str, owner: str) -> None:
-        """Expire a process-local run lease held by ``owner``, keeping its token.
-
-        Kept rather than deleted for the reason `PostgresSteps.release` spells out: the token must
-        never go backwards, or a worker holding an old one passes the fence. `_tokens` already
-        survives here, so this store had the property the durable one lacked; the lease entry is
-        expired in place so both reach it the same way.
-        """
+        """Expire an owned lease without resetting its fencing token."""
         held = self._leases.get(run_id)
         if held is not None and held[0] == owner:
             self._leases[run_id] = ("", held[1], monotonic())

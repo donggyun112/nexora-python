@@ -1,27 +1,7 @@
-"""Durable execution, policy suspension, and recovery around an agent loop.
+"""Durable effect execution, suspension, and recovery for agent runs.
 
-The while engine owns the small deterministic loop: ``model -> tool round -> model``. The
-orchestrator owns the boundaries where middleware and recovery matter:
-
-* `execute_round` saves the model-issued call order, applies the shared controls, and records every
-  allowed call by its call id;
-* `recover_pending` restores `done` results, retries `running` calls with the same idempotency key,
-  executes `absent` calls in order, and reconstructs the `ToolMessage`s without replaying the
-  model turn;
-* `signal`/`suspend` end an attempt while a policy or human answer is outstanding;
-* the durable input queue admits prompts, steer messages, background results, and resume answers
-  through one ordered boundary before they enter model context;
-* `run` provides the same durable-step primitive for effects outside the agent loop.
-
-The agent transcript, input queue, and execution ledger are separate on purpose. The transcript
-persists model-visible messages; the queue persists inputs waiting for admission; the ledger
-persists the small pending-call record and each effect's state. Copying the growing transcript at
-every tool boundary would erase the while loop's cost advantage and make persistence quadratic.
-
-The ledger itself lives in `nexora.store` and is re-exported here, where every caller already
-looks for it. It is the only layer in this file's neighbourhood that knows nothing about agents,
-which is why it is the one that got its own module: a `StepLog` implementation should not have to
-import a transcript type to store opaque values.
+The orchestrator owns leases, step idempotency, input admission, permission continuations, and
+tool-round recovery. The planner remains responsible for the model/tool control loop.
 """
 
 import asyncio
@@ -97,15 +77,12 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class ModelFailurePolicy:
-    """Bound automatic model recovery without restarting the agent loop.
+    """Bound automatic retries and compaction for model request failures.
 
-    Rate limits and transient server failures retry the same model round. Context overflow asks
-    the loop to invoke its configured compactor. Authentication, invalid requests, unknown
-    failures, and any failure after text was streamed fail closed.
-
-    `attempt` is counted per stable error kind and starts at one. Set either bound to zero to
-    disable that recovery path. `backoff` may await a scheduler or timer before a retry; Nexora
-    does not guess a provider's delay policy.
+    Attributes:
+        max_retries: Retry limit for rate-limit and server failures.
+        max_compactions: Compaction limit for context-overflow failures.
+        backoff: Optional callback invoked before retrying a model request.
     """
 
     max_retries: int = 2
@@ -152,33 +129,25 @@ class AgentFailed(Exception):
         self.partial = partial
         self.error_type = error_type
         self.error_kind = error_kind
-        """Text the dying turn had streamed. Not an answer — nobody knows whether that turn was
-        about to call a tool — but it is what a person already read, and the only copy of it."""
 
 
 async def run_agent(
     events: AsyncIterator[dict[str, Any]],
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
-    """Drive an agent to its end and return the outcome, so it can be one step.
+    """Consume an agent event stream and return its completed outcome.
 
-        plan = await o.run("draft", lambda: run_agent(react_loop(model, tools, goal)))
+    Args:
+        events: Agent planner event stream.
+        on_event: Optional observer invoked for every event.
 
-    The loop yields a stream because a caller may want to watch text arrive; a workflow wants
-    the answer. This is the adapter between the two, and it is the whole of what a durable
-    orchestrator needs from an agent — no hooks, no middleware, one value.
+    Returns:
+        Terminal ``done`` event for a completed or policy-stopped run.
 
-    Only a *finished* run is an outcome. Everything else raises, because a step records whatever
-    it returns and memoising a non-answer freezes it:
-
-    * `error` — a recorded failure replays as failure and the retry never happens.
-    * `suspended` — a recorded suspension replays as suspended and the agent never continues,
-      however many approvals arrive.
-    * `stop_reason == "aborted"` — an interruption is not an answer. Recorded, every replay
-      returns "we were interrupted", which is the one thing a resume exists to get past.
-
-    `stop_reason == "policy"` does return: a supervisor deciding to stop is a decision, not an
-    interruption, and repeating the run would just reach the same decision.
+    Raises:
+        AgentFailed: If the stream fails or ends without a terminal event.
+        AgentSuspended: If the run suspends.
+        AgentAborted: If the run is aborted.
     """
     async for event in events:
         if on_event is not None:
@@ -206,7 +175,6 @@ class AgentAborted(Exception):
         """Initialize the interruption with any streamed partial text."""
         super().__init__("the run was aborted")
         self.partial = partial
-        """Whatever text had streamed before the interruption. Not an answer; sometimes a clue."""
 
 
 class Suspended(ControlSignal):
@@ -389,14 +357,7 @@ class Orchestrator:
         return PendingInput(item.kind, message, input_id)
 
     async def _announce_input(self, item: PendingInput) -> None:
-        """Announce that an input reached the inbox. Never its text.
-
-        This fires at submission, which is *before* the run's `on_inputs` screens can mask
-        anything, so any content here is the pre-mask original — and it would sit in the audit log
-        forever, which is exactly what `Controls.on_inputs` promises cannot happen. The admitted
-        text is published by `CONTEXT_INJECTED` after screening; a consumer that wants to show a
-        prompt reads it there, and gets the version the model actually saw.
-        """
+        """Publish input metadata without exposing unscreened content."""
         if self._emit is not None and item.kind in {"user_prompt", "user_steer"}:
             await self._emit(
                 EventType.USER_PROMPT_SUBMIT,
@@ -404,12 +365,7 @@ class Orchestrator:
             )
 
     async def claim_inputs(self, represented: set[str] | None = None) -> list[PendingInput]:
-        """Claim missing inputs in dependency order, preserving arrival order among peers.
-
-        `represented` is the set of input ids already present in the caller's transcript. Ids and
-        not messages: the queue has no business reading a conversation, and the one caller that
-        holds one is the agent-facing facade.
-        """
+        """Claim unrepresented inputs in dependency and arrival order."""
         represented = represented or set()
         claimed: list[PendingInput] = []
         decoded = [
@@ -457,15 +413,17 @@ class Orchestrator:
             self._token = await self._log.acquire(self.run_id, self.owner, self._ttl) or self._token
 
     async def run(self, step: str, fn: Callable[[], Awaitable[Any] | Any]) -> Any:
-        """Do this once, ever. On replay the recorded value comes back and `fn` is not called.
+        """Execute or replay one durable step.
 
-        `step` is the identity of the effect, so it is also its idempotency key — for a tool call
-        that means the `call_id`, because a crash between executing a tool and recording its result
-        is indistinguishable from never running it, and the id is the only name both sides share.
+        Args:
+            step: Stable step identifier and idempotency key.
+            fn: Synchronous or asynchronous effect to execute when no result exists.
 
-        The intent is written **before** the effect and the result after, so a crash in between is
-        visible as `running` rather than as "never happened". That case raises `Indeterminate`
-        instead of re-running, because only the caller knows whether the effect is safe to repeat.
+        Returns:
+            Newly produced or previously recorded result.
+
+        Raises:
+            Indeterminate: If execution intent exists without a recorded result.
         """
         self._claim(step)
         await self._renew()
@@ -512,15 +470,10 @@ class Orchestrator:
         controls: Controls | None = None,
         ctx: Ctx | None = None,
     ) -> list[Resolved]:
-        """Own one live while-loop tool round.
+        """Execute one model-issued tool round through the durable boundary.
 
-        The engine still owns `model -> tools -> model`; this method owns everything between the
-        model requesting calls and the engine receiving their results. Every allowed call is a
-        durable step keyed by its call id. Calls remain sequential unless every definition in the
-        batch explicitly declares concurrency safety.
-
-        Pass the raw tool registry here. The durable and concurrency wrappers belong to this
-        boundary so callers cannot accidentally compose them in the unsafe order.
+        Calls are recorded by identifier and execute sequentially unless the complete batch is
+        declared concurrency-safe.
         """
         publisher = emit if emit is not None else self._emit
         # Before `record_pending`, so an unkeyable round leaves no durable trace of itself. The
@@ -691,24 +644,25 @@ class Orchestrator:
         controls: Controls | None = None,
         retry_running: bool = True,
     ) -> RecoveredTools:
-        """Complete the latest unanswered tool round without replaying its model call.
+        """Recover the latest unanswered tool round without replaying its model call.
 
-        Recovery first inspects every call. `done` results are restored from the ledger; `absent`
-        calls are gated and executed. A `running` call is retried with the same tool-call id by
-        default, that id being the receiver's idempotency key. Set `retry_running=False`
-        to surface `Indeterminate` instead when a tool cannot honour that contract. No new effect
-        begins until every ambiguous step has either been cleared for keyed retry or rejected.
-        Calls are merged in the model's original order; only batches whose tools all opted into
-        concurrency may execute together.
+        Completed results are restored, absent calls are executed, and running calls are either
+        retried with their original idempotency keys or reported as indeterminate.
 
-        The agent transcript owns `history`; `execute_round` separately saves the pending call list
-        and the per-call ledger owns their outcomes. Keeping those stores separate avoids copying
-        a growing conversation on every round. The returned history is ready to pass back to
-        `react_loop(history=...)`.
+        Args:
+            history: Model history containing the unanswered tool round.
+            tools: Raw tool executor.
+            aborted: Cancellation predicate.
+            emit: Optional event publisher.
+            turn: Optional turn override.
+            controls: Runtime control plane.
+            retry_running: Whether to retry ambiguous running steps.
 
-        Replaying a cached result calls `controls.after_tool_call` again. That closes the crash
-        window between committing the tool result and committing its journal entry, so journal
-        writers must deduplicate by call id.
+        Returns:
+            Reconstructed history and ordered tool outcomes.
+
+        Raises:
+            Indeterminate: If a running step exists and retry is disabled.
         """
         stored_turn = 0
         round_record = await self._log.read(self.run_id, _pending_round_key())
@@ -797,23 +751,14 @@ class Orchestrator:
             await self._log.forget(self.run_id, step)
 
     async def force_retry(self, step: str) -> None:
-        """Clear an `Indeterminate` step's intent so the next attempt runs it again.
-
-        Ordinary workflow `run` steps require this explicit claim. Agent recovery calls it
-        automatically only for tool calls, whose call id is the required receiver idempotency key;
-        `recover_pending(retry_running=False)` disables that policy.
-        """
+        """Clear an indeterminate step so a subsequent attempt can execute it again."""
         if not isinstance(self._log, ClearableSteps):
             raise NotImplementedError(f"{type(self._log).__name__} cannot clear a step")
         await self._clear(step)
         self._seen.discard(step)
 
     async def signal(self, name: str) -> Any:
-        """The answer to `name`, or end this attempt until someone provides it.
-
-        Waiting costs nothing while stopped, which is the whole reason an approval may take days
-        — the same reason the tool gate suspends instead of blocking on a human.
-        """
+        """Return a recorded signal or suspend the current attempt."""
         self._claim(name)
         record = await self._log.read(self.run_id, _signal_key(name))
         if record.status != "done":
@@ -821,15 +766,7 @@ class Orchestrator:
         return record.value
 
     async def suspend(self, key: str, payload: dict[str, Any]) -> None:
-        """Park a continuation. `payload` is opaque — encode it with a codec first.
-
-        The state belongs here because resuming a run is this layer's job. What is *in* it does
-        not: `nexora.history.encode_continuation` turns messages into something this can store
-        without learning what a message is.
-
-        Keyed by the call id, already the idempotency key, so a second suspension of the same call
-        overwrites and there is nothing to reconcile.
-        """
+        """Persist an opaque continuation payload under an idempotent key."""
         await self._log.finish(self.run_id, _suspend_key(key), payload, self._token)
 
     async def persist_suspension(
@@ -842,12 +779,7 @@ class Orchestrator:
         turn: int,
         subject: str = "",
     ) -> None:
-        """Commit the waiting record owned by this execution layer.
-
-        The execution boundary calls this before terminating a suspended round. No agent
-        generator or worker remains alive while approval is outstanding; only this durable
-        record does.
-        """
+        """Persist a tool-round continuation before terminating the attempt."""
         call_id = call["id"] or ""
         continuation = encode_continuation(
             call,

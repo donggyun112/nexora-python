@@ -53,16 +53,7 @@ class PostgresSteps:
     """Persist steps, leases, and queued inputs in PostgreSQL."""
 
     def __init__(self, pool: AsyncConnectionPool[AsyncConnection[Any]]) -> None:
-        """Initialize the ledger with a pool to borrow a connection from per operation.
-
-        A pool and not a connection, because a transaction boundary cannot be shared. Two runs on
-        one connection commit each other's half-written work, and this ledger's entire guarantee is
-        *when* things commit — `start` before the effect runs, `finish` after it returns.
-        Sharing a connection makes that ordering depend on some other run's commit timing, which is
-        the one thing the ledger exists to make independent.
-
-        The caller owns the pool's lifecycle: open it, close it, size it. This borrows.
-        """
+        """Initialize the ledger with a caller-owned connection pool."""
         self._pool = pool
 
     async def read(self, run_id: str, key: str) -> Step:
@@ -117,13 +108,7 @@ class PostgresSteps:
                 )
 
     async def _fence(self, connection: AsyncConnection[Any], run_id: str, token: int) -> None:
-        """Reject stale lease holders while allowing unleased writes with token zero.
-
-        Takes the caller's borrowed connection rather than borrowing its own, so that reading the
-        issued token and writing under it are one transaction. On a second connection the check and
-        the write would straddle a commit boundary, and a lease that changed hands in between would
-        be fenced too late — exactly the race the token exists to close.
-        """
+        """Reject stale lease holders within the caller's transaction."""
         if not token:
             return
         async with connection.cursor(row_factory=dict_row) as cursor:
@@ -166,18 +151,11 @@ class PostgresSteps:
         return int(row["token"]) if row else 0
 
     async def release(self, run_id: str, owner: str) -> None:
-        """Expire a run lease held by ``owner``, keeping its token.
+        """Expire an owned lease without resetting its fencing token.
 
-        The row is expired rather than deleted, because the token must never go backwards. Deleting
-        it sent the next `acquire` down the `insert ... values (…, 1, …)` path, so a released run
-        handed out token 1 again — and a worker still holding token 1 from before then passed the
-        fence, which is the exact failure `Fenced` exists to prevent. Its own docstring is the
-        specification: *the token increases every time the lease changes hands, so the newest holder
-        always has the highest one.* A delete broke that; an expiry keeps it.
-
-        `owner` is cleared so the next acquirer counts as a change of hands and takes token + 1,
-        and the epoch timestamp makes the row unconditionally available rather than available one
-        clock tick from now.
+        Args:
+            run_id: Durable run identifier.
+            owner: Current lease owner.
         """
         async with self._pool.connection() as connection, connection.cursor() as cursor:
             await cursor.execute(
@@ -261,13 +239,7 @@ class PostgresSteps:
         inputs: list[tuple[str, dict[str, Any]]],
         token: int = 0,
     ) -> set[str]:
-        """Atomically finish metadata steps and append idempotent inbox inputs.
-
-        One borrowed connection means one transaction, and the pool's context manager rolls it back
-        on any exception — so the hand-written `try`/`rollback` this used to carry is gone. It was
-        also the wrong shape: rolling back a *shared* connection would have discarded whatever
-        another run had written on it and not yet committed.
-        """
+        """Atomically finish metadata steps and append idempotent inbox inputs."""
         inserted: set[str] = set()
         async with self._pool.connection() as connection:
             await self._fence(connection, run_id, token)

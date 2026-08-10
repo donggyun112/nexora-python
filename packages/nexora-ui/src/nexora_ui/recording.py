@@ -1,21 +1,7 @@
-"""Keep a run's conversation, so talking to an agent twice is one conversation.
+"""Console-level recording and restoration of model-visible run history.
 
-`AgentRuntime` does not persist a transcript yet — the README says so, and the console proved it:
-an independent agent opened with `wait="none"` was reachable by run id and answered its second
-turn with "I do not remember what you said". Reachable is not continuous.
-
-`nexora.transcript` is the piece that closes it, and until the runtime writes one itself the
-documented path is to hand the committed history back explicitly. So the console records what it
-watches and hands it back on the next turn. What it can observe is what it can restore: the
-prompt, the assistant turns, the tool calls and their results — the model-visible conversation and
-nothing else. Streamed text is joined per turn rather than per delta, because a transcript of
-tokens is not a transcript.
-
-This is a console-level fix and stops at the console's edge. When the runtime writes its own
-transcript this module is what should be deleted, not extended. Two limits it does not paper over:
-the history lives as long as this process does, and a *retried* run appends its turn again rather
-than recognising it — `TranscriptWriter` deduplicates against the same parent, and a retry that
-reopens at a moved tip no longer has one.
+The recorder assembles streamed planner events into LangChain messages and persists them through
+the transcript store. Subsequent console attempts restore that history explicitly.
 """
 
 from __future__ import annotations
@@ -29,7 +15,7 @@ from nexora_store import Transcript
 
 
 class Recorder:
-    """Assemble the messages of one run from the events the console sees, and store them."""
+    """Assemble and persist model-visible messages from planner events."""
 
     def __init__(
         self,
@@ -39,11 +25,7 @@ class Recorder:
         *,
         parent_uuid: str | None = None,
     ) -> None:
-        """Start a recording for one run, opening with the prompt that began it.
-
-        Prefer `Recorder.open`, which finds `parent_uuid` for you. Constructing directly with the
-        default starts a new branch, which is only right for a conversation that has none.
-        """
+        """Initialize a recorder at a known transcript position."""
         self._writer = TranscriptWriter(
             store, conversation_id=run_id, run_id=run_id, parent_uuid=parent_uuid
         )
@@ -53,14 +35,7 @@ class Recorder:
 
     @classmethod
     async def open(cls, store: Transcript, run_id: str, prompt: str = "") -> Recorder:
-        """Continue this run's conversation rather than starting a second one beside it.
-
-        The transcript is a tree, and a writer with no parent begins a new branch. A recorder per
-        turn therefore forked the conversation once per turn: every earlier message stayed on disk
-        as a sibling branch, `active_branch` returned only the newest fork, and an agent reached a
-        second time answered as a stranger while its own history sat one link away. So the tip is
-        read first and the chain continues from it.
-        """
+        """Open a recorder at the current tip of a run's active transcript branch."""
         branch = active_branch(await store.read(run_id))
         recorder = cls(
             store, run_id, prompt, parent_uuid=branch[-1]["uuid"] if branch else None
@@ -70,12 +45,7 @@ class Recorder:
         return recorder
 
     async def observe(self, event: dict[str, Any]) -> None:
-        """Fold one planner event into the conversation being assembled.
-
-        A turn is closed by whatever ends it — the tool round it asked for, or the run itself.
-        Until then its text is still arriving, and writing a message per delta would store a
-        conversation no model could read back.
-        """
+        """Fold one planner event into the pending conversation turn."""
         match event:
             case {"type": "text", "text": str(delta)}:
                 self._text.append(delta)
@@ -126,7 +96,7 @@ class Recorder:
 
 
 def _trailing_answers(pending: list[BaseMessage]) -> int:
-    """How many tool answers are already queued behind the turn being sealed."""
+    """Count tool answers queued after the assistant turn being assembled."""
     answers = 0
     for message in reversed(pending):
         if not isinstance(message, ToolMessage):
@@ -136,7 +106,7 @@ def _trailing_answers(pending: list[BaseMessage]) -> int:
 
 
 def _rendered(result: Any) -> str:
-    """The text a tool result showed the model, as the loop renders it."""
+    """Render a tool result using the planner's model-visible format."""
     match result:
         case {"type": "text", "text": str(text)}:
             return text
@@ -147,5 +117,5 @@ def _rendered(result: Any) -> str:
 
 
 async def history_of(store: Transcript, run_id: str) -> list[BaseMessage]:
-    """What this run already said, ready to hand back as `history`."""
+    """Return the active transcript branch as model history."""
     return messages_of(await store.read(run_id))

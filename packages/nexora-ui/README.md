@@ -60,6 +60,12 @@ LEASH` can be cancelled from here and by the model's `cancel_task`; what is `IND
 address and nothing else, which is the entire result of opening one.
 
 **Talk to it** spends that address — the same durable queue a steer crosses, aimed at the child's
-run. Note the caveat the console prints with it: the run is reachable, but it begins each turn with
-an empty transcript, because transcript persistence is not ported. It will not remember what it was
-asked before.
+run — and the agent remembers its earlier turns. That continuity is the console's, not the
+runtime's: `AgentRuntime` persists no transcript yet, so `recording.py` keeps what the console
+watched and hands it back as explicit `history`, which is the path the core README documents. It
+ends where this process does, and `GET /api/transcript/{run_id}` shows exactly what was kept.
+
+One thing to know when testing it: the demo system prompt tells the agent to use a tool whenever
+asked to *recall a note*, so "what did I tell you earlier?" makes it call `recall_note`, find
+nothing, and answer that it does not remember — with the whole conversation sitting in its context.
+Ask without that word and it answers from the transcript.

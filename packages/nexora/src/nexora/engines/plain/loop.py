@@ -1,26 +1,8 @@
-"""The ReAct loop, ported from Nexora's `packages/architectures/src/react.ts`.
+"""Plain asynchronous ReAct loop compatible with LangChain chat models.
 
-Control flow and nothing else: the model, the tools, and every policy hook are injected. The
-loop runs until something tells it to stop — there is no built-in iteration cap, because how
-long an agent may run is the caller's decision (see `ShouldStopAfterTurn`).
-
-`controls` is one object because each control point is one decision: an ordered chain of stages,
-composed by whoever supervises this run (`nexora.controls.ControlPlane`). They are calls and not
-subscriptions, because the order of those stages is the policy and no event dispatch can promise
-an order. `emit` is the other side of that: observation, published after each decision, and
-dropped rather than raised if a sink is unwell.
-
-The remaining hooks each take a position the loop alone has: `drain_inputs` and
-`should_stop_after_turn` need a round boundary. Suspension is deliberately absent: the injected
-orchestrator commits it and terminates this execution instead of returning it as agent state.
-
-`execute_round` defaults to the plain `execute_calls`, so durability is injected rather than
-assumed. Driven directly, this loop touches no ledger and no store while keeping every control
-point, and the one thing it then cannot do is park a call — a suspension is only a suspension once
-its continuation is written down. See `examples/06_bare_loop.py`.
-
-The model is a LangChain `BaseChatModel`, so provider differences, tool binding, and the
-reassembly of tool arguments that arrive as JSON fragments all happen below this file.
+The loop owns deterministic ``model -> tools -> model`` control flow. Policy, persistence,
+cancellation, input admission, and iteration limits are supplied through explicit collaborators.
+Behavior is ported from ``packages/architectures/src/react.ts``.
 """
 
 from collections import Counter
@@ -65,19 +47,7 @@ from ...tools import (
 
 @dataclass(slots=True)
 class _Spend:
-    """What a run cost, accumulated across its turns.
-
-    One object rather than a counter and a string because every terminal path reports both, and
-    the alternative was another parameter threaded through ten `_done` calls. `Counter` and not a
-    plain dict for the tokens: `.update()` adds instead of overwriting, and a key nobody reported
-    stays absent rather than becoming a zero somebody has to interpret.
-
-    Kept per model, because one run is not always answered by one model — the same reason
-    `_model_of` reads the name off the reply instead of the bound model. A single total plus the
-    last name seen prices the whole run at that model's rate, which is wrong by whatever the rates
-    differ by. Tokens reported before any model was named key on `""`: unattributed is a fact, and
-    charging them to whichever model came later would be a guess.
-    """
+    """Accumulate token usage per responding model across planner turns."""
 
     by_model: dict[str, Counter[str]] = field(default_factory=dict)
     model: str = ""
@@ -364,12 +334,7 @@ async def _model_stream(
     compact_context: CompactContext | None,
     emit: Emit | None,
 ) -> AsyncGenerator[AIMessageChunk | _FailedModel, None]:
-    """Stream one model round, applying caller-owned recovery before exposing failure.
-
-    Recovery stays inside the round so a retry cannot replay earlier tool effects. Once any text
-    was yielded, recovery fails closed: a second generation would duplicate text the consumer has
-    already displayed and could diverge from the unfinished first answer.
-    """
+    """Stream one model round with caller-owned retry and compaction policy."""
     attempts: Counter[ModelErrorKind] = Counter()
     while True:
         reply: AIMessageChunk | None = None
@@ -415,13 +380,7 @@ def _text_of(reply: AIMessageChunk | None) -> str:
 
 
 def _model_of(reply: AIMessageChunk | None) -> str:
-    """The model that answered, when the provider named it.
-
-    Read off the reply rather than the bound model, because those are different facts and the
-    billed one is here: an alias resolves to a dated snapshot, and a provider-side fallback can
-    answer on a model nobody asked for. A cost record naming what was requested rather than what
-    ran is a cost record that reconciles against nothing.
-    """
+    """Return the provider-reported model that produced a reply."""
     metadata = getattr(reply, "response_metadata", None) if reply is not None else None
     if not metadata:
         return ""
@@ -501,23 +460,10 @@ def _status_code_of(failure: Exception) -> int | None:
 
 
 def _usage_of(reply: AIMessageChunk | None) -> dict[str, int]:
-    """Token counts if the provider reported any. Absent and zero are different facts.
+    """Extract provider-reported token usage without deriving missing values.
 
-    The cache lines are separated out because the three input kinds are priced differently — a
-    cache read costs about a tenth of a fresh input token and a cache write about a quarter more,
-    so a caller that multiplies one input number by one rate is wrong by up to an order of
-    magnitude on a cached prompt. Names follow `LLMUsage` in the TypeScript contract:
-    `cachedTokens` is the read, `cacheWriteTokens` the creation.
-
-    **Whether `prompt_tokens` already contains the cache counts depends on the provider, and this
-    function does not decide.** LangChain documents `input_tokens` as the sum of every input type,
-    which would include them; Anthropic's own API treats the three as disjoint and expects them
-    added (`UsageInfo::total_input` in the Claude Code reference does exactly that). Subtracting
-    under the wrong convention double-counts, so `total_tokens` is carried through as the
-    discriminator: `prompt + completion == total` means the cache counts are already inside
-    `prompt`, and needing the cache counts to reach `total` means they are not. Storing the
-    reported total instead of a derived "fresh" figure keeps that decision at the query, where it
-    can be fixed, rather than baked into a column that was written wrong.
+    Prompt, completion, total, cache-read, and cache-write counts remain separate because provider
+    conventions differ on whether cached tokens are included in prompt totals.
     """
     usage = getattr(reply, "usage_metadata", None) if reply is not None else None
     if not usage:
@@ -547,16 +493,10 @@ async def _done(
     *,
     mid_turn: bool = False,
 ) -> dict[str, Any]:
-    """The single terminal event. Every exit but `suspended` goes through here.
+    """Build and publish the terminal event for a non-suspended run.
 
-    `stop_reason` exists so an abort leaves a record: without it a cancelled run and a finished
-    one both look like a stream that simply ended.
-
-    `mid_turn` separates the two places an abort lands, which produce the same shape and mean
-    different things. Stopped at a round boundary, `content` is a finished assistant turn. Stopped
-    inside a generation, it is a fragment: the words a person already read, of a turn that might
-    have been about to call a tool. A host appending that as a completed turn tells the model it
-    said something it never finished, so the flag is what says a marker is needed beside it.
+    ``mid_turn`` marks incomplete streamed content so transcript writers do not treat it as a
+    completed assistant turn.
     """
     if emit is not None:
         await emit(EventType.STOP, {"reason": reason, "content": content})

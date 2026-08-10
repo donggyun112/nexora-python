@@ -5,7 +5,9 @@
 - This repository is the Python 3.12+ port of Nexora, intended to replace the TypeScript
   runtime rather than sit beside it.
 - Preserve observable TypeScript Nexora behavior. `packages/architectures/src/react.ts` is the
-  behavioral reference for the loop; cite the line a rule comes from when porting one.
+  behavioral reference for the loop; cite the **function or expression** a rule comes from when
+  porting one, never a line number — the reference moves, and a stale coordinate is worse than no
+  citation because it looks like one.
 - **Messages, tool calls and models are LangChain's.** `BaseMessage`, `ToolCall`,
   `BaseChatModel`. Owning our own bought translation layers and a re-implementation of
   `ChatOpenAI`.

@@ -1,14 +1,7 @@
-"""Messages across a suspension: pruning a stopped turn, reattaching the answer, parking the record.
+"""Serialization and message reconstruction for suspended agent runs.
 
-**Where the line is.** The ledger (`nexora.orchestrator`) owns the continuation *state* — resuming a
-run is its job — and stores it as an opaque payload. It does not know what a message is, and it must
-not: a ledger that knows about messages grows a second opinion about what a run is.
-
-This module is the codec on the other side of that line. It owns message shapes, the provider's rule
-that every tool call needs an answer, and what a suspension has to carry — and it turns those into
-a payload the ledger can hold. It does not persist anything itself; `Orchestrator.suspend` does.
-
-Ported from `suspendHistorySnapshot` in `loop-helpers.ts`.
+The execution ledger stores these payloads opaquely; this module owns their LangChain message
+semantics.
 """
 
 from typing import Any, NamedTuple, cast
@@ -31,17 +24,16 @@ def resume_after_suspend(
     *,
     name: str = "",
 ) -> list[BaseMessage]:
-    """The history a run continues from, once the suspended call has an answer.
+    """Append a suspended call's answer to its saved model history.
 
-    The other half of `suspend_history_snapshot`, and the reason that function keeps the
-    suspending call in place: the answer arrives as that call's `ToolMessage`, so the assistant
-    turn asking for it must still be there to answer. Pass the result to `react_loop` as
-    `history` with an empty `prompt` — the supervisor is not instructing the agent again, it is
-    handing over what it was waiting for.
+    Args:
+        snapshot: History produced by ``suspend_history_snapshot``.
+        call_id: Suspended tool-call identifier.
+        result: Resumption result encoded as a tool result.
+        name: Optional tool name.
 
-    Calls the model issued but that never ran are already gone from the snapshot; the model
-    re-issues them. Only the suspended call is answered here, which is what makes a resumed run
-    a continuation rather than a replay.
+    Returns:
+        History ready to pass to the planner for continuation.
     """
     return [*snapshot, suspension_result_message(call_id, result, name=name)]
 
@@ -116,22 +108,18 @@ def suspend_history_snapshot(
     suspended_call_id: str,
     completed_call_ids: list[str],
 ) -> list[BaseMessage]:
-    """History as it should look when the turn resumes.
+    """Build model history for a suspended tool round.
 
-    The batch that suspended may have dispatched calls that never ran. Left in place, those
-    tool calls are unanswerable — a provider rejects an assistant turn whose tool calls have
-    no matching results — so they are dropped from the suspending message. Only the suspended
-    call (whose result arrives on resume) and the ones that already completed survive; the
-    model re-issues the rest.
+    Unexecuted calls are removed from the suspending assistant message. The suspended call and
+    already-completed calls remain so each can receive a matching tool result.
 
-    Why snapshot at all, when a transcript can be replayed? Because replay is only faithful
-    for what the pause cannot change. The tools that already ran are external facts — they
-    happened, and nothing in the history says so until their results are written down. The
-    same test decides what else belongs in a suspension record: reconstructible from the
-    conversation, leave it out; changed by the outside world while stopped, put it in.
+    Args:
+        messages: Model history at suspension time.
+        suspended_call_id: Tool call awaiting an external answer.
+        completed_call_ids: Calls from the same round that already completed.
 
-    The history itself is the documented exception — reproducible in principle, snapshotted
-    anyway so a resumed turn sees exactly the messages the suspended one did.
+    Returns:
+        A detached history snapshot suitable for resumption.
     """
     retained = {suspended_call_id, *completed_call_ids}
     suspending = _index_of_message_calling(messages, suspended_call_id)
@@ -150,28 +138,25 @@ def suspend_history_snapshot(
 
 
 class Suspension(NamedTuple):
-    """A run stopped waiting for a person, written down so another process can continue it.
+    """Persisted continuation for a run awaiting an external decision.
 
-    What is stored is deliberately **not the decision**. A suspension's window is days, not
-    milliseconds, and rules change inside it — so an effect approval resume passes the answer and
-    `rules_version` window through the current `on_resume` control. Storing "approved" as authority
-    would let a rule added on Tuesday be ignored by an approval granted on Monday.
+    Attributes:
+        call: Suspended tool call.
+        request: Complete external approval request.
+        messages: Model history snapshot.
+        completed: Results completed before suspension.
+        rules_version: Effective policy identity at suspension time.
+        turn: Original planner turn number.
+        subject: Audit subject associated with the run.
     """
 
     call: ToolCall
     request: dict[str, Any]
-    """The permission gate's request, whole — it carries the external approval handle."""
     messages: list[BaseMessage]
     completed: list[dict[str, Any]]
     rules_version: str
-    """What the rules looked like when the call was made. Compare, do not trust."""
     turn: int
-    """The original model turn, retained so resumed control and observation events stay accurate."""
     subject: str = ""
-    """Who the run was acting for when it parked. Audit, not authority — `rules_version` is what
-    decides whether the approval still stands, and two subjects holding identical rules hold
-    identical authority. Without this, "whose deploy was waiting" has to be reconstructed by
-    correlating run ids after the fact, which is the reconstruction an incident cannot afford."""
 
 
 def encode_continuation(

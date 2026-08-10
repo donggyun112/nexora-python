@@ -1,8 +1,4 @@
-"""The public Agent Runtime facade.
-
-Nexora is not a general-purpose workflow engine. This facade binds the plain agent planner to its
-durable execution boundary: `StepLog`, permission suspension, recovery, and events.
-"""
+"""Public runtime facade for durable Nexora agent execution."""
 
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
@@ -44,12 +40,7 @@ _CANCELLED = {
 
 
 class AgentRuntime:
-    """Run Nexora agents without exposing their orchestration wiring.
-
-    `StepLog` persists effect intent/results and the input queue. Agent transcript persistence is a
-    separate responsibility; until a transcript store lands, crash recovery accepts durable
-    history explicitly. Queue admission therefore never pretends to be a transcript checkpoint.
-    """
+    """Bind the plain planner to durable execution, suspension, recovery, and events."""
 
     def __init__(
         self,
@@ -69,18 +60,9 @@ class AgentRuntime:
         self._model_failure_policy = model_failure_policy
         self._compact_context = compact_context
         self.events = RuntimeEvents(emit)
-        """Lifecycle events emitted by the host at the boundary where they actually occur."""
 
     def background_sink(self, run_id: str) -> Deliver:
-        """Where a settled background task's answer re-enters this run.
-
-        The reference needs two delivery paths — `ctx.steerSelf` folds a result into the turn that
-        is still running, `ctx.deliverResult` starts a new one after it ended — because the two
-        land in different places. Here they are the same place: the durable input queue, which the
-        planner drains at every round boundary and which keeps what arrives after the last one.
-        So a result that beats the turn's end is folded in, a result that misses it waits for the
-        next `run`, and the caller does not have to know which happened.
-        """
+        """Return a callback that submits background results to a run's input queue."""
 
         async def deliver(result: BackgroundResult) -> None:
             arrival = PendingInput(

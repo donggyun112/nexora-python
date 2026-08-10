@@ -1,8 +1,4 @@
-"""One attempt at an agent, driven until it returns a value.
-
-The runtime owns fresh/resume/recover and turns each external input into a queue item. This adapter
-only consumes the already-wired engine stream and returns its terminal value.
-"""
+"""Adapter that consumes an agent engine stream into one terminal outcome."""
 
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -21,13 +17,16 @@ async def drive(
     on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     **hooks: Any,
 ) -> dict[str, Any]:
-    """Drive `engine` to a finished outcome, or raise if it did not finish.
+    """Run an engine and return its completed terminal outcome.
 
-    `run_agent` supplies the raising: `error`, `suspended` and `aborted` are not outcomes, so a step
-    that records what this returns cannot record a non-answer.
+    Args:
+        engine: Agent engine callable.
+        model: LangChain chat model.
+        tools: Tool executor exposed to the engine.
+        on_event: Optional event observer.
+        **hooks: Engine-specific collaborators and hooks.
 
-    `hooks` goes to the engine untouched (`permissions`, `emit`, `aborted`, …). Passing them
-    through rather than naming them keeps this from becoming a second place engine arguments are
-    declared, which is a place they can be forgotten.
+    Returns:
+        Completed terminal event.
     """
     return await run_agent(engine(model, tools, **hooks), on_event)

@@ -1,19 +1,7 @@
-"""Implement the append-only transcript and run records with PostgreSQL.
+"""PostgreSQL implementation of the append-only transcript store.
 
-Transcript entries are stored verbatim as JSON documents: `select entry order by seq` is that
-conversation's JSONL, so a file and a table hold the same thing and neither has to be converted into
-the other. Shredding a message into relational rows would mean reassembling it on every read, and a
-wrong reassembly is a corrupted conversation rather than a failed query.
-
-Every column but `seq` and `ts` is **generated from `entry`**, not copied into place by the caller,
-so a column and the document it came from cannot drift — `insert` passes two values. `ts` is the one
-exception: `(entry ->> 'timestamp')::timestamptz` reads the session `TimeZone` when the string
-carries no offset, which makes the cast stable rather than immutable, and Postgres refuses it in a
-generation expression (verified: `ERROR: generation expression is not immutable`).
-
-`type` carries no `check` constraint on purpose. An entry kind nobody has taught this table about
-must still store, so that a reader can skip it; a constraint would turn "unknown type" from a reader
-concern into an insert failure, and the next entry kind into a migration.
+Entries are persisted verbatim as JSONB. Generated columns provide indexed transcript metadata,
+while run and model-usage tables store operational accounting data.
 """
 
 from typing import Any
@@ -74,40 +62,14 @@ create table if not exists nexora_run_model (
 create index if not exists nexora_run_model_by_model
     on nexora_run_model (model);
 """
-"""Three tables: the conversation, the run, and what each model of that run cost.
-
-Tokens live only in `nexora_run_model`, never on `nexora_run`. A run answered by one model is one
-child row and a run that fell back to another is two, so the same query prices both — and there is
-no run-level total to disagree with the per-model rows.
-
-`total_tokens` is stored rather than derived because whether `prompt_tokens` already contains the
-cache counts is a per-provider convention (see `_usage_of` in the loop). With the reported total in
-hand a reader can tell which convention produced a row instead of assuming one.
-
-`cost_usd` is stored rather than computed on read: rates change, and without a historical rate table
-yesterday's cost cannot be recovered. `numeric` and not `double precision` — money that rounds
-differently on two machines is money nobody can reconcile.
-
-**No column outside a key is defaulted**, `started_at` included. A `not null default now()` reads
-back as a value `MemoryTranscript` cannot produce, so a run opened the same way reported a different
-field set depending on which store answered — the one divergence `tests/test_store_conformance.py`
-exists to catch, and it is the same rule the token columns follow — nullable rather than
-`default 0`, because a provider that reported no usage must not read back as a free run. A field
-nobody wrote is absent, not invented. `TranscriptWriter.opened` writes `started_at`.
-"""
+"""Schema for transcript entries, run metadata, and per-model usage records."""
 
 
 class PostgresTranscript:
     """Persist conversation entries and per-run cost in PostgreSQL."""
 
     def __init__(self, pool: AsyncConnectionPool[AsyncConnection[Any]]) -> None:
-        """Initialize the transcript with a pool to borrow a connection from per operation.
-
-        A pool and not a connection, for the reason `PostgresSteps.__init__` spells out: two runs
-        sharing one connection share its transaction boundary, so one run's commit publishes the
-        other's half-written work. Here that would append an entry the conversation had not reached
-        yet. The caller owns the pool's lifecycle; this borrows.
-        """
+        """Initialize the store with a caller-owned connection pool."""
         self._pool = pool
 
     async def append(self, entry: dict[str, Any]) -> bool:
@@ -167,12 +129,7 @@ class PostgresTranscript:
         )
 
     async def read_run(self, run_id: str) -> dict[str, Any] | None:
-        """The run record, or `None` if this run was never opened.
-
-        Null columns are dropped rather than returned as `None`, because the in-memory store has no
-        columns and can only report a field it was given. Reporting `{"stop_reason": None}` on one
-        side and `{}` on the other would make the same run read as two different facts.
-        """
+        """Return a run record with unwritten null fields omitted."""
         async with (
             self._pool.connection() as connection,
             connection.cursor(row_factory=dict_row) as cursor,
@@ -211,17 +168,7 @@ class PostgresTranscript:
         fields: dict[str, Any],
         allowed: frozenset[str],
     ) -> None:
-        """Insert or merge `fields` into `table` under `keys`.
-
-        Column names are checked against an allow-list rather than interpolated as given: they
-        cannot be parameterized, so an unchecked key would be a place where caller-supplied text
-        reaches the statement text. An unknown key is a caller bug, and a silent no-op would hide
-        it until someone queried for a cost that was never written.
-
-        Merge and not replace, because these rows are written twice from different vantage points —
-        once when the run opens knowing only where it belongs, once when it ends knowing the cost.
-        A replace would erase `started_at`, which is the field that says the run began at all.
-        """
+        """Merge allow-listed fields into a keyed record."""
         check_fields(table, fields, allowed)
         columns = sorted(fields)
         named = ", ".join((*keys, *columns))

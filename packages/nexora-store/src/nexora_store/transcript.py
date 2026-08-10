@@ -1,12 +1,7 @@
-"""Define an append-only conversation transcript and per-model run cost records.
+"""Append-only transcript and per-model run-usage store contracts.
 
-Transcript entries are opaque mappings stored verbatim. This observation record is separate from
-the load-bearing step ledger and is never consulted to decide whether an effect ran.
-
-`RUN_FIELDS` and `MODEL_USAGE_FIELDS` are declared here rather than in each backing store, so the
-in-memory and durable implementations cannot drift into accepting different field sets. A caller
-that works against one works against the other; `tests/test_transcript_conformance.py` runs the same
-suite over both.
+Transcript entries are opaque observation records and do not participate in effect execution or
+recovery decisions.
 """
 
 import json
@@ -29,7 +24,7 @@ RUN_FIELDS = frozenset(
         "ended_at",
     }
 )
-"""What a run record holds. Tokens are not here — they belong per model."""
+"""Fields accepted by run metadata records."""
 
 MODEL_USAGE_FIELDS = frozenset(
     {
@@ -41,8 +36,7 @@ MODEL_USAGE_FIELDS = frozenset(
         "cost_usd",
     }
 )
-"""What one model of one run cost. `total_tokens` is kept so a reader can tell which convention
-the provider used for `prompt_tokens` rather than assuming one."""
+"""Fields accepted by per-model usage records."""
 
 
 class _Row(NamedTuple):
@@ -57,15 +51,13 @@ class Transcript(Protocol):
     """Persist conversation entries and per-model run cost."""
 
     async def append(self, entry: dict[str, Any]) -> bool:
-        """Append an entry verbatim and report whether it was new.
+        """Append an entry idempotently.
 
-        Identity is `(entry["conversation_id"], entry["uuid"])`, read out of the document.
-        Neither is a parameter, because a second way to name the same row is a way for the two to
-        disagree — and they did: this store filed by the parameter while the durable one filed by
-        the generated column, so one call could land in two different conversations.
+        Args:
+            entry: Transcript entry containing ``conversation_id`` and ``uuid``.
 
-        Idempotent on that pair, because retries happen — a crash after the model answered and
-        before the transcript committed leaves a resumed run about to write the same entry again.
+        Returns:
+            ``True`` when inserted, or ``False`` when the identity already exists.
         """
         ...
 
@@ -74,22 +66,18 @@ class Transcript(Protocol):
         ...
 
     async def record_run(self, run_id: str, fields: dict[str, Any]) -> None:
-        """Merge `RUN_FIELDS` into a run record, creating it when absent.
+        """Merge validated fields into a run record.
 
-        Merge and not replace: the row is written twice from different vantage points, once when the
-        run opens and once when it ends. Raises `ValueError` on a field outside `RUN_FIELDS`, so a
-        caller finds a typo here rather than discovering the cost was never written.
+        Raises:
+            ValueError: If ``fields`` contains a name outside ``RUN_FIELDS``.
         """
         ...
 
     async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
-        """Merge `MODEL_USAGE_FIELDS` for one model of one run.
+        """Merge validated usage fields for one model in a run.
 
-        Keyed by model rather than folded into the run record because one run is not always
-        answered by one model — a provider-side fallback answers on a model nobody asked for, and
-        rates differ. A single total plus the last model named prices the whole run at that
-        model's rate. Tokens reported before any model was named key on the empty string:
-        unattributed is a fact, and charging them to whichever model came later is a guess.
+        Raises:
+            ValueError: If ``counts`` contains a name outside ``MODEL_USAGE_FIELDS``.
         """
         ...
 
@@ -103,11 +91,7 @@ class Transcript(Protocol):
 
 
 def check_fields(table: str, fields: dict[str, Any], allowed: frozenset[str]) -> None:
-    """Reject a field no implementation has a place for.
-
-    Shared so that the in-memory store refuses exactly what the durable one refuses. A store that
-    quietly accepted an unknown field would let a test pass and the production write fail.
-    """
+    """Raise ``ValueError`` when a record contains unsupported fields."""
     unknown = set(fields) - allowed
     if unknown:
         raise ValueError(f"{table} has no field {sorted(unknown)}")
@@ -166,12 +150,6 @@ class MemoryTranscript:
 
 
 def _frozen(entry: dict[str, Any]) -> dict[str, Any]:
-    """A copy that shares nothing with the caller's mapping.
-
-    A shallow `dict()` would leave nested lists and dicts aliased, so mutating a message's content
-    after appending it would rewrite history here and not in a database — the divergence that makes
-    an in-memory store lie about a bug. Round-tripping through JSON also refuses an entry a JSONB
-    column would refuse, at the point the test can see it.
-    """
+    """Return a JSON-compatible deep copy of an entry."""
     copied: dict[str, Any] = json.loads(json.dumps(entry))
     return copied

@@ -9,13 +9,21 @@ from nexora import AgentRuntime
 from nexora_store import MemoryTranscript
 
 runtime = AgentRuntime(store=steps, transcript=MemoryTranscript(), emit=events)
-outcome = await runtime.run("run-42", model, tools, "inspect this repository")
+outcome = await runtime.run(
+    "attempt-42", model, tools, "inspect this repository",
+    conversation_id="conversation-7",
+)
 ```
 
 Every tool effect crosses the orchestrator's durable boundary before it runs, keyed by the model's
 own `call_id`, so a run that dies mid-round is reconstructed from its transcript without replaying
 the model turn and a permission gate can park a run for days without holding a worker. Omit
 `transcript=` to keep transcript persistence caller-owned.
+
+The core also exports ordered `FallbackChatModel` selection and the
+`WorkspaceProvider`/`WorkspaceSession` boundary. `HostWorkspaceProvider` is a usable path-confined
+local implementation and deliberately identifies itself as non-isolated; use a container or
+remote provider for untrusted execution and enforced network policy.
 
 Install what you need beside it:
 

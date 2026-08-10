@@ -23,12 +23,14 @@ from .driver import drive
 from .engines.plain import react_loop
 from .history import (
     cancelled_tool_inputs,
+    continuation_cursor,
     decode_continuation,
+    decode_cursor_continuation,
     suspension_result_message,
 )
 from .orchestrator import AgentSuspended, MemorySteps, Orchestrator, StepLog
 from .subagents import Deliver
-from .transcript import TranscriptWriter, active_branch, messages_of
+from .transcript import TranscriptWriter, active_branch, messages_at, messages_of
 
 __all__ = ["AgentRuntime", "run"]
 
@@ -51,15 +53,17 @@ class _RuntimeTranscript:
     uuids: list[str]
 
     @classmethod
-    async def open(cls, store: Transcript, run_id: str) -> "_RuntimeTranscript":
+    async def open(
+        cls, store: Transcript, conversation_id: str, run_id: str
+    ) -> "_RuntimeTranscript":
         """Restore a run's active branch and continue writing from its tip."""
-        entries = await store.read(run_id)
+        entries = await store.read(conversation_id)
         branch = active_branch(entries)
         message_entries = [entry for entry in branch if isinstance(entry.get("message"), dict)]
         restored = messages_of(entries)
         writer = TranscriptWriter(
             store,
-            conversation_id=run_id,
+            conversation_id=conversation_id,
             run_id=run_id,
             parent_uuid=branch[-1]["uuid"] if branch else None,
         )
@@ -112,14 +116,14 @@ class AgentRuntime:
         self._compact_context = compact_context
         self.events = RuntimeEvents(emit)
 
-    def background_sink(self, run_id: str) -> Deliver:
+    def background_sink(self, run_id: str, *, conversation_id: str | None = None) -> Deliver:
         """Return a callback that submits background results to a run's input queue."""
 
         async def deliver(result: BackgroundResult) -> None:
             arrival = PendingInput(
                 "background_result", HumanMessage(result.as_message()), result.task_id
             )
-            await self.submit(run_id, arrival)
+            await self.submit(run_id, arrival, conversation_id=conversation_id)
 
         return deliver
 
@@ -137,9 +141,11 @@ class AgentRuntime:
         prompt_id: str | None = None,
         input_mode: InputMode = "interactive",
         model_identity: str | None = None,
+        conversation_id: str | None = None,
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Start or continue a turn; interactive input cancels a parked tool request."""
+        conversation = conversation_id or run_id
         async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
             history = engine_options.pop("history", None)
             recover_pending = self._transcript is not None
@@ -151,9 +157,7 @@ class AgentRuntime:
             # and three copies of "decode, then check for None" was three chances to disagree
             # about what a corrupt record means.
             active = await orchestrator.active_continuation()
-            waiting = (
-                decode_continuation(active.get("continuation")) if active is not None else None
-            )
+            waiting = await self._decode_waiting(active, conversation)
 
             # A run is parked in one of three states, and a new prompt means something different
             # in each. `waiting` is the only one a prompt can change: interactively it cancels the
@@ -195,6 +199,7 @@ class AgentRuntime:
                 controls=controls,
                 on_event=on_event,
                 recover_pending=recover_pending,
+                conversation_id=conversation,
                 model_identity=model_identity,
                 **engine_options,
             )
@@ -208,6 +213,7 @@ class AgentRuntime:
         item: PendingInput,
         *,
         input_mode: InputMode = "interactive",
+        conversation_id: str | None = None,
     ) -> PendingInput:
         """Durably route input; user input cancels a parked request in interactive mode."""
         orchestrator = self._orchestrator(run_id)
@@ -218,7 +224,7 @@ class AgentRuntime:
             and item.kind in {"user_prompt", "user_steer"}
             and input_mode == "interactive"
         ):
-            waiting = decode_continuation(active.get("continuation"))
+            waiting = await self._decode_waiting(active, conversation_id or run_id)
             if waiting is None:
                 raise RuntimeError("active suspension has no continuation")
             # Only this branch rewrites the transcript, and only a parked run can reach it — the
@@ -244,12 +250,14 @@ class AgentRuntime:
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
         model_identity: str | None = None,
+        conversation_id: str | None = None,
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Route an answer by the suspension's external `pending_id` and resume its call."""
+        conversation = conversation_id or run_id
         async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
             active = await orchestrator.active_continuation()
-            waiting = decode_continuation(active.get("continuation")) if active else None
+            waiting = await self._decode_waiting(active, conversation)
             if (
                 waiting is None
                 or active is None
@@ -294,6 +302,7 @@ class AgentRuntime:
                 controls=controls,
                 on_event=on_event,
                 recover_pending=False,
+                conversation_id=conversation,
                 model_identity=model_identity,
                 **engine_options,
             )
@@ -314,6 +323,7 @@ class AgentRuntime:
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
         model_identity: str | None = None,
+        conversation_id: str | None = None,
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Recover an interrupted tool round and continue without replaying its model turn."""
@@ -342,6 +352,7 @@ class AgentRuntime:
                 controls=controls,
                 on_event=on_event,
                 recover_pending=False,
+                conversation_id=conversation_id or run_id,
                 aborted=aborted,
                 model_identity=model_identity,
                 **engine_options,
@@ -357,6 +368,7 @@ class AgentRuntime:
         controls: Controls | None,
         on_event: OnAgentEvent | None,
         recover_pending: bool,
+        conversation_id: str,
         **engine_options: Any,
     ) -> dict[str, Any]:
         if any(
@@ -370,7 +382,9 @@ class AgentRuntime:
         engine_options.setdefault("compact_context", self._compact_context)
 
         transcript = (
-            await _RuntimeTranscript.open(self._transcript, orchestrator.run_id)
+            await _RuntimeTranscript.open(
+                self._transcript, conversation_id, orchestrator.run_id
+            )
             if self._transcript is not None
             else None
         )
@@ -437,10 +451,37 @@ class AgentRuntime:
                 waiting = decode_continuation(active.get("continuation")) if active else None
                 if waiting is not None:
                     await transcript.replace(list(waiting.messages))
+                    await orchestrator.compact_suspension(
+                        waiting.call["id"] or "",
+                        conversation_id=conversation_id,
+                        leaf_uuid=transcript.writer.parent_uuid,
+                    )
             raise
         if transcript is not None:
             await transcript.writer.closed(outcome)
         return outcome
+
+    async def _decode_waiting(
+        self, active: dict[str, Any] | None, conversation_id: str
+    ) -> Any:
+        """Hydrate either a legacy snapshot or a compact transcript continuation."""
+        if active is None:
+            return None
+        payload = active.get("continuation")
+        if not isinstance(payload, dict):
+            return None
+        cursor = continuation_cursor(payload)
+        if cursor is None:
+            return decode_continuation(payload)
+        if self._transcript is None:
+            raise RuntimeError("compact suspension requires the configured transcript store")
+        if cursor.conversation_id != conversation_id:
+            raise ValueError(
+                "conversation_id does not match the suspension transcript cursor: "
+                f"{conversation_id!r} != {cursor.conversation_id!r}"
+            )
+        entries = await self._transcript.read(cursor.conversation_id)
+        return decode_cursor_continuation(payload, messages_at(entries, cursor.leaf_uuid))
 
     async def _recover_pending_inputs(
         self,

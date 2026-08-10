@@ -46,6 +46,7 @@ from .contracts.types import (
 )
 from .controls import Continue, Controls, Ctx, Deny, ResumeInput, Suspend
 from .history import (
+    compact_continuation,
     decode_pending_input,
     encode_continuation,
     encode_pending_input,
@@ -880,6 +881,37 @@ class Orchestrator:
         )
         if self._on_suspend is not None:
             await self._on_suspend(call, request, snapshot, completed)
+
+    async def compact_suspension(
+        self, call_id: str, *, conversation_id: str, leaf_uuid: str | None
+    ) -> None:
+        """Replace a durable snapshot with its transcript cursor after transcript sync."""
+        active = await self.active_continuation()
+        if (
+            active is None
+            or active.get("state") != "waiting"
+            or active.get("call_id") != call_id
+            or not isinstance(active.get("continuation"), dict)
+        ):
+            raise RuntimeError(f"cannot compact inactive suspension {call_id!r}")
+        continuation = compact_continuation(
+            active["continuation"],
+            conversation_id=conversation_id,
+            leaf_uuid=leaf_uuid,
+        )
+        await self._log.commit_transition(
+            self.run_id,
+            {
+                _suspend_key(call_id): continuation,
+                _active_suspension_key(): {
+                    "state": "waiting",
+                    "call_id": call_id,
+                    "continuation": continuation,
+                },
+            },
+            [],
+            self._token,
+        )
 
     async def suspension(self, key: str) -> dict[str, Any] | None:
         """The parked payload, still opaque, or None if there is none."""

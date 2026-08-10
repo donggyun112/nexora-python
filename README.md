@@ -82,6 +82,16 @@ runtime = AgentRuntime(store=steps, transcript=MemoryTranscript())
 
 Use `PostgresTranscript` from `nexora_store_pg` for restart-safe persistence. Without
 `transcript=`, callers may still provide `history=` or use `recover(...)` explicitly.
+`run_id` identifies one durable execution attempt; pass a separate `conversation_id` when several
+attempts belong to the same transcript. Permission continuations then persist only the transcript
+cursor and the external facts that can change while parked, rather than another message snapshot:
+
+```python
+await runtime.run(
+    "attempt-42", model, tools, "continue",
+    conversation_id="conversation-7",
+)
+```
 
 Transient model recovery is opt-in and bounded at the orchestration boundary. The built-in policy
 retries rate limits and server failures, asks a caller-supplied compactor to handle context
@@ -102,6 +112,24 @@ runtime = AgentRuntime(
 
 No policy means no automatic recovery. Supply `ModelFailurePolicy.backoff` when a retry must wait
 for provider or scheduler timing; the runtime deliberately does not invent a delay.
+
+For ordered provider selection, wrap already-constructed LangChain chat models. The wrapper binds
+the same tools to every candidate and never changes providers after a chunk has become visible:
+
+```python
+from nexora import FallbackChatModel, ModelProvider
+
+model = FallbackChatModel([
+    ModelProvider("primary", primary_model),
+    ModelProvider("secondary", secondary_model),
+])
+```
+
+Workspace execution is exposed through `WorkspaceProvider`/`WorkspaceSession`.
+`HostWorkspaceProvider` confines resolved paths, supports read-only/workspace-write modes,
+shell-free trusted commands, and optional durable tar snapshots. It reports `isolated=False` and
+fails closed when a command requires OS isolation or an egress allowlist. Untrusted commands use a
+container, mount-namespace, or remote provider implementing the same contract.
 
 Messages, tool calls and chat models are LangChain's — owning our own versions of those bought
 translation layers and little else.
@@ -124,7 +152,8 @@ Internally, those responsibilities split cleanly:
 - **Input ledger:** owns pending/claimed/admitted input order. Initial prompts, steers, background
   results and resume answers enter the planner through one queue contract.
 - **Effect executors:** perform mediated tool operations, and delegation composes over them
-  as a `Tools` wrapper. Sandbox effects have their place here and no implementation yet.
+  as a `Tools` wrapper. Workspace sessions provide the filesystem/process boundary; stronger OS
+  sandbox providers replace the explicit best-effort host implementation.
   Streamed model invocation is a durable step beside those tool effects.
 - **Events:** expose the same lifecycle to audit, UI and monitoring consumers.
 

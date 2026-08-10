@@ -21,6 +21,7 @@ __all__ = [
     "entry_id",
     "marker_entry",
     "message_entry",
+    "messages_at",
     "messages_of",
 ]
 
@@ -127,6 +128,25 @@ def messages_of(entries: list[dict[str, Any]]) -> list[BaseMessage]:
         if isinstance(entry.get("message"), dict)
     ]
     return list(messages_from_dict(bodies))
+
+
+def messages_at(entries: list[dict[str, Any]], leaf_uuid: str | None) -> list[BaseMessage]:
+    """Decode the branch ending at an explicit cursor, independent of the active leaf."""
+    chained = {entry["uuid"]: entry for entry in entries if "parent_uuid" in entry}
+    buried = {entry["deleted_uuid"] for entry in entries if entry.get("type") == "tombstone"}
+    branch: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    tip = leaf_uuid
+    while tip is not None and tip in chained and tip not in seen:
+        seen.add(tip)
+        entry = chained[tip]
+        if tip not in buried and isinstance(entry.get("message"), dict):
+            branch.append(entry["message"])
+        tip = entry.get("parent_uuid")
+    if leaf_uuid is not None and leaf_uuid not in chained:
+        raise LookupError(f"transcript cursor {leaf_uuid!r} does not exist")
+    branch.reverse()
+    return list(messages_from_dict(branch))
 
 
 class TranscriptWriter:

@@ -159,6 +159,13 @@ class Suspension(NamedTuple):
     subject: str = ""
 
 
+class TranscriptCursor(NamedTuple):
+    """Coordinates of a suspension's canonical history in the transcript."""
+
+    conversation_id: str
+    leaf_uuid: str | None
+
+
 def encode_continuation(
     call: ToolCall,
     request: dict[str, Any],
@@ -171,9 +178,8 @@ def encode_continuation(
 ) -> dict[str, Any]:
     """Encode a suspension as an opaque ledger payload.
 
-    The payload currently includes the full conversation snapshot. Once the append-only transcript
-    store is wired into the runtime, this becomes a cursor into it — the snapshot is only here
-    because nothing else yet holds the conversation durably.
+    This legacy/self-contained form remains available to orchestrator-only callers. AgentRuntime
+    replaces the reconstructible fields with a transcript cursor after the transcript is durable.
     """
     return {
         "origin": "pre_tool_use",
@@ -198,11 +204,66 @@ def decode_continuation(payload: dict[str, Any] | None) -> Suspension | None:
             "cannot resume an ambiguous or tool-originated legacy suspension; "
             "only pre_tool_use permission continuations are executable"
         )
+    if "messages" not in payload:
+        raise ValueError("cursor continuation requires transcript messages")
+    return _decode_continuation(payload, messages_from_dict(payload["messages"]))
+
+
+def decode_cursor_continuation(
+    payload: dict[str, Any], messages: list[BaseMessage]
+) -> Suspension:
+    """Decode a compact continuation after its transcript cursor has been resolved."""
+    if "messages" in payload:
+        decoded = decode_continuation(payload)
+        assert decoded is not None
+        return decoded
+    if continuation_cursor(payload) is None:
+        raise ValueError("continuation has neither messages nor a transcript cursor")
+    return _decode_continuation(payload, messages)
+
+
+def continuation_cursor(payload: dict[str, Any]) -> TranscriptCursor | None:
+    """Return the transcript coordinates carried by a compact continuation."""
+    raw = payload.get("transcript")
+    if not isinstance(raw, dict) or not isinstance(raw.get("conversation_id"), str):
+        return None
+    leaf = raw.get("leaf_uuid")
+    if leaf is not None and not isinstance(leaf, str):
+        raise ValueError("continuation transcript leaf_uuid must be a string or null")
+    return TranscriptCursor(raw["conversation_id"], leaf)
+
+
+def compact_continuation(
+    payload: dict[str, Any], *, conversation_id: str, leaf_uuid: str | None
+) -> dict[str, Any]:
+    """Replace reconstructible history with the cursor of its durable transcript branch."""
+    compact = {
+        name: value
+        for name, value in payload.items()
+        if name not in {"messages", "completed", "transcript"}
+    }
+    compact["transcript"] = {
+        "conversation_id": conversation_id,
+        "leaf_uuid": leaf_uuid,
+    }
+    return compact
+
+
+def _decode_continuation(
+    payload: dict[str, Any], messages: list[BaseMessage]
+) -> Suspension:
+    origin = payload.get("origin")
+    legacy_kind = payload.get("kind")
+    if origin != "pre_tool_use" and legacy_kind != "effect_approval":
+        raise ValueError(
+            "cannot resume an ambiguous or tool-originated legacy suspension; "
+            "only pre_tool_use permission continuations are executable"
+        )
     return Suspension(
         call=cast(ToolCall, payload["call"]),
         request=payload["request"],
-        messages=messages_from_dict(payload["messages"]),
-        completed=payload["completed"],
+        messages=messages,
+        completed=payload.get("completed", []),
         rules_version=payload.get("rules_version", ""),
         turn=int(payload.get("turn", 0)),
         subject=str(payload.get("subject", "")),

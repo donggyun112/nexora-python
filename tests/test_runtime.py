@@ -193,6 +193,39 @@ async def test_a_new_runtime_restores_history_without_a_history_argument() -> No
     assert outcome["content"] == "second answer"
 
 
+async def test_conversation_history_is_independent_from_run_identity() -> None:
+    """One conversation can span attempts without sharing their effect ledger."""
+    steps = MemorySteps()
+    transcripts = MemoryTranscript()
+    runtime = AgentRuntime(store=steps, transcript=transcripts)
+    await runtime.run(
+        "attempt-1",
+        scripted(says("first answer")),
+        Tools(),
+        "first question",
+        conversation_id="conversation-1",
+    )
+
+    model = scripted(says("second answer"))
+    await runtime.run(
+        "attempt-2",
+        model,
+        Tools(),
+        "second question",
+        conversation_id="conversation-1",
+    )
+
+    assert [message.content for message in model.seen[0]] == [
+        "first question",
+        "first answer",
+        "second question",
+    ]
+    first_run = await transcripts.read_run("attempt-1")
+    second_run = await transcripts.read_run("attempt-2")
+    assert first_run is not None and first_run["conversation_id"] == "conversation-1"
+    assert second_run is not None and second_run["conversation_id"] == "conversation-1"
+
+
 async def test_runtime_recovers_an_unanswered_transcript_round_automatically() -> None:
     """An unanswered stored tool call recovers without explicit history or model replay."""
 
@@ -456,6 +489,64 @@ async def test_suspension_and_resume_keep_one_automatic_transcript() -> None:
         AIMessage,
     ]
     assert restored[2].content == "ok"
+
+
+async def test_transcript_backed_suspension_persists_only_a_cursor() -> None:
+    """Canonical history is reconstructed from the transcript instead of duplicated in steps."""
+    steps = MemorySteps()
+    transcripts = MemoryTranscript()
+    runtime = AgentRuntime(store=steps, transcript=transcripts)
+
+    async def ask(_call: Any) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "suspended-attempt",
+            scripted(says("", a_call("c1", "deploy"))),
+            Tools(names=["deploy"]),
+            "ship",
+            conversation_id="shipping-conversation",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(ask))),
+        )
+
+    active = await Orchestrator("suspended-attempt", steps).active_continuation()
+    assert active is not None
+    continuation = active["continuation"]
+    assert set(continuation["transcript"]) == {"conversation_id", "leaf_uuid"}
+    assert continuation["transcript"]["conversation_id"] == "shipping-conversation"
+    assert "messages" not in continuation
+    assert "completed" not in continuation
+
+
+async def test_cursor_suspension_resumes_with_separate_conversation_id() -> None:
+    steps = MemorySteps()
+    transcripts = MemoryTranscript()
+    runtime = AgentRuntime(store=steps, transcript=transcripts)
+
+    async def ask(_call: Any) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "approval-attempt",
+            scripted(says("", a_call("c1", "deploy"))),
+            Tools(names=["deploy"]),
+            "ship",
+            conversation_id="shipping-conversation",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(ask))),
+        )
+
+    outcome = await AgentRuntime(store=steps, transcript=transcripts).resume(
+        "approval-attempt",
+        "approval-1",
+        {"type": "text", "text": "approved"},
+        scripted(says("deployed")),
+        Tools(names=["deploy"]),
+        conversation_id="shipping-conversation",
+    )
+
+    assert outcome["content"] == "deployed"
 
 
 async def test_new_interactive_input_cancels_pending_effect_before_switching() -> None:

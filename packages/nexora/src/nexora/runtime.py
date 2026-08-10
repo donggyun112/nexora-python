@@ -153,19 +153,26 @@ class AgentRuntime:
         input_mode: InputMode = "interactive",
     ) -> PendingInput:
         """Durably route input; user input cancels a parked request in interactive mode."""
-        async with self._orchestrator(run_id) as orchestrator:
-            active = await orchestrator.active_continuation()
-            if (
-                active is not None
-                and active.get("state") == "waiting"
-                and item.kind in {"user_prompt", "user_steer"}
-                and input_mode == "interactive"
-            ):
-                waiting = decode_continuation(active.get("continuation"))
-                if waiting is None:
-                    raise RuntimeError("active suspension has no continuation")
+        orchestrator = self._orchestrator(run_id)
+        active = await orchestrator.active_continuation()
+        if (
+            active is not None
+            and active.get("state") == "waiting"
+            and item.kind in {"user_prompt", "user_steer"}
+            and input_mode == "interactive"
+        ):
+            waiting = decode_continuation(active.get("continuation"))
+            if waiting is None:
+                raise RuntimeError("active suspension has no continuation")
+            # Only this branch rewrites the transcript, and only a parked run can reach it — the
+            # attempt ended when it suspended, so the lease is free to take.
+            async with orchestrator:
                 return await self._cancel_and_switch(orchestrator, active, waiting, item)
-            return await orchestrator.enqueue_input(item)
+        # Unleased on purpose. Enqueueing is append-only and keyed by the input's own id, so it
+        # needs no exclusion — while a live run holds the lease itself, and taking it here (then
+        # dropping it on the way out) moved the token out from under the attempt still writing
+        # with it. A background child settling mid-run fenced its own parent.
+        return await orchestrator.enqueue_input(item)
 
     async def resume(
         self,

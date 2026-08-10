@@ -441,6 +441,34 @@ async def test_a_background_answer_re_enters_the_run_as_model_context() -> None:
     assert [str(message.content) for message in later.seen[-1]][-1].endswith("40 papers")
 
 
+async def test_a_background_answer_arriving_mid_run_does_not_fence_it() -> None:
+    """A child settling while its parent still works must not take the parent's lease away.
+
+    `submit` opens the same run to enqueue and released the lease on the way out, so the next
+    arrival found no holder and moved the token past the one the live attempt was still writing
+    with. The parent died on its next durable write — with the child's answer already queued, so a
+    retry replayed it into a run that had crashed for reasons the transcript could not show.
+    """
+    runtime = AgentRuntime()
+    deliver = runtime.background_sink("live")
+
+    class Delivering(Tools):
+        """A tool that settles two background children while the round is still open."""
+
+        async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
+            for index in (1, 2):
+                await deliver(BackgroundResult(f"task-{index}", "agent", "digger", "found it"))
+            return {"type": "text", "text": "ok"}
+
+    llm = scripted(says("", a_call("c1", "read")), says("", a_call("c2", "read")), says("fin"))
+
+    outcome = await runtime.run("live", llm, Delivering(), "go")
+
+    assert outcome["stop_reason"] == "completed"
+    arrived = [str(message.content) for message in llm.seen[-1]]
+    assert sum("found it" in content for content in arrived) == 2, "and both answers landed"
+
+
 # ── Remote children ─────────────────────────────────────────────────────────
 
 

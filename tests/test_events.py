@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage
-
 from nexora import AgentRuntime
 from nexora.contracts import (
     BLOCKING,
@@ -28,6 +27,7 @@ from nexora.controls import (
 )
 from nexora.engines.plain import react_loop
 from nexora.orchestrator import AgentSuspended, MemorySteps
+
 from tests.test_loop import Tools, a_call, says, scripted
 
 
@@ -389,7 +389,7 @@ async def test_announcing_a_tool_call_and_asking_the_gate_are_one_step() -> None
     in `ControlPlane` is fail-open. Two calls in the round, because with one an interleaving bug
     and correct behaviour look the same.
     """
-    # ponytail: asserted for `engines/plain`, the only engine (ADR-005). A second engine needs this
+    # ponytail: asserted for `engines/plain`, the only engine there is. A second engine needs this
     # test parametrized over engines, not a conformance harness built before there is a second one.
     trail: list[str] = []
 

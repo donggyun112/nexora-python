@@ -78,7 +78,7 @@ async def test_unknown_entry_kinds_are_skipped_rather_than_raising() -> None:
 
 
 async def test_replaying_a_conversation_appends_nothing_new() -> None:
-    """ADR-002 — replaying an identical conversation appends no duplicate entries."""
+    """Replaying an identical conversation appends no duplicate entries."""
     store = MemoryTranscript()
     await write(store, a_conversation())
 

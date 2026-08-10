@@ -57,7 +57,7 @@ class PostgresSteps:
 
         A pool and not a connection, because a transaction boundary cannot be shared. Two runs on
         one connection commit each other's half-written work, and this ledger's entire guarantee is
-        *when* things commit — `start` before the effect runs, `finish` after it returns (ADR-002).
+        *when* things commit — `start` before the effect runs, `finish` after it returns.
         Sharing a connection makes that ordering depend on some other run's commit timing, which is
         the one thing the ledger exists to make independent.
 

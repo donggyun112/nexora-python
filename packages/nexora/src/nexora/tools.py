@@ -64,7 +64,7 @@ class InvalidToolCall(RuntimeError):
 def require_call_ids(calls: list[ToolCall]) -> list[ToolCall]:
     """Refuse a round whose calls cannot be told apart. Checked before any effect.
 
-    The call id is the idempotency key (ADR-002), so it is also the step name. LangChain types it
+    The call id is the idempotency key, so it is also the step name. LangChain types it
     as optional and a provider or adapter can hand over a round with a missing or repeated one —
     and then the ledger cannot say which call a result belongs to.
 

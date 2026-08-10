@@ -128,7 +128,9 @@ class BatchTools(Tools, Protocol):
       than faked, and the model re-issues them on resume.
 
     Without this, `execute_calls` runs the round one call at a time. That is the fail-closed
-    default: sequential is what makes a retried batch replay identically (ADR-002).
+    default: sequential is what makes a retried batch replay identically. Two individually
+    idempotent writes to the same file give different results in different orders, so order is
+    part of what a retry has to reproduce.
     """
 
     async def execute_batch(self, calls: list[dict[str, Any]]) -> list[dict[str, Any]]:

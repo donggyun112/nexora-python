@@ -180,8 +180,9 @@ def encode_continuation(
 ) -> dict[str, Any]:
     """Encode a suspension as an opaque ledger payload.
 
-    The payload currently includes the full conversation snapshot. ADR-007 describes replacing
-    that snapshot with a cursor once the append-only transcript store is integrated.
+    The payload currently includes the full conversation snapshot. Once the append-only transcript
+    store is wired into the runtime, this becomes a cursor into it — the snapshot is only here
+    because nothing else yet holds the conversation durably.
     """
     return {
         "origin": "pre_tool_use",

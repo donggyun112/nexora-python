@@ -1,14 +1,14 @@
-"""`is_concurrency_safe` — the opt-in half of ADR-002, all-or-nothing per batch."""
+"""`is_concurrency_safe` — the opt-in half of retry safety, all-or-nothing per batch."""
 
 import asyncio
 from typing import Any
 
 import pytest
-
 from nexora import AgentRuntime
 from nexora.contracts import BatchTools
 from nexora.engines.plain import react_loop
 from nexora.tools import Concurrent, InvalidToolResult
+
 from tests.test_loop import Tools, a_call, says, scripted
 
 SAFE = {"is_concurrency_safe": True}

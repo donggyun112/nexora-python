@@ -194,7 +194,7 @@ async def decide_tool_call(
 ) -> ToolDecision:
     """Ask the control point, then say publicly what it decided."""
     if emit is not None:
-        await emit(EventType.PRE_TOOL_USE, tool_payload(ctx.turn, call))
+        await emit(EventType.PRE_TOOL_USE, tool_payload(ctx, call))
     decision: ToolDecision = (
         await controls.pre_tool_use(ctx, call) if controls is not None else Continue()
     )
@@ -203,12 +203,12 @@ async def decide_tool_call(
             case Deny(result):
                 await emit(
                     EventType.PERMISSION_DENIED,
-                    tool_payload(ctx.turn, call, reason=result, source="pre_tool_use"),
+                    tool_payload(ctx, call, reason=result, source="pre_tool_use"),
                 )
             case Suspend(request):
                 await emit(
                     EventType.PERMISSION_REQUEST,
-                    tool_payload(ctx.turn, call, request=request, source="pre_tool_use"),
+                    tool_payload(ctx, call, request=request, source="pre_tool_use"),
                 )
             case _:
                 pass
@@ -230,7 +230,7 @@ async def record_resolved(
     failed = result.get("type") == "error"
     await emit(
         EventType.POST_TOOL_USE_FAILURE if failed else EventType.POST_TOOL_USE,
-        tool_payload(ctx.turn, call, result=result),
+        tool_payload(ctx, call, result=result),
     )
 
 
@@ -347,7 +347,8 @@ def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
 
     Calls that already finished are external facts, so dropping them because a *different* call
     suspended means the resumed run re-issues them — a second write, a second charge. react.ts
-    absorbs the whole batch and stops after (`suspended ??=` at L196-245); so does this.
+    absorbs the whole batch and stops after (`suspended ??=`, inside its loop over `toolResults`);
+    so does this.
     """
     answers: list[BaseMessage] = []
     completed: list[dict[str, Any]] = []
@@ -393,7 +394,8 @@ def as_model_tools(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
     engine, which had **already drifted** — they disagreed about what an empty `parameters` should
     default to. One definition is the point; the fact that it is a one-liner is the reward.
 
-    **Sorted by name** (`registry.ts:96`). Providers cache on a prefix of the request, and the tool
+    **Sorted by name** (`registry.ts`'s `assemble`). Providers cache on a prefix of the request,
+    and the tool
     schemas sit in it, so a `Tools.list()` that returns the same set in a different order is a cache
     miss for every turn after it — paid in tokens, invisible in behaviour. `list()` is the host's to
     implement and cannot be made to promise an order, so the guarantee belongs at the one place the
@@ -405,13 +407,20 @@ def as_model_tools(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def tool_payload(turn: int, call: ToolCall, **extra: Any) -> dict[str, Any]:
-    """The payload shape every tool event shares. One definition, so the engines cannot drift."""
+def tool_payload(ctx: Ctx, call: ToolCall, **extra: Any) -> dict[str, Any]:
+    """The payload shape every tool event shares. One definition, so the engines cannot drift.
+
+    Takes the whole `Ctx` and not a bare `turn` so that `subject` rides along everywhere at once.
+    Passed per field, an audit stamp is only ever on the events somebody remembered to add it to,
+    and the one it is missing from is the one an incident asks about. Omitted when the host named
+    nobody, rather than reported as an empty string that reads like a finding.
+    """
     return {
-        "turn": turn,
+        "turn": ctx.turn,
         "call_id": call["id"],
         "name": call["name"],
         "input": call["args"],
+        **({"subject": ctx.subject} if ctx.subject else {}),
         **extra,
     }
 
@@ -495,7 +504,8 @@ async def _execute_validated(
     """Run one tool. A raise becomes the error result the model can read.
 
     Every path that reaches a tool comes through here, so this is the only place that has to
-    catch. react.ts catches per call (`tool-executor.ts:165`) and so does this: a tool that raises
+    catch. react.ts catches per call (`executeBatch` in `tool-executor.ts`) and so does this: a
+    tool that raises
     is one failed effect, not a failed round. Letting the exception escape instead ended the run
     in the caller's event loop and discarded the sibling calls' results, which had already been
     computed — the model was never told what went wrong, so it could never try something else.

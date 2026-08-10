@@ -8,7 +8,7 @@ This module is the codec on the other side of that line. It owns message shapes,
 that every tool call needs an answer, and what a suspension has to carry — and it turns those into
 a payload the ledger can hold. It does not persist anything itself; `Orchestrator.suspend` does.
 
-Ported from `loop-helpers.ts:96-125`.
+Ported from `suspendHistorySnapshot` in `loop-helpers.ts`.
 """
 
 from typing import Any, NamedTuple, cast
@@ -167,6 +167,11 @@ class Suspension(NamedTuple):
     """What the rules looked like when the call was made. Compare, do not trust."""
     turn: int
     """The original model turn, retained so resumed control and observation events stay accurate."""
+    subject: str = ""
+    """Who the run was acting for when it parked. Audit, not authority — `rules_version` is what
+    decides whether the approval still stands, and two subjects holding identical rules hold
+    identical authority. Without this, "whose deploy was waiting" has to be reconstructed by
+    correlating run ids after the fact, which is the reconstruction an incident cannot afford."""
 
 
 def encode_continuation(
@@ -177,6 +182,7 @@ def encode_continuation(
     rules_version: str = "",
     *,
     turn: int = 0,
+    subject: str = "",
 ) -> dict[str, Any]:
     """Encode a suspension as an opaque ledger payload.
 
@@ -192,6 +198,7 @@ def encode_continuation(
         "completed": completed,
         "rules_version": rules_version,
         "turn": turn,
+        "subject": subject,
     }
 
 
@@ -213,6 +220,7 @@ def decode_continuation(payload: dict[str, Any] | None) -> Suspension | None:
         completed=payload["completed"],
         rules_version=payload.get("rules_version", ""),
         turn=int(payload.get("turn", 0)),
+        subject=str(payload.get("subject", "")),
     )
 
 

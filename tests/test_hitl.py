@@ -9,7 +9,16 @@ from typing import Any
 import pytest
 from nexora import AgentRuntime
 from nexora.contracts import ToolCall
-from nexora.controls import ControlPlane, Ctx, Deny, Permissions, gate
+from nexora.controls import (
+    Continue,
+    ControlPlane,
+    Ctx,
+    Deny,
+    Permissions,
+    ResumeInput,
+    Suspend,
+    gate,
+)
 from nexora.history import decode_continuation, encode_continuation
 from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora_permissions import PolicyContext, Rule, resolve_rules
@@ -112,8 +121,8 @@ async def test_the_same_ask_rule_is_satisfied_by_the_human_approval() -> None:
             scripted(says("", a_call("c1", DEPLOY))),
             first,
             "ship it",
-            controls=ControlPlane(pre_tool_use=Permissions(gate(policy.stage(first)))),
-            rules_version=policy.version,
+            controls=ControlPlane(pre_tool_use=Permissions(policy.stage(first))),
+            rules_version=policy.fingerprint,
         )
 
     resumed = Tools(names=[DEPLOY])
@@ -124,7 +133,7 @@ async def test_the_same_ask_rule_is_satisfied_by_the_human_approval() -> None:
         scripted(says("deployed")),
         resumed,
         controls=ControlPlane(on_resume=policy.resume_stage(resumed)),
-        rules_version=policy.version,
+        rules_version=policy.fingerprint,
     )
 
     assert resumed.ran == [DEPLOY]
@@ -167,6 +176,114 @@ async def test_the_resume_re_runs_the_rules_instead_of_trusting_the_approval() -
     assert decision["type"] == "error"  # and the rule still wins
 
 
+async def test_a_revoked_rule_re_asks_even_though_the_label_never_moved() -> None:
+    """The case a caller-supplied version cannot see, and the reason identity is derived.
+
+    Rules derived per requesting subject change when a role is revoked, and no label anywhere
+    changes with them. Comparing labels reads that as "same policy" and runs the effect.
+    """
+    granted = PolicyContext(rules=[Rule(effect="allow", tool=DEPLOY)], version="v1")
+    revoked = PolicyContext(rules=[], version="v1")  # same label, the grant is gone
+    tools = Tools(names=[DEPLOY])
+
+    assert granted.version == revoked.version
+    decision = await revoked.resume_stage(tools)(
+        Ctx(turn=0),
+        a_call("c1", DEPLOY),
+        ResumeInput(
+            answer={"type": "text", "text": "approved"},
+            request={"type": "suspend", "pending_id": "c1"},
+            suspended_rules_version=granted.fingerprint,
+            current_rules_version=revoked.fingerprint,
+        ),
+    )
+
+    assert isinstance(decision, Suspend)  # asked again, not waved through
+
+
+async def test_a_relabelled_policy_still_satisfies_the_approval() -> None:
+    """The other direction: a label is not authority, so editing one must not re-ask."""
+    asked = PolicyContext(rules=[Rule(effect="ask", tool=DEPLOY)], version="v1")
+    relabelled = PolicyContext(rules=[Rule(effect="ask", tool=DEPLOY)], version="v2-hotfix")
+    tools = Tools(names=[DEPLOY])
+
+    assert asked.fingerprint == relabelled.fingerprint
+    decision = await relabelled.resume_stage(tools)(
+        Ctx(turn=0),
+        a_call("c1", DEPLOY),
+        ResumeInput(
+            answer={"type": "text", "text": "approved"},
+            request={"type": "suspend", "pending_id": "c1"},
+            suspended_rules_version=asked.fingerprint,
+            current_rules_version=relabelled.fingerprint,
+        ),
+    )
+
+    assert isinstance(decision, Continue)
+
+
+async def test_a_fingerprint_is_stable_across_rule_order() -> None:
+    """Identity is what the policy *is*. The same rules written in another order are the same."""
+    one = PolicyContext(rules=[Rule("allow", "read"), Rule("deny", DEPLOY, "prod")])
+    other = PolicyContext(rules=[Rule("deny", DEPLOY, "prod"), Rule("allow", "read")])
+
+    assert one.fingerprint == other.fingerprint
+    # and a tool-wide rule is not the same rule as one scoped to every input of that tool
+    assert PolicyContext(rules=[Rule("ask", DEPLOY)]).fingerprint != PolicyContext(
+        rules=[Rule("ask", DEPLOY, "")]
+    ).fingerprint
+
+
+async def test_a_suspension_and_its_events_name_who_it_was_for() -> None:
+    """"Whose deploy was waiting" must be answerable from the record, not reconstructed later."""
+    log = MemorySteps()
+    seen: list[dict[str, Any]] = []
+
+    async def sink(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type in {"pre_tool_use", "permission_request"}:
+            seen.append({"event": str(event_type), **payload})
+
+    runtime = AgentRuntime(store=log, emit=sink)
+    policy = PolicyContext(rules=[Rule(effect="ask", tool=DEPLOY)])
+    tools = Tools(names=[DEPLOY])
+
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "run-subject",
+            scripted(says("", a_call("c1", DEPLOY))),
+            tools,
+            "ship it",
+            controls=ControlPlane(pre_tool_use=Permissions(policy.stage(tools))),
+            rules_version=policy.fingerprint,
+            subject="svc-deployer@example",
+        )
+
+    assert [item["subject"] for item in seen] == ["svc-deployer@example"] * 2
+    assert seen[-1]["request"]["subject"] == "svc-deployer@example"
+
+    parked = decode_continuation(await Orchestrator("run-subject", log).suspension("c1"))
+    assert parked is not None
+    assert parked.subject == "svc-deployer@example"
+
+
+async def test_an_unnamed_subject_is_absent_rather_than_empty() -> None:
+    """A framework that stamped `""` would put a name it invented into an audit record."""
+    seen: list[dict[str, Any]] = []
+
+    async def sink(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == "pre_tool_use":
+            seen.append(payload)
+
+    runtime = AgentRuntime(store=MemorySteps(), emit=sink)
+    tools = Tools(names=[DEPLOY])
+
+    await runtime.run(
+        "run-anon", scripted(says("", a_call("c1", DEPLOY)), says("done")), tools, "go"
+    )
+
+    assert seen and all("subject" not in payload for payload in seen)
+
+
 async def test_nothing_parked_reads_as_nothing() -> None:
     o = Orchestrator("run-3", MemorySteps())
     assert decode_continuation(await o.suspension("never-suspended")) is None
@@ -196,7 +313,7 @@ async def test_a_policy_context_is_one_owned_thing() -> None:
         seen.append("hook")
         return {"type": "allow"}
 
-    chain = Permissions(gate(permissive), gate(policy.stage(tools)))
+    chain = Permissions(gate(permissive), policy.stage(tools))
     decision = await chain(Ctx(turn=0), a_call("c1", DEPLOY))
 
     assert seen == ["hook"]

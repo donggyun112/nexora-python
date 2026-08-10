@@ -561,7 +561,7 @@ class Orchestrator:
         publisher = emit if emit is not None else self._emit
         context = ctx if ctx is not None else Ctx(turn=turn)
         if publisher is not None:
-            await publisher(EventType.PRE_TOOL_USE, tool_payload(turn, call))
+            await publisher(EventType.PRE_TOOL_USE, tool_payload(context, call))
 
         resume = ResumeInput(
             answer=answer,
@@ -582,14 +582,14 @@ class Orchestrator:
                 if publisher is not None:
                     await publisher(
                         EventType.PERMISSION_DENIED,
-                        tool_payload(turn, call, reason=result, source="on_resume"),
+                        tool_payload(context, call, reason=result, source="on_resume"),
                     )
                 resolved = Resolved(call, result, refused=True)
             case Suspend(new_request):
                 if publisher is not None:
                     await publisher(
                         EventType.PERMISSION_REQUEST,
-                        tool_payload(turn, call, request=new_request, source="on_resume"),
+                        tool_payload(context, call, request=new_request, source="on_resume"),
                     )
                 resolved = Resolved(call, new_request, refused=True)
             case _:
@@ -639,6 +639,7 @@ class Orchestrator:
             snapshot,
             round_.completed,
             turn=turn,
+            subject=context.subject,
         )
         if self._on_agent_event is not None:
             for item in resolved:
@@ -839,6 +840,7 @@ class Orchestrator:
         completed: list[dict[str, Any]],
         *,
         turn: int,
+        subject: str = "",
     ) -> None:
         """Commit the waiting record owned by this execution layer.
 
@@ -854,6 +856,7 @@ class Orchestrator:
             completed,
             self._rules_version,
             turn=turn,
+            subject=subject,
         )
         await self._log.commit_transition(
             self.run_id,

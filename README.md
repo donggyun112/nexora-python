@@ -198,7 +198,7 @@ the same name on the same store, the child's own effects are in the ledger under
 becomes the child's own recovery. A runner that ignores the id it is handed gives up exactly this;
 a `Remote` child cannot have it at all, since what is behind the POST owns its own durability.
 
-A subtask is handed over one of two ways, and they are different shapes rather than two speeds
+A subtask is handed over one of three ways, and they are different shapes rather than three speeds
 of one thing:
 
 * **`wait="sync"` — the parent stops until it has the answer.** Its round does not end until the
@@ -206,6 +206,13 @@ of one thing:
 * **`wait="async"` — the parent gives the task away and carries on.** The child answers *when
   it decides to*, by calling `respond_to_parent`, and that answer re-enters the parent's run
   through the durable input queue on a later round.
+* **`wait="none"` — the parent opens an independent agent and gets its address.** Not a handoff
+  whose answer is thrown away: the thing on the other side owns its own outcome, so the call
+  returns that agent's run id and nothing else — no result, and no `cancel_task`. The id is what
+  makes it reachable again, by the parent or by a person, through `submit`/`run`/`resume` on that
+  run. In this port it is still an `asyncio` task in the parent's process, so it is independent of
+  the parent *run* and not of the parent *process*: a host that restarts continues it by driving
+  that run id again.
 
 A handed-off child therefore has to be *able* to answer, which is what `Answering` is for — compose
 it into the child's own tools and it gains `respond_to_parent`, marked `terminates_loop` because
@@ -217,7 +224,9 @@ def build_child(spec, reply):
 ```
 
 A child that never calls it still answers, from its last turn, so handing work to an agent that
-lacks the tool loses nothing. `wait="none"` hands off and discards the answer. (`handoff` is accepted as a synonym for `async`; the reference spells the mode `async` and uses "handoff" for the `delegate` hop itself, as opposed to `publish_topic`'s anonymous broadcast.) `tasks=[...]` fans
+lacks the tool loses nothing. (`handoff` is accepted as a synonym for `async`; the reference spells
+the mode `async` and uses "handoff" for the `delegate` hop itself, as opposed to `publish_topic`'s
+anonymous broadcast.) `tasks=[...]` fans
 several children out inside one call, so parallelism is the caller's decision rather than a hope
 that the model emits several tool calls at once. The three subagent kinds are the reference's —
 `Declarative` (a spec a host factory builds at call time), `Compiled` (a child already wired), and

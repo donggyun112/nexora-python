@@ -1,14 +1,11 @@
-"""A permission rule table as `pre_tool_use` / `on_resume` stages.
-
-The surface only. Implementation lives in `rules.py`, so importing this package
-does not execute it as a side effect of touching the namespace.
-"""
+"""Permission rules and control stages for Nexora tool execution."""
 
 from .rules import (
     Mode,
     PermissionBehavior,
     PolicyContext,
     Rule,
+    escalation_guard,
     resolve_rules,
 )
 
@@ -17,5 +14,6 @@ __all__ = [
     "PermissionBehavior",
     "PolicyContext",
     "Rule",
+    "escalation_guard",
     "resolve_rules",
 ]

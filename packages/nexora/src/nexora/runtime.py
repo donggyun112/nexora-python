@@ -108,35 +108,40 @@ class AgentRuntime:
         """Start or continue a turn; interactive input cancels a parked tool request."""
         async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
             history = engine_options.pop("history", None)
-            active = await orchestrator.active_continuation()
+            incoming = (
+                PendingInput("user_prompt", HumanMessage(prompt), prompt_id) if prompt else None
+            )
             completing: str | None = None
-            if prompt:
-                incoming = PendingInput("user_prompt", HumanMessage(prompt), prompt_id)
-                if active is not None and active.get("state") == "waiting":
-                    waiting = decode_continuation(active.get("continuation"))
-                    if waiting is None:
-                        raise RuntimeError("active suspension has no continuation")
-                    if input_mode == "headless":
-                        await orchestrator.enqueue_input(incoming)
-                        raise AgentSuspended(
-                            str(waiting.request["pending_id"]), waiting.call["id"] or ""
-                        )
-                    await self._cancel_and_switch(orchestrator, active, waiting, incoming)
-                    history = list(waiting.messages)
-                    completing = waiting.call["id"] or ""
-                elif active is not None and active.get("state") in {"switching", "resuming"}:
-                    waiting = decode_continuation(active.get("continuation"))
-                    if waiting is None:
-                        raise RuntimeError("active continuation is corrupt")
+            # Decoded once, before the branch, because every parked state needs the same answer
+            # and three copies of "decode, then check for None" was three chances to disagree
+            # about what a corrupt record means.
+            active = await orchestrator.active_continuation()
+            waiting = (
+                decode_continuation(active.get("continuation")) if active is not None else None
+            )
+
+            # A run is parked in one of three states, and a new prompt means something different
+            # in each. `waiting` is the only one a prompt can change: interactively it cancels the
+            # request the run stopped on, headlessly it queues behind it. `switching`/`resuming`
+            # are a transition already committed, so a prompt just joins the queue.
+            if active is None:
+                if incoming is not None:
                     await orchestrator.enqueue_input(incoming)
-                    history = list(waiting.messages) if history is None else history
-                    completing = waiting.call["id"] or ""
-                else:
+            elif waiting is None:
+                raise RuntimeError("active continuation is corrupt")
+            elif (
+                active.get("state") == "waiting"
+                and incoming is not None
+                and input_mode == "interactive"
+            ):
+                await self._cancel_and_switch(orchestrator, active, waiting, incoming)
+                # Not `if history is None`: the suspension's own transcript is the only one that
+                # answers the call this just cancelled.
+                history = list(waiting.messages)
+                completing = waiting.call["id"] or ""
+            else:
+                if incoming is not None:
                     await orchestrator.enqueue_input(incoming)
-            elif active is not None:
-                waiting = decode_continuation(active.get("continuation"))
-                if waiting is None:
-                    raise RuntimeError("active continuation is corrupt")
                 if active.get("state") == "waiting":
                     raise AgentSuspended(
                         str(waiting.request["pending_id"]), waiting.call["id"] or ""
@@ -215,7 +220,14 @@ class AgentRuntime:
                 aborted=engine_options.get("aborted", lambda: False),
                 turn=waiting.turn,
                 controls=controls,
-                ctx=Ctx(turn=waiting.turn, messages=list(waiting.messages)),
+                # The parked subject, unless the caller names one. A different person approving
+                # does not change who the run acts for, and the effect is about to run under that
+                # authority — so the record's subject is the default, not the resumer's.
+                ctx=Ctx(
+                    turn=waiting.turn,
+                    messages=list(waiting.messages),
+                    subject=str(engine_options.get("subject") or waiting.subject),
+                ),
             )
             answer_message = suspension_result_message(
                 waiting.call["id"] or "",

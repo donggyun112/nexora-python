@@ -89,6 +89,7 @@ async def react_loop(
     *,
     system_prompt: str | None = None,
     history: list[BaseMessage] | None = None,
+    subject: str = "",
     aborted: Aborted = lambda: False,
     controls: Controls | None = None,
     emit: Emit | None = None,
@@ -104,6 +105,9 @@ async def react_loop(
     Every incremental message arrives through `drain_inputs`. `history` is only the already
     committed transcript baseline, so initial prompts, steers and asynchronous results all cross
     the same admission point and produce the same audit fact.
+
+    `subject` is who the run acts for, carried into every `Ctx` so a control point can decide with
+    it and every tool event is stamped with it. Opaque — see `Ctx.subject`.
     """
     messages: list[BaseMessage] = [
         *([SystemMessage(system_prompt)] if system_prompt else []),
@@ -136,6 +140,7 @@ async def react_loop(
                     messages=list(messages),
                     calls_made=list(calls_made),
                     text=last_text,
+                    subject=subject,
                 ),
                 pending_inputs,
             ):
@@ -151,6 +156,7 @@ async def react_loop(
                     messages=[*messages, *(item.message for item in pending_inputs)],
                     calls_made=list(calls_made),
                     text=last_text,
+                    subject=subject,
                 )
             )
             match action:
@@ -250,6 +256,7 @@ async def react_loop(
                         messages=list(messages),
                         calls_made=list(calls_made),
                         text=turn_text,
+                        subject=subject,
                     ),
                     "completed",
                 ):
@@ -285,6 +292,7 @@ async def react_loop(
                 messages=list(messages),
                 calls_made=list(calls_made),
                 text=turn_text,
+                subject=subject,
             ),
         )
         for call, result, refused in resolved:

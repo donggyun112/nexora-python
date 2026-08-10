@@ -8,6 +8,7 @@ from typing import Any
 from nexora import (
     AgentRuntime,
     Answering,
+    Authority,
     BackgroundResult,
     Compiled,
     Declarative,
@@ -115,7 +116,7 @@ async def test_an_unknown_agent_names_the_ones_that_exist() -> None:
 
 
 async def test_delegation_deeper_than_the_cap_is_refused_before_the_child_runs() -> None:
-    """delegate.ts:472 — the depth guard is what stops A→B→A from running forever."""
+    """delegate.ts's `maxDepth` guard — what stops A→B→A from running forever."""
     ran: list[str] = []
 
     async def run(_prompt: str, _reply: Reply, _run_id: str) -> AsyncIterator[dict[str, Any]]:
@@ -206,7 +207,7 @@ async def test_a_launched_childs_answer_reaches_the_sink_when_it_settles() -> No
 
 
 async def test_wait_false_is_fire_and_forget_rather_than_a_silent_sync_hop() -> None:
-    """delegate.ts:229 — models emit `false`, and a strict check drops it into the sync path."""
+    """`resolveWaitMode` — models emit `false`, and a strict check drops it into the sync path."""
     delivered, deliver = collector()
     tools = sole([Compiled("worker", "works", answers("unread"))], deliver=deliver)
 
@@ -328,7 +329,7 @@ async def test_a_declarative_child_is_built_by_the_factory_at_call_time() -> Non
     """The spec carries no runtime, so nothing runs unless the host's factory builds one."""
     built: list[str] = []
 
-    def factory(spec: Declarative) -> Any:
+    def factory(spec: Declarative, _authority: Authority) -> Any:
         built.append(spec.system_prompt)
         return answers("from a spec")
 
@@ -339,6 +340,79 @@ async def test_a_declarative_child_is_built_by_the_factory_at_call_time() -> Non
         "text": "from a spec",
     }
     assert built == ["you write"]
+
+
+# ── Authority, and the no-escalation invariant ──────────────────────────────
+
+
+async def test_a_childs_authority_is_a_subset_of_its_parents() -> None:
+    """The invariant the whole thing rests on: asking for more than the parent held grants less.
+
+    `handraise/authority.ts` — attenuate is an intersection, so a chain only ever narrows.
+    """
+    granted: list[Authority] = []
+
+    def factory(_spec: Declarative, authority: Authority) -> Any:
+        granted.append(authority)
+        return answers("done")
+
+    tools = sole(
+        [Declarative("writer", "writes", "you write", tools=("read", "write", "deploy"))],
+        factory=factory,
+        authority=["read", "write"],
+        blocked_tools_for_child=(),
+    )
+    await call(tools, {"agent": "writer", "input": "x"})
+
+    assert granted[0].ceiling == ("read", "write")  # "deploy" was never the parent's to give
+
+
+async def test_an_unrestricted_parent_grants_exactly_what_was_asked_for() -> None:
+    """A root scoping itself down for the first time. `None` is the top, not a wildcard grant."""
+    granted: list[Authority] = []
+
+    def factory(_spec: Declarative, authority: Authority) -> Any:
+        granted.append(authority)
+        return answers("done")
+
+    tools = sole(
+        [Declarative("reader", "reads", "you read", tools=("read",))],
+        factory=factory,
+        blocked_tools_for_child=(),
+    )
+    await call(tools, {"agent": "reader", "input": "x"})
+
+    assert granted[0].ceiling == ("read",)
+
+
+async def test_a_blocked_tool_is_refused_even_when_the_parent_held_it() -> None:
+    """`blocked_tools_for_child` applies after the intersection, so it cannot be asked around."""
+    granted: list[Authority] = []
+
+    def factory(_spec: Declarative, authority: Authority) -> Any:
+        granted.append(authority)
+        return answers("done")
+
+    tools = sole(
+        [Declarative("peer", "peers", "you peer", tools=("read", "delegate"))],
+        factory=factory,
+        authority=["read", "delegate"],
+    )
+    await call(tools, {"agent": "peer", "input": "x"})
+
+    assert granted[0].ceiling == ("read",)
+
+
+async def test_authority_narrows_over_a_chain_and_never_widens() -> None:
+    """Composed transitively: whatever a grandchild ends up with, the root could reach it too."""
+    root = Authority(ceiling=("read", "write", "deploy"), depth=0)
+
+    child = root.attenuate(["read", "write"])
+    grandchild = child.attenuate(["write", "deploy"])
+
+    assert child.ceiling == ("read", "write")
+    assert grandchild.ceiling == ("write",)  # deploy is gone for good, not re-granted
+    assert (child.depth, grandchild.depth) == (1, 2)
 
 
 # ── End to end, through the durable queue ───────────────────────────────────

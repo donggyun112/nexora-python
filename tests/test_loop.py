@@ -229,7 +229,7 @@ async def test_the_system_prompt_reaches_the_provider() -> None:
 
 
 async def test_exclusive_tool_runs_alone() -> None:
-    """loop-helpers.ts:27 — the rest are re-issued next round."""
+    """`selectToolCallsForExecution` — the rest are re-issued next round."""
     llm = scripted(says("", a_call("c1", "read"), a_call("c2", "danger")), says("x"))
     tools = Tools(defs={"danger": {"is_exclusive": True}}, names=["read", "danger"])
 
@@ -239,7 +239,7 @@ async def test_exclusive_tool_runs_alone() -> None:
 
 
 async def test_terminating_tool_ends_the_run() -> None:
-    """react.ts:263 — `any` over the batch, not `every`.
+    """react.ts's `stopByTool` — `some` over the batch, not `every`.
 
     Drained (`durable=False`) on purpose: the runtime stops consuming at the terminal event, so a
     loop that kept going would leave the generator parked and `llm.seen` would still read 1.
@@ -254,7 +254,7 @@ async def test_terminating_tool_ends_the_run() -> None:
 
 
 async def test_failed_terminating_tool_gets_a_recovery_round() -> None:
-    """react.ts:264 — `!isError`. An errored submit must not end the run."""
+    """react.ts's `stopByTool` — `!isError`. An errored submit must not end the run."""
     llm = scripted(says("", a_call("c1", "submit")), says("recovered"))
     tools = Tools(
         results={"submit": {"type": "error", "message": "nope"}},
@@ -269,7 +269,7 @@ async def test_failed_terminating_tool_gets_a_recovery_round() -> None:
 
 
 async def test_policy_hook_runs_even_when_a_tool_already_stopped_the_run() -> None:
-    """react.ts:266 — the hook does budget accounting, so no early return."""
+    """react.ts's `stopByPolicy` — the hook does budget accounting, so no early return."""
     llm = scripted(says("", a_call("c1", "submit")))
     tools = Tools(defs={"submit": {"terminates_loop": True}}, names=["submit"])
     asked: list[int] = []
@@ -311,7 +311,7 @@ async def test_the_caller_cap_stops_a_finish_verifier_that_always_vetoes() -> No
 
 
 async def test_steer_arriving_at_the_end_resumes_instead_of_completing() -> None:
-    """react.ts:152 — a late steer cancels the stop and buys another model call."""
+    """react.ts's `absorbSteers` — a late steer cancels the stop and buys another model call."""
     llm = scripted(says("almost"), says("really done"))
     drains = 0
 
@@ -560,7 +560,7 @@ async def test_an_abort_between_a_tool_round_and_the_next_model_call_ends_the_ru
 
 
 async def test_a_provider_failure_is_reported_not_raised() -> None:
-    """react.ts:131 — the run ends with an `error` event, no exception escapes."""
+    """react.ts's model-call `catch` — the run ends with an `error` event, nothing escapes."""
 
     class Broken(Llm):
         def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
@@ -832,7 +832,7 @@ async def test_a_tool_cannot_suspend_after_crossing_the_effect_boundary() -> Non
 
 
 async def test_a_batch_executor_gets_the_whole_round() -> None:
-    """loop-helpers.ts:57 — results come back in call order, however they finish."""
+    """`executeToolCalls` — results come back in call order, however they finish."""
 
     class Batched(Tools):
         def __init__(self) -> None:
@@ -1032,7 +1032,7 @@ async def test_the_reported_total_discriminates_the_provider_convention() -> Non
 
 
 async def test_done_names_the_model_that_answered() -> None:
-    """react.ts:160 — the terminal event names the model that answered."""
+    """react.ts's `done` event — the terminal event names the model that answered."""
     llm = UsageLlm(messages=iter([_served_by("claude-opus-4-7-20260101")]))
     llm.seen = []
 

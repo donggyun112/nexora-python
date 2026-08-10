@@ -41,6 +41,19 @@ class Ctx:
     calls_made: list[dict[str, Any]] = field(default_factory=list)
     text: str = ""
     """Assistant text accumulated in the current round."""
+    subject: str = ""
+    """Who the run acts for, as the host names them. **Never interpreted here.**
+
+    A user id, a service account, a tenant-scoped pair, whatever an external directory calls a
+    principal — this runtime cannot know which, so it carries the string and reads nothing out of
+    it. Empty means the host did not say, which is the honest default: a framework that invented a
+    subject would be putting a name it made up into an audit record.
+
+    It reaches the record two ways, and both matter. A stage may decide with it — a gate that asks
+    a directory per call needs to know who is asking. And it is stamped onto every tool event and
+    onto a suspension, so "who was this denied for" and "whose authority was this parked under" have
+    answers that do not depend on correlating by run id afterwards.
+    """
 
 
 class Continue(NamedTuple):

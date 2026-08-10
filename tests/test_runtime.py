@@ -345,6 +345,44 @@ async def test_headless_input_waits_then_follows_the_eventual_tool_result() -> N
     assert tools.ran == ["deploy"]
 
 
+async def test_a_run_parked_mid_switch_continues_from_its_continuation() -> None:
+    """A crash between committing cancel-and-switch and finishing the attempt is not a dead run.
+
+    The transition is durable, so the next `run` picks the continuation up — from the transcript
+    the suspension recorded rather than from an empty one — and clears it once an attempt lands.
+    """
+    store = MemorySteps()
+    runtime = AgentRuntime(store=store)
+
+    async def ask(_call: Any) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "mid-switch",
+            scripted(says("planning", a_call("c1", "deploy"))),
+            Tools(names=["deploy"]),
+            "deploy it",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(ask))),
+        )
+
+    # The switch commits, then the model dies before the attempt produces an outcome.
+    with pytest.raises(AgentFailed):
+        await runtime.run("mid-switch", _flaky(failures=1), Tools(names=["deploy"]), "never mind")
+
+    async with Orchestrator("mid-switch", store) as parked:
+        active = await parked.active_continuation()
+    assert active is not None and active["state"] == "switching"
+
+    model = scripted(says("switched"))
+    outcome = await runtime.run("mid-switch", model, Tools(names=["deploy"]))
+
+    assert outcome["content"] == "switched"
+    assert any(isinstance(message, AIMessage) and message.tool_calls for message in model.seen[0])
+    async with Orchestrator("mid-switch", store) as finished:
+        assert await finished.active_continuation() is None
+
+
 async def test_suspension_commits_then_releases_the_worker_instead_of_waiting() -> None:
     store = MemorySteps()
     runtime = AgentRuntime(store=store, owner="worker-1")

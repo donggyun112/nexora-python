@@ -182,7 +182,7 @@ def _definition(name: str) -> dict[str, Any]:
 
 
 def test_the_same_tool_set_binds_in_the_same_order_however_it_was_listed() -> None:
-    """registry.ts:96 — tool definitions bind in deterministic name order."""
+    """`registry.ts`'s `assemble` — tool definitions bind in deterministic name order."""
     listed = [_definition(n) for n in ("write", "read", "Bash", "grep")]
 
     names = [tool["function"]["name"] for tool in as_model_tools(listed)]

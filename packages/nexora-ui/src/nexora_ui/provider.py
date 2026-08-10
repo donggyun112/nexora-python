@@ -78,6 +78,12 @@ def openrouter_model(name: str, settings: Settings = SETTINGS) -> ChatOpenAI:
         streaming=True,
         timeout=60,
         # Asked for, or no provider sends any: reasoning is opt-in on OpenRouter. `low` because the
-        # console is here to show the loop, not to buy the deepest answer.
+        # console is here to show the loop, not to buy the deepest answer. One shape covers every
+        # family — measured on Anthropic, OpenAI, Gemini and DeepSeek — and a model that cannot
+        # reason ignores it rather than failing, so this needs no per-model branch.
+        #
+        # It is `max_tokens` that breaks it, not the model: OpenRouter turns `effort` into a token
+        # budget, and a small cap leaves nothing to take a fraction of. At 200 the reasoning comes
+        # back empty. Leave the ceiling unset here, and think twice before capping it per request.
         extra_body={"reasoning": {"effort": "low"}},
     )

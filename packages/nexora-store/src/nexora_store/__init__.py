@@ -1,8 +1,4 @@
-"""The step ledger: durable intent, ambiguity detection, and exclusive execution.
-
-The surface only. Implementation lives in `ledger.py`, so importing this package
-does not execute it as a side effect of touching the namespace.
-"""
+"""Expose dependency-free step-ledger and transcript contracts."""
 
 from .ledger import (
     Contended,
@@ -13,13 +9,25 @@ from .ledger import (
     Step,
     StepLog,
 )
+from .transcript import (
+    MODEL_USAGE_FIELDS,
+    RUN_FIELDS,
+    MemoryTranscript,
+    Transcript,
+    check_fields,
+)
 
 __all__ = [
+    "MODEL_USAGE_FIELDS",
+    "RUN_FIELDS",
     "Contended",
     "Fenced",
     "Indeterminate",
     "InputRecord",
     "MemorySteps",
+    "MemoryTranscript",
     "Step",
     "StepLog",
+    "Transcript",
+    "check_fields",
 ]

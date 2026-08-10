@@ -6,7 +6,7 @@ from .config import SETTINGS
 
 
 class RunRequest(BaseModel):
-    """Validate a request to start an agent run."""
+    """Request payload for starting an agent run."""
     prompt: str = Field(min_length=1, max_length=20_000)
     model: str = Field(default=SETTINGS.default_model, min_length=1, max_length=200)
     run_id: str | None = None
@@ -15,7 +15,7 @@ class RunRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    """Validate an operator decision for a suspended run."""
+    """Request payload for resuming a suspended tool call."""
     run_id: str = Field(min_length=1)
     pending_id: str = Field(min_length=1)
     approved: bool
@@ -23,6 +23,19 @@ class ResumeRequest(BaseModel):
 
 
 class RecoverRequest(BaseModel):
-    """Validate a request to recover an interrupted run."""
+    """Request payload for recovering an interrupted run."""
     run_id: str = Field(min_length=1)
+    model: str = Field(default=SETTINGS.default_model, min_length=1, max_length=200)
+
+
+class CancelRequest(BaseModel):
+    """Request payload for cancelling a managed background task."""
+    run_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+
+
+class AttachRequest(BaseModel):
+    """Request payload for prompting an independent child run."""
+    run_id: str = Field(min_length=1)
+    prompt: str = Field(min_length=1, max_length=20_000)
     model: str = Field(default=SETTINGS.default_model, min_length=1, max_length=200)

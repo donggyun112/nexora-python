@@ -105,3 +105,41 @@ label input, label select { display: block; width: 100%; max-width: 310px; margi
 footer { height: 42px; display: flex; align-items: center; justify-content: center; gap: 13px; border-top: 1px solid var(--line); color: #69746e; font: 9px ui-monospace, monospace; letter-spacing: .16em; }
 footer i { color: var(--green); font-style: normal; }
 @media (max-width: 900px) { header { grid-template-columns: 1fr 1fr; }.title-block { display: none; } main { height: auto; grid-template-columns: 1fr; }.panel { min-height: 680px; }.ledger { min-height: 560px; } }
+
+/* ── Subagents ─────────────────────────────────────────────────────────── */
+.samples { flex-wrap: wrap; align-items: center; }
+.samples-agents { margin-bottom: 12px; padding-top: 10px; border-top: 1px dashed #242a27; }
+.samples-label { color: #4f5a54; font: 8px ui-monospace, monospace; letter-spacing: .16em; margin-right: 2px; }
+.samples-agents button { border-color: #2f4a39; color: #86a795; }
+
+/* A child's own stream, indented under the round that launched it. The rule on the left is the
+   thread back to the parent — a child card floating free reads as a second conversation. */
+.child-exchange { width: min(84%, 650px); margin: 0 0 20px 34px; padding: 13px 15px; border: 1px solid #33463c; border-left: 2px solid var(--green); background: #0a0f0c; font-family: ui-monospace, monospace; }
+.child-exchange.failure { border-color: #773939; border-left-color: var(--red); }
+.child-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #7fd79a; font-size: 11px; letter-spacing: .08em; }
+.child-status { color: var(--amber); font-size: 9px; }
+.child-exchange.done .child-status { color: var(--green); }
+.child-exchange.failure .child-status { color: var(--red); }
+.child-run { margin-top: 5px; color: #59645e; font-size: 9px; overflow-wrap: anywhere; }
+.child-body { margin: 9px 0 0; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; border-left: 2px solid #2c3a32; background: #101613; color: #c4d2c9; font: 11px/1.5 ui-monospace, monospace; }
+.child-step { color: #7d8983; font: 10px/1.6 ui-monospace, monospace; }
+.child-step b { color: #9fb6a8; font-weight: 400; }
+
+/* The task rail. Two lists, because a leash and an address are different things. */
+.agents .task { display: grid; grid-template-columns: 1fr auto; gap: 8px 10px; align-items: center; padding: 10px 12px; margin: 0 0 8px; border: 1px solid #252b28; background: #0c0f0e; }
+.agents .task-name { color: #cbd5cf; font: 10px ui-monospace, monospace; overflow-wrap: anywhere; }
+.agents .task-meta { grid-column: 1 / -1; color: var(--muted); font: 9px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
+.agents .task-state { font: 9px ui-monospace, monospace; letter-spacing: .1em; }
+.agents .task.running .task-state { color: var(--amber); }
+.agents .task.done .task-state { color: var(--green); }
+.agents .task.error .task-state, .agents .task.cancelled .task-state { color: var(--red); }
+.agents .task button { padding: 4px 8px; font-size: 9px; }
+.agents .group { color: #4f5a54; font: 8px ui-monospace, monospace; letter-spacing: .16em; margin: 4px 0 8px; }
+.agents .group:not(:first-child) { margin-top: 16px; }
+
+.attached { margin: 0 20px 16px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #2f6f88; background: rgba(20, 58, 72, .32); }
+.attached.hidden { display: none; }
+.attached > div:first-child { display: grid; grid-template-columns: auto 1fr; column-gap: 10px; }
+.attached small { color: var(--muted); grid-column: 2; margin-top: 3px; overflow-wrap: anywhere; }
+.attached .caveat { color: #7f8f88; font-size: 10px; line-height: 1.45; }
+.attached .pulse { background: #6fd3f2; box-shadow: 0 0 0 6px rgba(111,211,242,.1); }

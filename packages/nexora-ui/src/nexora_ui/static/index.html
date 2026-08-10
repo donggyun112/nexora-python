@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Nexora · Durable Agent Lab</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=9" />
+    <link rel="stylesheet" href="/assets/styles.css?v=11" />
   </head>
   <body>
     <div class="noise"></div>
@@ -41,6 +41,10 @@
           <div><span class="pulse"></span><strong>Worker crashed after Step commit</strong><small>Effect result is durable · tool must not run again</small></div>
           <button id="recover">Recover from committed Step</button>
         </div>
+        <div id="attached" class="attached hidden">
+          <div><span class="pulse"></span><strong>Talking to an independent agent</strong><small id="attached-id">—</small><small class="caveat">Its earlier turns come back from the console's own transcript — the runtime does not persist one yet, so this continuity ends where this process does.</small></div>
+          <button id="detach" class="secondary">Back to the parent run</button>
+        </div>
         <div class="composer">
           <div class="samples">
             <button data-policy="allow" data-prompt="짧게 자기소개해줘">Chat</button>
@@ -48,6 +52,15 @@
             <button data-policy="approval" data-prompt="remember_note 도구로 deploy 키에 ready 값을 저장해줘">Pre-tool gate</button>
             <button data-policy="allow" data-prompt="simulate_api_failure 도구를 딱 한 번 호출하고 실패 결과를 설명해줘">Tool failure</button>
             <button data-policy="allow" data-fault="after-step" data-prompt="remember_note 도구로 crash-demo 키에 committed 값을 저장하고 결과를 알려줘">Step recovery</button>
+          </div>
+          <div class="samples samples-agents">
+            <span class="samples-label">SUBAGENTS</span>
+            <button data-policy="allow" data-prompt="delegate 도구로 note-keeper 에이전트에게 'release 키에 v2 저장'을 wait=sync 로 맡기고, 돌아온 답을 그대로 알려줘">Sync</button>
+            <button data-policy="allow" data-prompt="delegate 도구로 note-keeper 에이전트에게 'release 키에 v2 저장'을 wait=async 로 맡겨. 기다리지 말고 바로 다음 할 일을 이야기해줘">Handoff</button>
+            <button data-policy="allow" data-prompt="delegate 도구의 tasks 배열로 note-keeper 와 echoer 에게 각각 다른 일을 한 번에 맡기고, 두 결과를 같이 보여줘">Fan-out</button>
+            <button data-policy="allow" data-prompt="delegate 도구로 echoer 에이전트에게 'independent hello' 를 wait=none 으로 열고, 돌려받은 run id 를 알려줘">Open independent</button>
+            <button data-policy="allow" data-prompt="check_tasks 도구로 지금 백그라운드에서 도는 자식이 있는지 확인하고 상태를 알려줘">check_tasks</button>
+            <button data-policy="allow" data-prompt="delegate 도구로 flaky 에이전트에게 아무 일이나 wait=sync 로 맡기고, 자식이 보고한 실패를 설명해줘">Child failure</button>
           </div>
           <textarea id="prompt" rows="3" placeholder="에이전트에게 작업을 요청하세요…"></textarea>
           <div class="composer-foot">
@@ -77,6 +90,10 @@
         <div id="ledger" class="events">
           <div class="rail-empty">No steps yet</div>
         </div>
+        <div class="rail-label"><span>SUBAGENTS</span><span>LEASHED · INDEPENDENT</span></div>
+        <div id="agents" class="events agents">
+          <div class="rail-empty">No children yet</div>
+        </div>
         <div class="rail-label"><span>CANONICAL EMIT RAIL</span><span>ONE EVENT · ONE ENTRY</span></div>
         <div id="events" class="events">
           <div class="rail-empty">Waiting for execution</div>
@@ -87,6 +104,6 @@
     <footer>
       <span>PLAIN ASYNC WHILE</span><i>→</i><span>MEDIATED EXECUTION</span><i>→</i><span>STEPLOG</span>
     </footer>
-    <script src="/assets/app.js?v=9"></script>
+    <script src="/assets/app.js?v=11"></script>
   </body>
 </html>

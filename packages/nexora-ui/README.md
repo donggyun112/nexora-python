@@ -38,3 +38,28 @@ The UI labels the model output **TOOL REQUEST**, not tool execution. If a new ch
 while the sample is waiting, the interactive default cancels the unanswered request, writes its
 protocol-closing ToolMessage, and continues the same run with the new message. Approval responses
 use `pending_id`; a late approval for the cancelled request is rejected.
+
+## Subagents
+
+The `SUBAGENTS` row of sample prompts drives every delegation shape the runtime has, against three
+demo children — `note-keeper`, `echoer`, and `flaky`. They are real runs, not canned strings: each
+one goes through `AgentRuntime` on the run id `Subagents` derived for it, on the same ledger the
+parent uses, with `respond_to_parent` in reach.
+
+| Button | What it shows |
+| --- | --- |
+| Sync | The parent's round waits. The child's own stream renders beside it, then its answer. |
+| Handoff | The parent answers immediately; the child appears on the subagent rail as `running` and its answer arrives on a later round. |
+| Fan-out | Two children in one call, both answers in one result. |
+| Open independent | `wait="none"` — no leash, just a run id, listed under INDEPENDENT with a **Talk to it** button. |
+| check_tasks | What the model itself sees of the children it launched. |
+| Child failure | A child reporting a failure, distinct from a child that crashed. |
+
+The rail keeps the two relationships apart because they are different: what is `ON THE PARENT'S
+LEASH` can be cancelled from here and by the model's `cancel_task`; what is `INDEPENDENT` has an
+address and nothing else, which is the entire result of opening one.
+
+**Talk to it** spends that address — the same durable queue a steer crosses, aimed at the child's
+run. Note the caveat the console prints with it: the run is reachable, but it begins each turn with
+an empty transcript, because transcript persistence is not ported. It will not remember what it was
+asked before.

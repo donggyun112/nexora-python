@@ -6,7 +6,7 @@ from typing import Any, cast
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
-from nexora.contracts.types import ToolCall
+from nexora.contracts.types import ToolCall, Tools
 from nexora.controls import Ctx
 from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora.runtime import AgentRuntime
@@ -28,7 +28,7 @@ class TrackingTools(DemoTools):
 
 async def test_agent_stream_forwards_tool_call_and_result() -> None:
     async def attempt(
-        _runtime: AgentRuntime, _tools: DemoTools, on_event: AgentEvent
+        _runtime: AgentRuntime, _tools: Tools, on_event: AgentEvent
     ) -> dict[str, Any]:
         await on_event(
             {"type": "tool_call", "id": "call-1", "name": "echo", "input": {"text": "hi"}}
@@ -82,12 +82,12 @@ async def test_no_failure_branch_reaches_the_browser_without_reaching_the_log(
     """Every browser-visible failure is also written to the server log."""
 
     async def crashed(
-        _runtime: AgentRuntime, _tools: DemoTools, _on_event: AgentEvent
+        _runtime: AgentRuntime, _tools: Tools, _on_event: AgentEvent
     ) -> dict[str, Any]:
         raise SimulatedWorkerCrash("logged-crash", "call-9")
 
     async def broke(
-        _runtime: AgentRuntime, _tools: DemoTools, _on_event: AgentEvent
+        _runtime: AgentRuntime, _tools: Tools, _on_event: AgentEvent
     ) -> dict[str, Any]:
         raise RuntimeError("something nobody planned for")
 
@@ -103,7 +103,7 @@ async def test_no_failure_branch_reaches_the_browser_without_reaching_the_log(
 
 async def test_agent_stream_marks_a_post_commit_worker_crash_as_recoverable() -> None:
     async def attempt(
-        _runtime: AgentRuntime, _tools: DemoTools, _on_event: AgentEvent
+        _runtime: AgentRuntime, _tools: Tools, _on_event: AgentEvent
     ) -> dict[str, Any]:
         raise SimulatedWorkerCrash("recoverable", "call-1")
 

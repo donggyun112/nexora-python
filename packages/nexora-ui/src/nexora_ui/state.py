@@ -4,9 +4,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from nexora import BackgroundTasks
 from nexora.contracts import BaseMessage
 from nexora.controls import Controls
 from nexora.orchestrator import MemorySteps
+from nexora_store import MemoryTranscript
 
 from .tools import DemoTools
 
@@ -65,16 +67,29 @@ class FaultInjectingMemorySteps(MemorySteps):
 
 @dataclass(slots=True)
 class Session:
-    """Store process-local dependencies and recovery state for one run."""
+    """Process-local dependencies and recovery state for one run.
+
+    Attributes:
+        tools: Demo tool executor.
+        controls: Optional runtime control plane.
+        recovery_history: Message snapshot for simulated crash recovery.
+        tasks: Managed background tasks retained across attempts.
+        opened: Addresses of independent child runs.
+    """
+
     tools: DemoTools = field(default_factory=DemoTools)
     controls: Controls | None = None
     recovery_history: list[BaseMessage] | None = None
+    tasks: BackgroundTasks = field(default_factory=BackgroundTasks)
+    opened: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class RuntimeState:
-    """Store process-local sessions and the shared demo ledger."""
+    """Process-local sessions, step ledger, and transcript store."""
+
     step_store: FaultInjectingMemorySteps = field(default_factory=FaultInjectingMemorySteps)
+    transcripts: MemoryTranscript = field(default_factory=MemoryTranscript)
     sessions: dict[str, Session] = field(default_factory=dict)
 
     def session(self, run_id: str) -> Session:

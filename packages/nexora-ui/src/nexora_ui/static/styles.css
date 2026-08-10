@@ -44,6 +44,7 @@ h2 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .13e
 .message .who { color: var(--muted); font: 9px ui-monospace, monospace; letter-spacing: .15em; margin-bottom: 7px; }
 .bubble { white-space: pre-wrap; line-height: 1.55; font-size: 14px; padding: 14px 16px; background: #131815; border: 1px solid var(--line); }
 .user .bubble { background: var(--green-dim); border-color: #2a633a; }
+.bubble.thinking { color: var(--muted); font-style: italic; background: transparent; border-style: dashed; }
 .tool-exchange { width: min(88%, 680px); margin: 0 0 20px; padding: 14px 16px; border: 1px solid #3b4741; background: #0a0e0c; font-family: ui-monospace, monospace; }
 .tool-exchange.pending { border-color: #725d30; }
 .tool-exchange.waiting { border-color: #725d30; }

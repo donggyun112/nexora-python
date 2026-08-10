@@ -67,7 +67,9 @@ async def stream_attempt(
         # result. The lifecycle `permission_request`/`permission_denied` frame renders that gate.
         if event.get("type") == "tool_result" and event.get("executed") is False:
             return
-        if event.get("type") in {"text", "tool_call", "tool_result"}:
+        # `thinking` rides the same rail as `text`: it is what the model did before answering, and
+        # reading the answer without it is reading half the turn.
+        if event.get("type") in {"text", "thinking", "tool_call", "tool_result"}:
             await queue.put({"kind": "agent", "event": event})
 
     async def run_attempt() -> None:

@@ -67,6 +67,26 @@ async def test_agent_stream_forwards_tool_call_and_result() -> None:
     assert agent_events[1]["result"] == {"type": "text", "text": "hi"}
 
 
+async def test_agent_stream_forwards_thinking_beside_the_answer() -> None:
+    """Reading the answer without what preceded it is reading half the turn."""
+
+    async def attempt(
+        _runtime: AgentRuntime, _tools: Tools, on_event: AgentEvent
+    ) -> dict[str, Any]:
+        await on_event({"type": "thinking", "content": "먼저 도구를 쓰자"})
+        await on_event({"type": "text", "text": "확인했습니다"})
+        await on_event({"type": "done", "stop_reason": "completed"})
+        return {"type": "done"}
+
+    frames = [
+        json.loads(line) async for line in stream_attempt("thinker", attempt, RuntimeState())
+    ]
+    agent_events = [frame["event"] for frame in frames if frame["kind"] == "agent"]
+
+    assert [event["type"] for event in agent_events] == ["thinking", "text"]
+    assert agent_events[0]["content"] == "먼저 도구를 쓰자"
+
+
 @pytest.fixture
 def logged() -> Any:
     """Every line loguru emitted during a test, so a swallowed failure can be caught."""

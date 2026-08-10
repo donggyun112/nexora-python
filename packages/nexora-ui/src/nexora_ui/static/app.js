@@ -65,7 +65,7 @@ function toolCall(event) {
   $("messages").append(card);
   $("messages").scrollTop = $("messages").scrollHeight;
   state.toolCalls.set(event.id, { card, status, resultLabel, result });
-  state.assistant = null;
+  state.assistant = state.thinking = null;
   return state.toolCalls.get(event.id);
 }
 
@@ -230,7 +230,7 @@ function resetRun(prompt) {
   state.callId = null;
   state.pendingId = null;
   state.recoverable = false;
-  state.assistant = null;
+  state.assistant = state.thinking = null;
   state.rounds = new Set();
   state.effectIds = new Set();
   state.toolCalls = new Map();
@@ -279,6 +279,16 @@ function handle(frame) {
   }
   if (frame.kind === "agent") {
     const event = frame.event;
+    if (event.type === "thinking") {
+      // Its own bubble, above the answer: reasoning is not the answer, and a turn that thinks
+      // before every tool call would otherwise splice its notes into the middle of a sentence.
+      if (!state.thinking) {
+        state.thinking = message("assistant");
+        state.thinking.className = "bubble thinking";
+      }
+      state.thinking.textContent += event.content;
+      $("messages").scrollTop = $("messages").scrollHeight;
+    }
     if (event.type === "text") {
       if (!state.assistant) state.assistant = message("assistant");
       state.assistant.textContent += event.text;
@@ -510,7 +520,7 @@ async function run() {
     // independent agent's address buys, so the console has to be able to spend it.
     message("user", prompt);
     $("prompt").value = "";
-    state.assistant = null;
+    state.assistant = state.thinking = null;
     setStatus("running", "TALKING TO A CHILD");
     await consume("/api/attach", { run_id: state.attachTo, prompt, model: state.model });
     return;
@@ -518,7 +528,7 @@ async function run() {
   const switching = Boolean(state.callId && state.runId);
   const runId = switching ? state.runId : null;
   if (switching) {
-    state.assistant = null;
+    state.assistant = state.thinking = null;
     $("approval").classList.add("hidden");
     message("user", prompt);
     setStatus("running", "CANCELLING & SWITCHING");
@@ -539,7 +549,7 @@ async function run() {
 
 async function recover() {
   if (!state.runId || !state.recoverable || state.busy) return;
-  state.assistant = null;
+  state.assistant = state.thinking = null;
   $("recovery").classList.add("hidden");
   setStatus("running", "RECOVERING FROM STEP");
   await consume("/api/recover", { run_id: state.runId, model: state.model });
@@ -548,7 +558,7 @@ async function recover() {
 async function resume(approved) {
   if (!state.runId || !state.pendingId || state.busy) return;
   $("approval").classList.add("hidden");
-  state.assistant = null;
+  state.assistant = state.thinking = null;
   setStatus("running", "RESUMING");
   await consume("/api/resume", { run_id: state.runId, pending_id: state.pendingId, approved, model: state.model });
 }

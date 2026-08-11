@@ -111,7 +111,7 @@ LAYERS: dict[str, frozenset[str]] = {
     # planner or durable execution layers.
     "providers": frozenset(),
     "prompts": frozenset(),
-    "skills": frozenset({"contracts", "prompts"}),
+    "skills": frozenset({"contracts"}),
     "tool_search": frozenset({"contracts"}),
     "workspace": frozenset({"contracts"}),
     "sandbox_remote": frozenset({"workspace"}),

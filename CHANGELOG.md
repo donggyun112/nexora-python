@@ -9,10 +9,11 @@ documentation corrections belong in the commit log, not here.
 
 - **Progressive model context.** `SystemPrompt` composes cache-stable and explicitly volatile
   sections; source-neutral `SkillRegistry` discovers metadata through asynchronous `SkillSource`
-  adapters and `SkillTools` loads full bodies only on invocation. `DirectorySkillSource` provides
-  `SKILL.md` support. `DeferredTools` adds transcript-recoverable `tool_search` activation, and the
-  ReAct planner rebuilds LangChain tool bindings at every model round so a newly selected schema
-  becomes callable without restarting the run.
+  adapters, while the `skill` tool schema alone exposes their bounded catalog and `SkillTools`
+  loads full bodies only on invocation. `DirectorySkillSource` provides `SKILL.md` support.
+  `DeferredTools` adds transcript-recoverable `tool_search` activation, and the ReAct planner
+  rebuilds LangChain tool bindings at every model round so a newly selected schema becomes callable
+  without restarting the run.
 
 - **Model invocations are durable effect steps.** A request is identified by its model, bound tools
   and model-visible context. Completed stream chunks are replayed from `StepLog` after a crash

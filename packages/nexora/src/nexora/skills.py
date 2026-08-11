@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from .contracts import BaseMessage, DynamicTools, Tools
-from .prompts import PromptSection, prompt_section
 
 __all__ = [
     "DirectorySkillSource",
@@ -223,11 +222,6 @@ class SkillRegistry:
         omitted = len(skills) - len(kept)
         suffix = f"\n  ... {omitted} more" if omitted else ""
         return head + "\n".join(kept) + suffix + tail
-
-    def prompt_section(self, name: str = "skills") -> PromptSection:
-        """Expose asynchronously discovered metadata as a cache-stable prompt section."""
-        return prompt_section(name, self.catalog)
-
 
 class SkillTools:
     """Add an on-demand ``skill`` tool to another tool collection."""

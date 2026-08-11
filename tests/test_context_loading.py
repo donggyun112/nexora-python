@@ -1,5 +1,6 @@
 """Progressive prompt, skill, and tool disclosure semantics."""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,18 @@ class BindingLlm(Llm):
     """Record each round's model-visible function names."""
 
     bound_names: list[list[str]] = []  # noqa: RUF012 - pydantic fake, set per instance
+    bound_tools: list[list[dict[str, Any]]] = []  # noqa: RUF012 - pydantic fake
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
         """Keep the fake stream behavior while recording normalized schemas."""
+        definitions = list(tools)
         self.bound_names.append(
-            [str(tool.get("function", {}).get("name", tool.get("name", ""))) for tool in tools]
+            [
+                str(tool.get("function", {}).get("name", tool.get("name", "")))
+                for tool in definitions
+            ]
         )
+        self.bound_tools.append(definitions)
         return self
 
 
@@ -129,6 +136,27 @@ async def test_catalog_discovery_does_not_load_a_database_skill_body() -> None:
     assert source.loads == []
 
 
+async def test_the_skill_catalog_appears_once_in_the_model_request() -> None:
+    """Claude Code `SkillTool` — its schema alone owns catalog disclosure."""
+    description = "Review a change without disclosing the complete procedure"
+    source = StoredSkillSource(Skill("review", description, "SECRET"))
+    model = BindingLlm(messages=iter((says("done"),)))
+    model.seen = []
+    model.bound_names = []
+    model.bound_tools = []
+
+    async for _ in react_loop(
+        model,
+        SkillTools(Tools(), SkillRegistry([source])),
+        system_prompt=SystemPrompt([prompt_section("identity", "You are Nexora.")]),
+    ):
+        pass
+
+    visible = "\n".join(str(message.content) for message in model.seen[0])
+    visible += json.dumps(model.bound_tools[0])
+    assert visible.count(description) == 1
+
+
 async def test_invoking_a_skill_injects_its_body_after_the_tool_answer() -> None:
     """Claude Code `SkillTool.call` — full instructions enter context only on invocation."""
     source = StoredSkillSource(Skill("review", "Review a change", "FOLLOW THIS PROCEDURE"))
@@ -162,6 +190,7 @@ async def test_deferred_schema_appears_only_after_tool_search() -> None:
     )
     model.seen = []
     model.bound_names = []
+    model.bound_tools = []
 
     async for _ in react_loop(model, tools):
         pass

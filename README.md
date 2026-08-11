@@ -185,7 +185,7 @@ that cannot accept this context is rejected before execution; there is no unjail
 
 System prompts, skills, and large tool pools support progressive disclosure. Prompt sections cache
 until explicitly cleared; volatile sections must state why they are allowed to break the provider
-cache. A skill catalog exposes only names and descriptions, while the `skill` tool injects the full
+cache. The `skill` tool schema exposes only a name/description catalog and injects the full
 `SKILL.md` body after invocation. `DeferredTools` initially hides MCP tools and definitions marked
 `should_defer`/`defer_loading`; `tool_search` records selected names in the transcript and the loop
 binds their complete schemas on the following model round:
@@ -210,7 +210,6 @@ skills = SkillRegistry([
 tools = SkillTools(DeferredTools(builtin_tools()), skills)
 system = SystemPrompt([
     prompt_section("identity", "You are a careful coding agent."),
-    skills.prompt_section(),
 ])
 
 outcome = await runtime.run(

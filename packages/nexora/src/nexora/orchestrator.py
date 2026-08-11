@@ -651,7 +651,12 @@ class Orchestrator:
             return
         call, request = round_.suspended
         context = ctx if ctx is not None else Ctx(turn=turn)
-        messages = [*context.messages, *round_.answers]
+        messages = [
+            *context.messages,
+            *round_.answers,
+            *(message for _, message in round_.images),
+            *(message for _, message in round_.context),
+        ]
         snapshot = suspend_history_snapshot(
             messages,
             call["id"] or "",
@@ -816,7 +821,12 @@ class Orchestrator:
         )
         absorbed = absorb_round(tools, resolved)
         return RecoveredTools(
-            [*history, *absorbed.answers, *(message for _, message in absorbed.images)],
+            [
+                *history,
+                *absorbed.answers,
+                *(message for _, message in absorbed.images),
+                *(message for _, message in absorbed.context),
+            ],
             resolved,
             absorbed.completed,
             absorbed.suspended,

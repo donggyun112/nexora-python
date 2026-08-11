@@ -97,9 +97,7 @@ def test_every_declared_workspace_dependency_is_actually_imported() -> None:
     for dist in distributions():
         reached = set(_imported_modules(dist.source))
         for declared in dist.declared:
-            assert declared in reached, (
-                f"{dist.name} declares {declared} and never imports it"
-            )
+            assert declared in reached, f"{dist.name} declares {declared} and never imports it"
 
 
 LAYERS: dict[str, frozenset[str]] = {
@@ -112,6 +110,9 @@ LAYERS: dict[str, frozenset[str]] = {
     # Provider selection and workspace lifecycle adapt external runtimes without reaching the
     # planner or durable execution layers.
     "providers": frozenset(),
+    "prompts": frozenset(),
+    "skills": frozenset({"contracts", "prompts"}),
+    "tool_search": frozenset({"contracts"}),
     "workspace": frozenset({"contracts"}),
     "sandbox_remote": frozenset({"workspace"}),
     "controls": frozenset({"contracts"}),

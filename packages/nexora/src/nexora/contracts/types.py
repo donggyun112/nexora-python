@@ -17,6 +17,7 @@ __all__ = [
     "CompactContext",
     "ControlSignal",
     "DrainInputs",
+    "DynamicTools",
     "Emit",
     "InvokeModel",
     "ModelErrorKind",
@@ -31,6 +32,7 @@ __all__ = [
     "RecordMessages",
     "ShouldStopAfterTurn",
     "StopReason",
+    "SystemPromptSource",
     "ToolCall",
     "Tools",
 ]
@@ -109,6 +111,24 @@ class Tools(Protocol):
 
     def list(self) -> list[dict[str, Any]]:
         """Every available tool as `{name, description, parameters}`, for binding to a model."""
+        ...
+
+
+@runtime_checkable
+class DynamicTools(Tools, Protocol):
+    """A tool collection whose model-visible definitions depend on conversation history."""
+
+    def prepare(self, messages: list[BaseMessage]) -> Awaitable[None] | None:
+        """Reconstruct model-visible tool state before one provider request, optionally async."""
+        ...
+
+
+@runtime_checkable
+class SystemPromptSource(Protocol):
+    """Renders the system prompt at a model-round boundary."""
+
+    async def render(self) -> str:
+        """Return the complete model-visible system prompt."""
         ...
 
 

@@ -11,6 +11,7 @@ from .types import (
     BatchTools,
     CompactContext,
     DrainInputs,
+    DynamicTools,
     Emit,
     InvokeModel,
     ModelErrorKind,
@@ -25,6 +26,7 @@ from .types import (
     RecordMessages,
     ShouldStopAfterTurn,
     StopReason,
+    SystemPromptSource,
     ToolCall,
     Tools,
 )
@@ -37,6 +39,7 @@ __all__ = [
     "BatchTools",
     "CompactContext",
     "DrainInputs",
+    "DynamicTools",
     "Emit",
     "EventEnvelope",
     "EventStream",
@@ -56,6 +59,7 @@ __all__ = [
     "ShouldStopAfterTurn",
     "Sink",
     "StopReason",
+    "SystemPromptSource",
     "ToolCall",
     "Tools",
 ]

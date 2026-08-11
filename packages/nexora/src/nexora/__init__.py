@@ -16,16 +16,19 @@ from .builtins import (
 from .contracts import (
     BaseMessage,
     CompactContext,
+    DynamicTools,
     ModelErrorKind,
     ModelFailure,
     ModelFailureAction,
     OnModelFailure,
     PendingInput,
+    SystemPromptSource,
     ToolCall,
     Tools,
 )
 from .engines.plain import react_loop
 from .orchestrator import ModelFailurePolicy
+from .prompts import PromptSection, SystemPrompt, prompt_section, volatile_prompt_section
 from .providers import FallbackChatModel, ModelProvider, ProviderErrorKind
 from .runtime import AgentRuntime, run
 from .sandbox_remote import (
@@ -34,6 +37,14 @@ from .sandbox_remote import (
     RemoteSandboxClient,
     RemoteSandboxError,
     UrllibHTTPTransport,
+)
+from .skills import (
+    DirectorySkillSource,
+    Skill,
+    SkillMetadata,
+    SkillRegistry,
+    SkillSource,
+    SkillTools,
 )
 from .subagents import (
     Answering,
@@ -44,6 +55,7 @@ from .subagents import (
     Subagent,
     Subagents,
 )
+from .tool_search import DeferredTools
 from .workspace import (
     CommandResult,
     ContextualTools,
@@ -88,6 +100,9 @@ __all__ = [
     "ContextualTools",
     "ContinuousWorkspaceProvider",
     "Declarative",
+    "DeferredTools",
+    "DirectorySkillSource",
+    "DynamicTools",
     "ExecToolOptions",
     "FallbackChatModel",
     "HTTPResponse",
@@ -101,6 +116,7 @@ __all__ = [
     "ModelProvider",
     "OnModelFailure",
     "PendingInput",
+    "PromptSection",
     "ProviderErrorKind",
     "Remote",
     "RemoteSandboxClient",
@@ -109,9 +125,16 @@ __all__ = [
     "ResumableWorkspaceProvider",
     "SandboxCommand",
     "SandboxSessionState",
+    "Skill",
+    "SkillMetadata",
+    "SkillRegistry",
+    "SkillSource",
+    "SkillTools",
     "SnapshotBackend",
     "Subagent",
     "Subagents",
+    "SystemPrompt",
+    "SystemPromptSource",
     "TarSnapshotBackend",
     "ToolCall",
     "ToolContext",
@@ -134,6 +157,8 @@ __all__ = [
     "WorkspaceViolation",
     "__version__",
     "builtin_tools",
+    "prompt_section",
     "react_loop",
     "run",
+    "volatile_prompt_section",
 ]

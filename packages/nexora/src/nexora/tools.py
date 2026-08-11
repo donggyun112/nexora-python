@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import Mapping
 from typing import Any, NamedTuple, Protocol
 
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -304,6 +305,7 @@ class Absorbed(NamedTuple):
         suspended: The call that parked the round, if any.
         ended_by_tool: Whether a terminating call succeeded.
         images: ``(call id, message)`` pairs re-entering images the answers could only name.
+        context: Extra model context emitted after a tool answer, such as an invoked skill body.
     """
 
     answers: list[BaseMessage]
@@ -311,6 +313,7 @@ class Absorbed(NamedTuple):
     suspended: tuple[ToolCall, dict[str, Any]] | None
     ended_by_tool: bool
     images: list[tuple[str, BaseMessage]]
+    context: list[tuple[str, BaseMessage]]
 
 
 def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
@@ -320,6 +323,7 @@ def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
     suspended: tuple[ToolCall, dict[str, Any]] | None = None
     ended_by_tool = False
     images: list[tuple[str, BaseMessage]] = []
+    context: list[tuple[str, BaseMessage]] = []
 
     for call, result, _refused in resolved:
         if result.get("type") == "suspend":
@@ -337,10 +341,11 @@ def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
         )
         if blocks := image_blocks(result):
             images.append((call["id"] or "", image_message(call["name"], call["id"] or "", blocks)))
+        context.extend((call["id"] or "", message) for message in context_messages(result))
         if not failed and terminates_loop(tools, call):
             ended_by_tool = True
 
-    return Absorbed(answers, completed, suspended, ended_by_tool, images)
+    return Absorbed(answers, completed, suspended, ended_by_tool, images, context)
 
 
 def tool_result(call: ToolCall, result: dict[str, Any]) -> dict[str, Any]:
@@ -519,6 +524,27 @@ def _image_block(result: Any) -> dict[str, Any] | None:
             return {"type": "image", "base64": data, "mime_type": mime_type}
         case _:
             return None
+
+
+def context_messages(result: dict[str, Any]) -> list[BaseMessage]:
+    """Decode trusted tool-provided context that follows, but never replaces, its answer."""
+    raw = result.get("context_messages")
+    if not isinstance(raw, list):
+        return []
+    messages: list[BaseMessage] = []
+    for item in raw:
+        if not isinstance(item, Mapping) or not isinstance(item.get("content"), str):
+            continue
+        metadata = item.get("metadata")
+        messages.append(
+            HumanMessage(
+                content=item["content"],
+                additional_kwargs={
+                    "nexora_context": dict(metadata) if isinstance(metadata, Mapping) else {}
+                },
+            )
+        )
+    return messages
 
 
 def image_message(name: str, call_id: str, blocks: list[dict[str, Any]]) -> HumanMessage:

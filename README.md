@@ -183,6 +183,53 @@ session before model/tool execution, replaces the tool context's `workdir` and `
 always calls session cleanup after completion, suspension, cancellation, or failure. A tool set
 that cannot accept this context is rejected before execution; there is no unjailed fallback.
 
+System prompts, skills, and large tool pools support progressive disclosure. Prompt sections cache
+until explicitly cleared; volatile sections must state why they are allowed to break the provider
+cache. A skill catalog exposes only names and descriptions, while the `skill` tool injects the full
+`SKILL.md` body after invocation. `DeferredTools` initially hides MCP tools and definitions marked
+`should_defer`/`defer_loading`; `tool_search` records selected names in the transcript and the loop
+binds their complete schemas on the following model round:
+
+```python
+from pathlib import Path
+
+from nexora import (
+    DirectorySkillSource,
+    DeferredTools,
+    SkillRegistry,
+    SkillTools,
+    SystemPrompt,
+    builtin_tools,
+    prompt_section,
+)
+
+skills = SkillRegistry([
+    DirectorySkillSource(Path.home() / ".nexora/skills"),
+    DirectorySkillSource(".nexora/skills"),
+])
+tools = SkillTools(DeferredTools(builtin_tools()), skills)
+system = SystemPrompt([
+    prompt_section("identity", "You are a careful coding agent."),
+    skills.prompt_section(),
+])
+
+outcome = await runtime.run(
+    "attempt-42",
+    model,
+    tools,
+    "review this change",
+    system_prompt=system,
+)
+```
+
+`SkillRegistry` accepts any asynchronous `SkillSource`: `list()` returns only `SkillMetadata`, and
+`load(name)` fetches the complete `Skill` body only after the model invokes the skill tool. This
+supports database, API, package, and tenant-scoped stores without coupling the registry to paths.
+`DirectorySkillSource` is the bundled filesystem adapter; path values passed directly remain a
+convenience shorthand for it. Later sources override earlier ones by skill name. Create one wrapper
+stack per conversation, or call `DeferredTools.reset()` before reusing it for an unrelated
+transcript.
+
 Messages, tool calls and chat models are LangChain's — owning our own versions of those bought
 translation layers and little else.
 

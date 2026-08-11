@@ -11,6 +11,7 @@ from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from inspect import isawaitable
 from typing import Any, cast
 
 from langchain_core.messages import (
@@ -28,6 +29,7 @@ from ...contracts.types import (
     CompactContext,
     ControlSignal,
     DrainInputs,
+    DynamicTools,
     Emit,
     InvokeModel,
     ModelErrorKind,
@@ -38,6 +40,7 @@ from ...contracts.types import (
     RecordMessages,
     ShouldStopAfterTurn,
     StopReason,
+    SystemPromptSource,
     ToolCall,
     Tools,
 )
@@ -64,7 +67,7 @@ async def react_loop(
     model: Any,
     tools: Tools,
     *,
-    system_prompt: str | None = None,
+    system_prompt: str | SystemPromptSource | None = None,
     history: list[BaseMessage] | None = None,
     subject: str = "",
     aborted: Aborted = lambda: False,
@@ -89,13 +92,8 @@ async def react_loop(
     `subject` is who the run acts for, carried into every `Ctx` so a control point can decide with
     it and every tool event is stamped with it. Opaque — see `Ctx.subject`.
     """
-    messages: list[BaseMessage] = [
-        *([SystemMessage(system_prompt)] if system_prompt else []),
-        *(history or []),
-    ]
-    available = tools.list()
-    bound = model.bind_tools(as_model_tools(available)) if available else model
-    request_identity = _model_request_identity(model, available, model_identity)
+    messages: list[BaseMessage] = list(history or [])
+    managed_system = False
     calls_made: list[dict[str, Any]] = []
     spent = _Spend()
     last_text = ""
@@ -104,6 +102,20 @@ async def react_loop(
 
     while True:
         turn += 1
+        if system_prompt is not None:
+            rendered_prompt = (
+                system_prompt if isinstance(system_prompt, str) else await system_prompt.render()
+            )
+            if rendered_prompt:
+                message = SystemMessage(rendered_prompt)
+                if managed_system:
+                    messages[0] = message
+                else:
+                    messages.insert(0, message)
+                    managed_system = True
+            elif managed_system:
+                messages.pop(0)
+                managed_system = False
         if aborted():
             yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
@@ -154,6 +166,14 @@ async def react_loop(
             emit,
             turn,
         )
+
+        if isinstance(tools, DynamicTools):
+            prepared = tools.prepare(messages)
+            if isawaitable(prepared):
+                await prepared
+        available = tools.list()
+        bound = model.bind_tools(as_model_tools(available)) if available else model
+        request_identity = _model_request_identity(model, available, model_identity)
 
         # ── Reason ───────────────────────────────────────────────────────────
         reply: AIMessageChunk | None = None
@@ -310,11 +330,18 @@ async def react_loop(
         carried_inputs += [
             PendingInput("tool_image", message, call_id) for call_id, message in round_.images
         ]
+        carried_inputs += [
+            PendingInput("tool_context", message, call_id) for call_id, message in round_.context
+        ]
 
         if aborted():
             await _record(
                 record_messages,
-                [*round_.answers, *(message for _, message in round_.images)],
+                [
+                    *round_.answers,
+                    *(message for _, message in round_.images),
+                    *(message for _, message in round_.context),
+                ],
             )
             yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
@@ -331,7 +358,11 @@ async def react_loop(
             # tool-result group immediately rather than leaving it one step behind.
             await _record(
                 record_messages,
-                [*round_.answers, *(message for _, message in round_.images)],
+                [
+                    *round_.answers,
+                    *(message for _, message in round_.images),
+                    *(message for _, message in round_.context),
+                ],
             )
             reason: StopReason = "tool" if round_.ended_by_tool else "policy"
             yield await _done(emit, last_text or "(stopped after turn)", calls_made, reason, spent)

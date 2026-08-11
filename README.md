@@ -178,6 +178,22 @@ until a non-empty executable allow-list is supplied; its default also requires a
 workspace and denies network egress. `web_fetch` uses HTTPS and can be replaced or tested with an
 injected `WebFetchTransport`.
 
+Applications that manage a `WorkspaceSession` themselves can bind it explicitly for direct tool
+execution without bypassing `WorkspaceFS`:
+
+```python
+from nexora import HostWorkspaceProvider, ToolContext, builtin_tools
+
+session = await HostWorkspaceProvider(root="/path/to/project").acquire(run_id="direct-tools")
+try:
+    tools = builtin_tools(
+        context=ToolContext(workdir=str(session.root), workspace=session),
+    )
+    result = await tools.execute("read", "call-1", {"path": "README.md"})
+finally:
+    await session.cleanup()
+```
+
 When a provider is configured, tools must implement `ContextualTools`. The runtime acquires the
 session before model/tool execution, replaces the tool context's `workdir` and `workspace`, and
 always calls session cleanup after completion, suspension, cancellation, or failure. A tool set

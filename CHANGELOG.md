@@ -7,6 +7,10 @@ documentation corrections belong in the commit log, not here.
 
 ### Added
 
+- **Explicit built-in execution context.** `builtin_tools(context=...)` accepts a caller-managed
+  `ToolContext` for direct execution while retaining the same `WorkspaceFS` confinement used by
+  `AgentRuntime`; missing-workspace read errors now point callers to both supported setup paths.
+
 - **Progressive model context.** `SystemPrompt` composes cache-stable and explicitly volatile
   sections; source-neutral `SkillRegistry` discovers metadata through asynchronous `SkillSource`
   adapters, while the `skill` tool schema alone exposes their bounded catalog and `SkillTools`

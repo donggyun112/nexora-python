@@ -96,11 +96,16 @@ class BuiltinTools:
 
 def builtin_tools(
     *,
+    context: ToolContext | None = None,
     exec_options: ExecToolOptions | None = None,
     web_fetch_options: WebFetchToolOptions | None = None,
 ) -> BuiltinTools:
-    """Create the standard file/process/fetch tool collection."""
-    return BuiltinTools(exec_options=exec_options, web_fetch_options=web_fetch_options)
+    """Create the standard bundle, optionally bound to a caller-managed workspace context."""
+    return BuiltinTools(
+        context=context,
+        exec_options=exec_options,
+        web_fetch_options=web_fetch_options,
+    )
 
 
 def _definitions(allow_shell: bool) -> dict[str, dict[str, Any]]:

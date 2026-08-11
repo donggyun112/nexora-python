@@ -14,6 +14,7 @@ from nexora import (
     ToolContext,
     WebFetchResponse,
     WebFetchToolOptions,
+    builtin_tools,
 )
 
 from .test_loop import a_call, says, scripted
@@ -89,7 +90,21 @@ async def test_runtime_injects_its_workspace_into_the_builtin_bundle(tmp_path: P
 async def test_file_tools_fail_closed_without_a_workspace() -> None:
     result = await BuiltinTools().execute("read", "call-1", {"path": "README.md"})
 
-    assert result == {"type": "error", "message": "read requires an active workspace"}
+    assert result["type"] == "error"
+    assert "AgentRuntime(workspace_provider=...)" in result["message"]
+
+
+async def test_builtin_factory_accepts_an_explicit_workspace_context(tmp_path: Path) -> None:
+    """The public factory must preserve a caller-managed execution context."""
+    (tmp_path / "notes.txt").write_text("factory context")
+    session = await HostWorkspaceProvider(root=tmp_path).acquire(run_id="factory-context")
+    context = ToolContext(workdir=str(tmp_path), workspace=session)
+
+    result = await builtin_tools(context=context).execute(
+        "read", "call-1", {"path": "notes.txt"}
+    )
+
+    assert result["text"] == "     1→factory context"
 
 
 async def test_read_numbers_and_pages_text_like_ts_number_lines(tmp_path: Path) -> None:

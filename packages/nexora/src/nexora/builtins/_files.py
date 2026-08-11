@@ -36,7 +36,10 @@ async def read_tool(
         return error_result("path is required")
     workspace = require_workspace(context)
     if workspace is None:
-        return error_result("read requires an active workspace")
+        return error_result(
+            "read requires an active workspace; configure AgentRuntime(workspace_provider=...) "
+            "or pass a ToolContext to builtin_tools()"
+        )
 
     try:
         stat = await workspace.fs.stat(path)

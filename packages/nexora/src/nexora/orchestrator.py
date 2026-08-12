@@ -755,36 +755,10 @@ class Orchestrator:
         Raises:
             Indeterminate: If a running step exists and retry is disabled.
         """
-        stored_turn = 0
-        round_record = await self._log.read(self.run_id, _pending_round_key())
-        if round_record.status == "done" and isinstance(round_record.value, dict):
-            stored_turn = int(round_record.value.get("turn", 0))
-
-        recovery_turn = stored_turn if turn is None else turn
-        pending = _unanswered_tool_calls(history)
+        recovery_turn, pending = await self._pending_recovery_calls(history, turn)
         if not pending:
             return RecoveredTools(list(history), [], [], None)
-        if round_record.status == "done" and isinstance(round_record.value, dict):
-            recorded_calls = round_record.value.get("calls", [])
-            recorded_ids = {call.get("id") for call in recorded_calls if isinstance(call, dict)}
-            if any(call["id"] not in recorded_ids for call in pending):
-                raise ValueError("agent history does not match the orchestrator's pending round")
-
-        records: list[tuple[ToolCall, Step]] = []
-        for call in pending:
-            call_id = call["id"] or ""
-            record = await self._log.read(self.run_id, call_id)
-            if record.status == "running" and not retry_running:
-                raise Indeterminate(self.run_id, call_id)
-            records.append((call, record))
-
-        for call, record in records:
-            if record.status == "running":
-                await self.force_retry(call["id"] or "")
-        records = [
-            (call, Step("absent") if record.status == "running" else record)
-            for call, record in records
-        ]
+        records = await self._recovery_records(pending, retry_running)
 
         context = Ctx(turn=recovery_turn, messages=list(history))
         publisher = emit if emit is not None else self._emit
@@ -792,31 +766,18 @@ class Orchestrator:
         for call, record in records:
             if aborted():
                 break
-            if record.status == "done":
-                if not isinstance(record.value, dict):
-                    raise TypeError(f"tool step {call['id']!r} did not record a result dict")
-                await record_resolved(controls, publisher, context, call, record.value)
-                item = Resolved(call, record.value, refused=False)
-            else:
-                # The original pending-round record keeps the complete model order. Calling the
-                # public `execute_round` for this one recovery item would overwrite it with a
-                # one-call subset and make a second crash lose the remaining calls.
-                durable = Concurrent(Stepped(tools, self), aborted)
-                try:
-                    fresh = await execute_calls(
-                        durable,
-                        [call],
-                        aborted,
-                        publisher,
-                        recovery_turn,
-                        controls,
-                        context,
-                    )
-                except RoundSuspended as stopped:
-                    fresh = stopped.resolved
-                if not fresh:
-                    break
-                item = fresh[0]
+            item = await self._recover_call(
+                call,
+                record,
+                tools=tools,
+                aborted=aborted,
+                publisher=publisher,
+                turn=recovery_turn,
+                controls=controls,
+                context=context,
+            )
+            if item is None:
+                break
             resolved.append(item)
             if item.result.get("type") == "suspend":
                 break
@@ -841,6 +802,89 @@ class Orchestrator:
             absorbed.completed,
             absorbed.suspended,
         )
+
+    async def _pending_recovery_calls(
+        self,
+        history: list[BaseMessage],
+        turn: int | None,
+    ) -> tuple[int, list[ToolCall]]:
+        """Load and validate the durable model order for an unanswered tool round."""
+        stored_turn = 0
+        round_record = await self._log.read(self.run_id, _pending_round_key())
+        if round_record.status == "done" and isinstance(round_record.value, dict):
+            stored_turn = int(round_record.value.get("turn", 0))
+
+        recovery_turn = stored_turn if turn is None else turn
+        pending = _unanswered_tool_calls(history)
+        if not pending:
+            return recovery_turn, []
+
+        if round_record.status == "done" and isinstance(round_record.value, dict):
+            recorded_calls = round_record.value.get("calls", [])
+            recorded_ids = {call.get("id") for call in recorded_calls if isinstance(call, dict)}
+            if any(call["id"] not in recorded_ids for call in pending):
+                raise ValueError("agent history does not match the orchestrator's pending round")
+        return recovery_turn, pending
+
+    async def _recovery_records(
+        self,
+        pending: list[ToolCall],
+        retry_running: bool,
+    ) -> list[tuple[ToolCall, Step]]:
+        """Read pending steps and turn explicitly retryable running intents into absent ones."""
+        records: list[tuple[ToolCall, Step]] = []
+        for call in pending:
+            call_id = call["id"] or ""
+            record = await self._log.read(self.run_id, call_id)
+            if record.status == "running" and not retry_running:
+                raise Indeterminate(self.run_id, call_id)
+            records.append((call, record))
+
+        for call, record in records:
+            if record.status == "running":
+                await self.force_retry(call["id"] or "")
+        return [
+            (call, Step("absent") if record.status == "running" else record)
+            for call, record in records
+        ]
+
+    async def _recover_call(
+        self,
+        call: ToolCall,
+        record: Step,
+        *,
+        tools: Tools,
+        aborted: Aborted,
+        publisher: Emit | None,
+        turn: int,
+        controls: Controls | None,
+        context: Ctx,
+    ) -> Resolved | None:
+        """Replay one completed result or execute one absent call through the shared boundary."""
+        if record.status == "done":
+            if not isinstance(record.value, dict):
+                raise TypeError(f"tool step {call['id']!r} did not record a result dict")
+            await record_resolved(controls, publisher, context, call, record.value)
+            return Resolved(call, record.value, refused=False)
+
+        # The original pending-round record keeps the complete model order. Calling the public
+        # `execute_round` for this one recovery item would overwrite it with a one-call subset and
+        # make a second crash lose the remaining calls. `execute_calls` is still the one execution
+        # boundary; only the pending-round bookkeeping is bypassed here.
+        durable = Concurrent(Stepped(tools, self), aborted)
+        try:
+            fresh = await execute_calls(
+                durable,
+                [call],
+                aborted,
+                publisher,
+                turn,
+                controls,
+                context,
+            )
+        except RoundSuspended as stopped:
+            fresh = stopped.resolved
+        return fresh[0] if fresh else None
 
     async def _clear(self, step: str) -> None:
         if isinstance(self._log, ClearableSteps):

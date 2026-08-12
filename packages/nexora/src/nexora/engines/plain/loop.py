@@ -47,6 +47,7 @@ from ...contracts.types import (
 )
 from ...controls import Controls, Ctx, Halt, Proceed
 from ...tools import (
+    Absorbed,
     ExecuteRound,
     absorb_round,
     as_model_tools,
@@ -104,20 +105,9 @@ async def react_loop(
 
     while True:
         turn += 1
-        if system_prompt is not None:
-            rendered_prompt = (
-                system_prompt if isinstance(system_prompt, str) else await system_prompt.render()
-            )
-            if rendered_prompt:
-                message = SystemMessage(rendered_prompt)
-                if managed_system:
-                    messages[0] = message
-                else:
-                    messages.insert(0, message)
-                    managed_system = True
-            elif managed_system:
-                messages.pop(0)
-                managed_system = False
+        managed_system = await _refresh_system_message(
+            messages, system_prompt, managed_system
+        )
         if aborted():
             yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
@@ -126,59 +116,22 @@ async def react_loop(
             *(list(await drain_inputs()) if drain_inputs else []),
         ])
         carried_inputs = []
-        if controls is not None and pending_inputs:
-            # Screened before `before_model` reads them: a gate deciding on the pending messages
-            # must see what will actually enter context, never a pre-mask original.
-            match await controls.on_inputs(
-                Ctx(
-                    turn=turn,
-                    messages=list(messages),
-                    calls_made=list(calls_made),
-                    text=last_text,
-                    subject=subject,
-                ),
-                pending_inputs,
-            ):
-                case Halt(halt_reason):
-                    yield await _done(emit, last_text, calls_made, halt_reason, spent)
-                    return
-                case screened:
-                    screened = _identify_inputs(screened)
-                    surviving = {
-                        item.origin_id for item in screened if item.origin_id is not None
-                    }
-                    discarded = [
-                        item
-                        for item in pending_inputs
-                        if item.origin_id is not None and item.origin_id not in surviving
-                    ]
-                    if discarded and discard_inputs is not None:
-                        await discard_inputs(discarded)
-                    pending_inputs = screened
-        if controls is not None:
-            action = await controls.before_model(
-                Ctx(
-                    turn=turn,
-                    messages=[*messages, *(item.message for item in pending_inputs)],
-                    calls_made=list(calls_made),
-                    text=last_text,
-                    subject=subject,
-                )
-            )
-            match action:
-                case Halt(halt_reason):
-                    yield await _done(emit, last_text, calls_made, halt_reason, spent)
-                    return
-                case Proceed(more):
-                    pending_inputs += [PendingInput("control", message) for message in more]
-        await _commit_inputs(
-            messages,
+        admission = await _admit_turn_inputs(
             pending_inputs,
-            admit_inputs,
-            record_messages,
-            emit,
-            turn,
+            messages=messages,
+            controls=controls,
+            discard_inputs=discard_inputs,
+            admit_inputs=admit_inputs,
+            record_messages=record_messages,
+            emit=emit,
+            turn=turn,
+            calls_made=calls_made,
+            last_text=last_text,
+            subject=subject,
         )
+        if isinstance(admission, Halt):
+            yield await _done(emit, last_text, calls_made, admission.reason, spent)
+            return
 
         if isinstance(tools, DynamicTools):
             prepared = tools.prepare(messages)
@@ -220,22 +173,7 @@ async def react_loop(
                     )
                     return
         if failed is not None:
-            if aborted():
-                yield await _done(
-                    emit, failed.partial, calls_made, "aborted", spent, mid_turn=True
-                )
-            else:
-                cut: dict[str, Any] = {
-                    "reason": "error",
-                    "message": str(failed.error),
-                    "error_type": type(failed.error).__name__,
-                    "error_kind": failed.kind,
-                }
-                if failed.partial:
-                    cut["partial"] = failed.partial
-                if emit is not None:
-                    await emit(EventType.STOP_FAILURE, cut)
-                yield {"type": "error", **{k: v for k, v in cut.items() if k != "reason"}}
+            yield await _failed_model_outcome(failed, aborted(), emit, calls_made, spent)
             return
 
         turn_text = _text_of(reply)
@@ -258,43 +196,25 @@ async def react_loop(
             assistant = _assistant_turn(reply, turn_text, [])
             messages.append(assistant)
             await _record(record_messages, [assistant])
-            # The caller's turn cap covers tool-free rounds too. Without this check an
-            # always-vetoing `before_finish` gate can bypass the only iteration bound the loop
-            # exposes.
-            if should_stop_after_turn is not None and await should_stop_after_turn(
-                turn, turn_text, calls_made
-            ):
-                yield await _done(emit, turn_text, calls_made, "policy", spent)
-                return
-            # A steer that landed while the turn was finishing cancels the stop.
-            if drain_inputs and (late_inputs := list(await drain_inputs())):
-                # Preserve their arrival order, but commit them only beside the next model call.
-                # That next turn's `before_model` may still halt, in which case claiming the model
-                # received these inputs would be an audit-log lie.
-                carried_inputs = late_inputs
-                continue
-            if controls is not None:
-                # The last word. A verifier that says "not done yet" gets another round, which is
-                # why this sits after the late-input check and not instead of it: an arriving steer
-                # and a policy objection are different reasons to keep going, and both may apply.
-                match await controls.before_finish(
-                    Ctx(
-                        turn=turn,
-                        messages=list(messages),
-                        calls_made=list(calls_made),
-                        text=turn_text,
-                        subject=subject,
-                    ),
-                    "completed",
-                ):
-                    case Proceed(steers):
-                        carried_inputs += [PendingInput("control", message) for message in steers]
-                        continue
-                    case Halt(halt_reason):
-                        yield await _done(emit, turn_text, calls_made, halt_reason, spent)
-                        return
-            yield await _done(emit, turn_text, calls_made, "completed", spent)
-            return
+            finish, carried_inputs = await _decide_finish(
+                turn=turn,
+                turn_text=turn_text,
+                calls_made=calls_made,
+                messages=messages,
+                subject=subject,
+                should_stop_after_turn=should_stop_after_turn,
+                drain_inputs=drain_inputs,
+                controls=controls,
+            )
+            match finish:
+                case Proceed():
+                    # Inputs remain uncommitted until the next model admission point.
+                    # `before_model` may still halt, in which case claiming the model received
+                    # them would be an audit-log lie.
+                    continue
+                case Halt(halt_reason):
+                    yield await _done(emit, turn_text, calls_made, halt_reason, spent)
+                    return
 
         # ── Act ──────────────────────────────────────────────────────────────
         assistant = _assistant_turn(reply, turn_text, requested_tool_calls)
@@ -315,10 +235,10 @@ async def react_loop(
             emit,
             turn,
             controls,
-            Ctx(
+            _control_ctx(
                 turn=turn,
-                messages=list(messages),
-                calls_made=list(calls_made),
+                messages=messages,
+                calls_made=calls_made,
                 text=turn_text,
                 subject=subject,
             ),
@@ -334,52 +254,236 @@ async def react_loop(
             yield event
 
         round_ = absorb_round(tools, resolved)
-        carried_inputs += [
-            PendingInput("tool_result", answer, str(completed["id"]))
-            for answer, completed in zip(round_.answers, round_.completed, strict=True)
-        ]
-        # After the answers, never among them: an image message is a second message about a call
-        # already answered, and a tool answer that has not landed yet cannot be commented on.
-        carried_inputs += [
-            PendingInput("tool_image", message, call_id) for call_id, message in round_.images
-        ]
-        carried_inputs += [
-            PendingInput("tool_context", message, call_id) for call_id, message in round_.context
-        ]
+        carried_inputs += _round_inputs(round_)
 
         if aborted():
-            await _record(
-                record_messages,
-                [
-                    *round_.answers,
-                    *(message for _, message in round_.images),
-                    *(message for _, message in round_.context),
-                ],
-            )
+            await _record(record_messages, _round_messages(round_))
             yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
 
         # ── Stop? ────────────────────────────────────────────────────────────
         # Also asked above on tool-free rounds. Even a terminating tool reaches it: the hook is
         # where budget and verification accounting lives, and it must see every completed round.
-        policy_says_stop = should_stop_after_turn is not None and await should_stop_after_turn(
-            turn, turn_text, calls_made
+        stop_reason = await _tool_round_stop_reason(
+            round_, turn, turn_text, calls_made, should_stop_after_turn
         )
-        if round_.ended_by_tool or policy_says_stop:
+        if stop_reason is not None:
             # There is no next model round whose input admission could persist these answers.
             # `TranscriptRecorder.onEvent` in the TypeScript runtime likewise flushes a complete
             # tool-result group immediately rather than leaving it one step behind.
-            await _record(
-                record_messages,
-                [
-                    *round_.answers,
-                    *(message for _, message in round_.images),
-                    *(message for _, message in round_.context),
-                ],
+            await _record(record_messages, _round_messages(round_))
+            yield await _done(
+                emit, last_text or "(stopped after turn)", calls_made, stop_reason, spent
             )
-            reason: StopReason = "tool" if round_.ended_by_tool else "policy"
-            yield await _done(emit, last_text or "(stopped after turn)", calls_made, reason, spent)
             return
+
+
+async def _failed_model_outcome(
+    failed: "_FailedModel",
+    aborted: bool,
+    emit: Emit | None,
+    calls_made: list[dict[str, Any]],
+    spent: _Spend,
+) -> dict[str, Any]:
+    """Render the single terminal event for a provider failure."""
+    if aborted:
+        return await _done(emit, failed.partial, calls_made, "aborted", spent, mid_turn=True)
+
+    cut: dict[str, Any] = {
+        "reason": "error",
+        "message": str(failed.error),
+        "error_type": type(failed.error).__name__,
+        "error_kind": failed.kind,
+    }
+    if failed.partial:
+        cut["partial"] = failed.partial
+    if emit is not None:
+        await emit(EventType.STOP_FAILURE, cut)
+    return {"type": "error", **{key: value for key, value in cut.items() if key != "reason"}}
+
+
+async def _refresh_system_message(
+    messages: list[BaseMessage],
+    system_prompt: str | SystemPromptSource | None,
+    managed: bool,
+) -> bool:
+    """Refresh the loop-owned system message while preserving caller history."""
+    if system_prompt is None:
+        return managed
+    rendered = system_prompt if isinstance(system_prompt, str) else await system_prompt.render()
+    if rendered:
+        message = SystemMessage(rendered)
+        if managed:
+            messages[0] = message
+        else:
+            messages.insert(0, message)
+        return True
+    if managed:
+        messages.pop(0)
+    return False
+
+
+def _control_ctx(
+    *,
+    turn: int,
+    messages: list[BaseMessage],
+    calls_made: list[dict[str, Any]],
+    text: str,
+    subject: str,
+    pending: list[PendingInput] | None = None,
+) -> Ctx:
+    """Snapshot model-visible state for a control point."""
+    return Ctx(
+        turn=turn,
+        messages=[*messages, *(item.message for item in pending or [])],
+        calls_made=list(calls_made),
+        text=text,
+        subject=subject,
+    )
+
+
+async def _admit_turn_inputs(
+    inputs: list[PendingInput],
+    *,
+    messages: list[BaseMessage],
+    controls: Controls | None,
+    discard_inputs: DiscardInputs | None,
+    admit_inputs: AdmitInputs | None,
+    record_messages: RecordMessages | None,
+    emit: Emit | None,
+    turn: int,
+    calls_made: list[dict[str, Any]],
+    last_text: str,
+    subject: str,
+) -> Halt | None:
+    """Screen, steer, and commit one ordered input group at the model boundary."""
+    if controls is not None and inputs:
+        # Screened before `before_model` reads them: a gate deciding on the pending messages must
+        # see what will actually enter context, never a pre-mask original.
+        screened = await controls.on_inputs(
+            _control_ctx(
+                turn=turn,
+                messages=messages,
+                calls_made=calls_made,
+                text=last_text,
+                subject=subject,
+            ),
+            inputs,
+        )
+        if isinstance(screened, Halt):
+            return screened
+        screened = _identify_inputs(screened)
+        surviving = {item.origin_id for item in screened if item.origin_id is not None}
+        discarded = [
+            item
+            for item in inputs
+            if item.origin_id is not None and item.origin_id not in surviving
+        ]
+        if discarded and discard_inputs is not None:
+            await discard_inputs(discarded)
+        inputs = screened
+
+    if controls is not None:
+        action = await controls.before_model(
+            _control_ctx(
+                turn=turn,
+                messages=messages,
+                calls_made=calls_made,
+                text=last_text,
+                subject=subject,
+                pending=inputs,
+            )
+        )
+        if isinstance(action, Halt):
+            return action
+        inputs += [PendingInput("control", message) for message in action.steers]
+
+    await _commit_inputs(messages, inputs, admit_inputs, record_messages, emit, turn)
+    return None
+
+
+async def _decide_finish(
+    *,
+    turn: int,
+    turn_text: str,
+    calls_made: list[dict[str, Any]],
+    messages: list[BaseMessage],
+    subject: str,
+    should_stop_after_turn: ShouldStopAfterTurn | None,
+    drain_inputs: DrainInputs | None,
+    controls: Controls | None,
+) -> tuple[Proceed | Halt, list[PendingInput]]:
+    """Decide whether a tool-free turn ends or carries work into another model round."""
+    # The caller's turn cap covers tool-free rounds too. Without this check an always-vetoing
+    # `before_finish` gate can bypass the only iteration bound the loop exposes.
+    if should_stop_after_turn is not None and await should_stop_after_turn(
+        turn, turn_text, calls_made
+    ):
+        return Halt("policy"), []
+
+    # A steer that landed while the turn was finishing cancels the stop. Preserve its arrival
+    # order, but commit it only beside the next model call.
+    if drain_inputs and (late_inputs := list(await drain_inputs())):
+        return Proceed(), late_inputs
+
+    if controls is not None:
+        # The last word. A verifier that says "not done yet" gets another round. This is after the
+        # late-input check because an arriving steer and a policy objection are different reasons
+        # to keep going, and both may apply.
+        decision = await controls.before_finish(
+            _control_ctx(
+                turn=turn,
+                messages=messages,
+                calls_made=calls_made,
+                text=turn_text,
+                subject=subject,
+            ),
+            "completed",
+        )
+        if isinstance(decision, Proceed):
+            return decision, [PendingInput("control", message) for message in decision.steers]
+        return decision, []
+
+    return Halt("completed"), []
+
+
+def _round_inputs(round_: Absorbed) -> list[PendingInput]:
+    """Build the next model inputs in protocol-answer, image, then context order."""
+    return [
+        *(
+            PendingInput("tool_result", answer, str(completed["id"]))
+            for answer, completed in zip(round_.answers, round_.completed, strict=True)
+        ),
+        *(PendingInput("tool_image", message, call_id) for call_id, message in round_.images),
+        *(PendingInput("tool_context", message, call_id) for call_id, message in round_.context),
+    ]
+
+
+def _round_messages(round_: Absorbed) -> list[BaseMessage]:
+    """Flatten an absorbed round in the same order used for model admission."""
+    return [
+        *round_.answers,
+        *(message for _, message in round_.images),
+        *(message for _, message in round_.context),
+    ]
+
+
+async def _tool_round_stop_reason(
+    round_: Absorbed,
+    turn: int,
+    turn_text: str,
+    calls_made: list[dict[str, Any]],
+    should_stop_after_turn: ShouldStopAfterTurn | None,
+) -> StopReason | None:
+    """Return the terminal reason for a completed tool round, if it must stop."""
+    policy_says_stop = should_stop_after_turn is not None and await should_stop_after_turn(
+        turn, turn_text, calls_made
+    )
+    if round_.ended_by_tool:
+        return "tool"
+    if policy_says_stop:
+        return "policy"
+    return None
 
 
 async def _commit_inputs(

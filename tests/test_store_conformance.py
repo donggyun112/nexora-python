@@ -263,6 +263,18 @@ async def test_an_admitted_input_is_not_reclaimed(steps: StepLog) -> None:
     assert [r.status for r in await steps.list_inputs("run-1")] == ["admitted"]
 
 
+async def test_a_discarded_input_is_terminal(steps: StepLog) -> None:
+    """An ingress screen's removal must survive a fresh attempt."""
+    await steps.enqueue_input("run-1", "in-1", {"text": "one"})
+    await steps.claim_input("run-1", "in-1")
+
+    await steps.discard_inputs("run-1", ["in-1"])
+    await steps.claim_input("run-1", "in-1")
+    await steps.admit_inputs("run-1", ["in-1"])
+
+    assert [record.status for record in await steps.list_inputs("run-1")] == ["discarded"]
+
+
 async def test_a_transition_commits_steps_and_inputs_together(steps: StepLog) -> None:
     """The atomicity that keeps a cancellation ahead of its replacement across a crash."""
     inserted = await steps.commit_transition(

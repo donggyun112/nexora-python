@@ -16,6 +16,7 @@ __all__ = [
     "BatchTools",
     "CompactContext",
     "ControlSignal",
+    "DiscardInputs",
     "DrainInputs",
     "DynamicTools",
     "Emit",
@@ -164,6 +165,9 @@ class PendingInput(NamedTuple):
 
 DrainInputs = Callable[[], Awaitable[list[PendingInput]]]
 """Claims inputs waiting to enter model context. Returns [] when nothing is queued."""
+
+DiscardInputs = Callable[[list[PendingInput]], Awaitable[None]]
+"""Commits claimed inputs that an ingress screen permanently removed."""
 
 AdmitInputs = Callable[[list[PendingInput]], Awaitable[None]]
 """Commits claimed inputs after they have been appended to the model context."""

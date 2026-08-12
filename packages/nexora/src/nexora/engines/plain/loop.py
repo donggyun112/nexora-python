@@ -28,6 +28,7 @@ from ...contracts.types import (
     BaseMessage,
     CompactContext,
     ControlSignal,
+    DiscardInputs,
     DrainInputs,
     DynamicTools,
     Emit,
@@ -74,6 +75,7 @@ async def react_loop(
     controls: Controls | None = None,
     emit: Emit | None = None,
     drain_inputs: DrainInputs | None = None,
+    discard_inputs: DiscardInputs | None = None,
     admit_inputs: AdmitInputs | None = None,
     record_messages: RecordMessages | None = None,
     should_stop_after_turn: ShouldStopAfterTurn | None = None,
@@ -119,10 +121,10 @@ async def react_loop(
         if aborted():
             yield await _done(emit, last_text, calls_made, "aborted", spent)
             return
-        pending_inputs = [
+        pending_inputs = _identify_inputs([
             *carried_inputs,
             *(list(await drain_inputs()) if drain_inputs else []),
-        ]
+        ])
         carried_inputs = []
         if controls is not None and pending_inputs:
             # Screened before `before_model` reads them: a gate deciding on the pending messages
@@ -141,6 +143,17 @@ async def react_loop(
                     yield await _done(emit, last_text, calls_made, halt_reason, spent)
                     return
                 case screened:
+                    screened = _identify_inputs(screened)
+                    surviving = {
+                        item.origin_id for item in screened if item.origin_id is not None
+                    }
+                    discarded = [
+                        item
+                        for item in pending_inputs
+                        if item.origin_id is not None and item.origin_id not in surviving
+                    ]
+                    if discarded and discard_inputs is not None:
+                        await discard_inputs(discarded)
                     pending_inputs = screened
         if controls is not None:
             action = await controls.before_model(
@@ -400,6 +413,20 @@ async def _record(record_messages: RecordMessages | None, messages: list[BaseMes
     """Persist one ordered message group when the runtime supplied a transcript writer."""
     if record_messages is not None and messages:
         await record_messages(messages)
+
+
+def _identify_inputs(inputs: list[PendingInput]) -> list[PendingInput]:
+    """Keep queue identity attached when a screen replaces a LangChain message."""
+    return [
+        item
+        if item.origin_id is None or item.message.id == item.origin_id
+        else PendingInput(
+            item.kind,
+            item.message.model_copy(update={"id": item.origin_id}),
+            item.origin_id,
+        )
+        for item in inputs
+    ]
 
 
 @dataclass(frozen=True, slots=True)

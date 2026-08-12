@@ -342,4 +342,5 @@ async def test_the_postgres_log_matches_the_protocol() -> None:
 
     assert "nexora_run_lease" in SCHEMA
     assert "nexora_input" in SCHEMA
+    assert "discarded" in SCHEMA
     assert "expires_at < now()" not in SCHEMA  # the takeover clause lives in the query, not the DDL

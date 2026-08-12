@@ -33,15 +33,20 @@ create table if not exists nexora_input (
     sequence     bigserial   primary key,
     run_id       text        not null,
     input_id     text        not null,
-    status       text        not null check (status in ('pending', 'claimed', 'admitted')),
+    status       text        not null,
     value        jsonb       not null,
     submitted_at timestamptz not null default now(),
     admitted_at  timestamptz,
     unique (run_id, input_id)
 );
 
+alter table nexora_input drop constraint if exists nexora_input_status_check;
+alter table nexora_input add constraint nexora_input_status_check
+    check (status in ('pending', 'claimed', 'admitted', 'discarded'));
+
+drop index if exists nexora_input_pending;
 create index if not exists nexora_input_pending
-    on nexora_input (run_id, sequence) where status <> 'admitted';
+    on nexora_input (run_id, sequence) where status in ('pending', 'claimed');
 
 create index if not exists nexora_step_running
     on nexora_step (started_at) where status = 'running';
@@ -200,7 +205,7 @@ class PostgresSteps:
         ]
 
     async def claim_input(self, run_id: str, input_id: str, token: int = 0) -> None:
-        """Mark an input as claimed unless it is already admitted."""
+        """Mark an input as claimed unless it is already terminal."""
         async with self._pool.connection() as connection:
             await self._fence(connection, run_id, token)
             async with connection.cursor() as cursor:
@@ -208,7 +213,8 @@ class PostgresSteps:
                     """
                 update nexora_input
                 set status = 'claimed'
-                where run_id = %s and input_id = %s and status <> 'admitted'
+                where run_id = %s and input_id = %s
+                  and status not in ('admitted', 'discarded')
                 """,
                     (run_id, input_id),
                 )
@@ -224,6 +230,22 @@ class PostgresSteps:
                     """
                 update nexora_input
                 set status = 'admitted', admitted_at = now()
+                where run_id = %s and input_id = any(%s) and status <> 'discarded'
+                """,
+                    (run_id, input_ids),
+                )
+
+    async def discard_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None:
+        """Make screened-out inputs terminal without deleting their idempotency keys."""
+        if not input_ids:
+            return
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                update nexora_input
+                set status = 'discarded'
                 where run_id = %s and input_id = any(%s)
                 """,
                     (run_id, input_ids),

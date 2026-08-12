@@ -412,10 +412,17 @@ class AgentRuntime:
     ) -> dict[str, Any]:
         if any(
             name in engine_options
-            for name in ("drain_inputs", "admit_inputs", "invoke_model", "record_messages")
+            for name in (
+                "drain_inputs",
+                "discard_inputs",
+                "admit_inputs",
+                "invoke_model",
+                "record_messages",
+            )
         ):
             raise TypeError(
-                "AgentRuntime owns drain_inputs, admit_inputs, invoke_model, and record_messages"
+                "AgentRuntime owns drain_inputs, discard_inputs, admit_inputs, invoke_model, "
+                "and record_messages"
             )
         engine_options.setdefault("on_model_failure", self._model_failure_policy)
         engine_options.setdefault("compact_context", self._compact_context)
@@ -475,6 +482,7 @@ class AgentRuntime:
                 controls=controls,
                 emit=orchestrator.emit,
                 drain_inputs=drain_inputs,
+                discard_inputs=orchestrator.discard_inputs,
                 admit_inputs=orchestrator.admit_inputs,
                 record_messages=transcript.append if transcript is not None else None,
                 invoke_model=orchestrator.invoke_model,

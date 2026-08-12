@@ -263,8 +263,9 @@ Internally, those responsibilities split cleanly:
   without a worker, and reconstructs interrupted tool rounds.
 - **Effect ledger:** owns pending/running/done, call-id idempotency and fencing. It is the recovery
   source of truth rather than a second durability mechanism beside a graph checkpointer.
-- **Input ledger:** owns pending/claimed/admitted input order. Initial prompts, steers, background
-  results and resume answers enter the planner through one queue contract.
+- **Input ledger:** owns pending/claimed/admitted/discarded input order. Initial prompts, steers,
+  background results and resume answers enter the planner through one queue contract; an ingress
+  screen that removes one records that terminal disposition instead of reviving it on retry.
 - **Effect executors:** perform mediated tool operations, and delegation composes over them
   as a `Tools` wrapper. Workspace sessions provide the filesystem/process boundary; stronger OS
   sandbox providers replace the explicit best-effort host implementation.

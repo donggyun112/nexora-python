@@ -380,6 +380,7 @@ class Orchestrator:
         decoded = [
             (record, decode_pending_input(record.value))
             for record in await self._log.list_inputs(self.run_id)
+            if record.status != "discarded"
         ]
         # Protocol-closing answers must precede user input that arrived while a tool call was
         # parked, even though that user input reached the inbox first. Preserve order within both
@@ -403,6 +404,12 @@ class Orchestrator:
         input_ids = [item.origin_id for item in inputs if item.origin_id is not None]
         if input_ids:
             await self._log.admit_inputs(self.run_id, input_ids, self._token)
+
+    async def discard_inputs(self, inputs: list[PendingInput]) -> None:
+        """Commit inputs that screening removed so a later attempt cannot revive them."""
+        input_ids = [item.origin_id for item in inputs if item.origin_id is not None]
+        if input_ids:
+            await self._log.discard_inputs(self.run_id, input_ids, self._token)
 
     async def __aenter__(self) -> "Orchestrator":
         """Acquire the run lease and return this orchestrator."""

@@ -14,7 +14,7 @@ from nexora import (
     run,
 )
 from nexora.contracts import EventType, PendingInput
-from nexora.controls import ControlPlane, Permissions, gate
+from nexora.controls import ControlPlane, Ctx, Ingress, Permissions, gate
 from nexora.orchestrator import (
     AgentFailed,
     AgentSuspended,
@@ -470,6 +470,62 @@ async def test_an_admitted_input_is_replayed_when_the_attempt_has_no_transcript(
 
     assert model.seen[0][-1].content == "do it"
     assert outcome["content"] == "done"
+
+
+async def test_a_rewritten_input_keeps_its_identity_across_attempts() -> None:
+    """A masked message already in the transcript must not be injected again."""
+    store = MemorySteps()
+    runtime = AgentRuntime(store=store, transcript=MemoryTranscript())
+
+    async def mask(_ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput]:
+        return [
+            PendingInput(item.kind, HumanMessage("masked"), item.origin_id) for item in inputs
+        ]
+
+    controls = ControlPlane(on_inputs=Ingress(mask))
+    await runtime.run(
+        "run-masked-input",
+        scripted(says("first")),
+        Tools(),
+        "secret",
+        prompt_id="prompt-stable",
+        controls=controls,
+    )
+
+    model = scripted(says("second"))
+    await runtime.run("run-masked-input", model, Tools(), controls=controls)
+
+    prompts = [message for message in model.seen[0] if isinstance(message, HumanMessage)]
+    assert [(message.content, message.id) for message in prompts] == [
+        ("masked", "prompt-stable")
+    ]
+
+
+async def test_a_screened_out_input_is_not_reclaimed() -> None:
+    """Dropping an input is a durable disposition, not a request to try screening it again."""
+    store = MemorySteps()
+    runtime = AgentRuntime(store=store, transcript=MemoryTranscript())
+    screened: list[list[str | None]] = []
+
+    async def drop(_ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput]:
+        screened.append([item.origin_id for item in inputs])
+        return []
+
+    controls = ControlPlane(on_inputs=Ingress(drop))
+    await runtime.run(
+        "run-dropped-input",
+        scripted(says("first")),
+        Tools(),
+        "secret",
+        prompt_id="prompt-stable",
+        controls=controls,
+    )
+    await runtime.run(
+        "run-dropped-input", scripted(says("second")), Tools(), controls=controls
+    )
+
+    assert screened == [["prompt-stable"]]
+    assert (await store.list_inputs("run-dropped-input"))[0].status == "discarded"
 
 
 async def test_retrying_the_same_submission_id_does_not_duplicate_input_or_event() -> None:

@@ -58,7 +58,7 @@ class InputRecord(NamedTuple):
     """Represent one durable input queue row."""
 
     input_id: str
-    status: Literal["pending", "claimed", "admitted"]
+    status: Literal["pending", "claimed", "admitted", "discarded"]
     value: dict[str, Any]
     sequence: int
 
@@ -99,11 +99,15 @@ class StepLog(Protocol):
         ...
 
     async def claim_input(self, run_id: str, input_id: str, token: int = 0) -> None:
-        """Mark an input as claimed unless it is already admitted."""
+        """Mark an input as claimed unless it is already terminal."""
         ...
 
     async def admit_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None:
         """Mark the selected inputs as admitted to model context."""
+        ...
+
+    async def discard_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None:
+        """Mark screened-out inputs as permanently discarded."""
         ...
 
     async def commit_transition(
@@ -203,14 +207,14 @@ class MemorySteps:
         )
 
     async def claim_input(self, run_id: str, input_id: str, token: int = 0) -> None:
-        """Mark an input as claimed unless it is already admitted."""
+        """Mark an input as claimed unless it is already terminal."""
         self._fence(run_id, token)
         key = (run_id, input_id)
         # Absent is a no-op, not a `KeyError`: the durable store expresses this as an `update` that
         # matches no row, and a caller claiming an input that is already gone must not crash on one
         # store and continue on the other.
         record = self._inputs.get(key)
-        if record is not None and record.status != "admitted":
+        if record is not None and record.status not in {"admitted", "discarded"}:
             self._inputs[key] = InputRecord(input_id, "claimed", record.value, record.sequence)
 
     async def admit_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None:
@@ -219,9 +223,20 @@ class MemorySteps:
         for input_id in input_ids:
             key = (run_id, input_id)
             record = self._inputs.get(key)
-            if record is not None:
+            if record is not None and record.status != "discarded":
                 self._inputs[key] = InputRecord(
                     input_id, "admitted", record.value, record.sequence
+                )
+
+    async def discard_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None:
+        """Make screened-out inputs terminal without deleting their idempotency keys."""
+        self._fence(run_id, token)
+        for input_id in input_ids:
+            key = (run_id, input_id)
+            record = self._inputs.get(key)
+            if record is not None:
+                self._inputs[key] = InputRecord(
+                    input_id, "discarded", record.value, record.sequence
                 )
 
     async def commit_transition(

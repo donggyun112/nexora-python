@@ -434,15 +434,11 @@ class Orchestrator:
         Raises:
             Indeterminate: If execution intent exists without a recorded result.
         """
-        self._claim(step)
-        await self._renew()
-        record = await self._log.read(self.run_id, step)
-        if record.status == "done":
-            return record.value
-        if record.status == "running":
+        record = await self._begin(step)
+        if record is not None:
+            if record.status == "done":
+                return record.value
             raise Indeterminate(self.run_id, step)
-
-        await self._log.start(self.run_id, step, self._token)
         try:
             result = fn()
             if isinstance(result, Awaitable):
@@ -482,13 +478,11 @@ class Orchestrator:
         risking a duplicate model charge and a different answer.
         """
         try:
-            self._claim(step)
-            await self._renew()
-            record = await self._log.read(self.run_id, step)
+            record = await self._begin(step)
         except Exception as error:
             raise ModelStepError(error) from error
 
-        if record.status == "done":
+        if record is not None and record.status == "done":
             try:
                 yield_chunks = _decode_model_chunks(record.value)
             except Exception as error:
@@ -496,13 +490,8 @@ class Orchestrator:
             for chunk in yield_chunks:
                 yield chunk
             return
-        if record.status == "running":
+        if record is not None:
             raise ModelStepError(Indeterminate(self.run_id, step))
-
-        try:
-            await self._log.start(self.run_id, step, self._token)
-        except Exception as error:
-            raise ModelStepError(error) from error
 
         chunks: list[dict[str, Any]] = []
         try:
@@ -535,6 +524,20 @@ class Orchestrator:
             )
         except Exception as error:
             raise ModelStepError(error) from error
+
+    async def _begin(self, step: str) -> Step | None:
+        """Claim an absent step atomically, or return the record that won the race."""
+        self._claim(step)
+        await self._renew()
+        record = await self._log.read(self.run_id, step)
+        if record.status != "absent":
+            return record
+        if await self._log.start(self.run_id, step, self._token):
+            return None
+        record = await self._log.read(self.run_id, step)
+        if record.status == "absent":
+            raise RuntimeError(f"step {step!r} disappeared while recording its intent")
+        return record
 
     async def execute_round(
         self,

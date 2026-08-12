@@ -74,8 +74,8 @@ class StepLog(Protocol):
         """Return the persisted state of a step."""
         ...
 
-    async def start(self, run_id: str, key: str, token: int = 0) -> None:
-        """Record step intent before its effect runs."""
+    async def start(self, run_id: str, key: str, token: int = 0) -> bool:
+        """Atomically record new step intent and report whether this caller inserted it."""
         ...
 
     async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
@@ -143,12 +143,13 @@ class MemorySteps:
         """Return the stored step or an absent state."""
         return self._entries.get((run_id, key), Step("absent"))
 
-    async def start(self, run_id: str, key: str, token: int = 0) -> None:
-        """Record running intent without reopening a completed step."""
+    async def start(self, run_id: str, key: str, token: int = 0) -> bool:
+        """Record running intent only when the step is absent."""
         self._fence(run_id, token)
-        if self._entries.get((run_id, key), Step("absent")).status == "done":
-            return
+        if (run_id, key) in self._entries:
+            return False
         self._entries[run_id, key] = Step("running")
+        return True
 
     async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         """Record a completed step after validating the fencing token."""

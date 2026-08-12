@@ -141,6 +141,13 @@ async def test_a_started_step_is_running_until_it_finishes(steps: StepLog) -> No
     assert (await steps.read("run-1", "meds")).status == "running"
 
 
+async def test_only_the_first_caller_records_step_intent(steps: StepLog) -> None:
+    """The start result is the atomic right to execute the effect."""
+    assert await steps.start("run-1", "meds") is True
+
+    assert await steps.start("run-1", "meds") is False
+
+
 async def test_a_finished_step_reports_its_value(steps: StepLog) -> None:
     await steps.start("run-1", "meds")
 
@@ -214,8 +221,9 @@ async def test_a_step_that_already_finished_is_not_reopened(steps: StepLog) -> N
     await steps.start("run-1", "meds")
     await steps.finish("run-1", "meds", {"dispensed": True})
 
-    await steps.start("run-1", "meds")
+    inserted = await steps.start("run-1", "meds")
 
+    assert inserted is False
     record = await steps.read("run-1", "meds")
     assert record.status == "done"
     assert record.value == {"dispensed": True}

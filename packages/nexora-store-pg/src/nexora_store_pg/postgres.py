@@ -73,8 +73,8 @@ class PostgresSteps:
             return Step("running")
         return Step("done", row["value"])
 
-    async def start(self, run_id: str, key: str, token: int = 0) -> None:
-        """Record a running step after validating the fencing token."""
+    async def start(self, run_id: str, key: str, token: int = 0) -> bool:
+        """Atomically record new running intent after validating the fencing token."""
         async with self._pool.connection() as connection:
             await self._fence(connection, run_id, token)
             async with connection.cursor() as cursor:
@@ -82,15 +82,12 @@ class PostgresSteps:
                     """
                 insert into nexora_step (run_id, key, status)
                 values (%s, %s, 'running')
-                on conflict (run_id, key) do update
-                    set status = 'running',
-                        attempt = nexora_step.attempt + 1,
-                        started_at = now(),
-                        finished_at = null
-                    where nexora_step.status = 'running'
+                on conflict (run_id, key) do nothing
+                returning 1
                 """,
                     (run_id, key),
                 )
+                return await cursor.fetchone() is not None
 
     async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         """Record a completed step after validating the fencing token."""

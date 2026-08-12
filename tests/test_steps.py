@@ -40,6 +40,26 @@ async def test_a_crash_leaves_an_intent_and_the_next_attempt_refuses_to_guess() 
     assert sent == []  # not sent again on a guess
 
 
+async def test_a_result_committed_before_start_wins_without_replaying_the_effect() -> None:
+    """A concurrent completion between read and start must not be overwritten."""
+
+    class CompletesBeforeStart(MemorySteps):
+        async def start(self, run_id: str, key: str, token: int = 0) -> bool:
+            await self.finish(run_id, key, "already done", token)
+            return await super().start(run_id, key, token)
+
+    calls: list[str] = []
+
+    async def effect() -> str:
+        calls.append("replayed")
+        return "overwritten"
+
+    result = await Orchestrator("run-start-race", CompletesBeforeStart()).run("send", effect)
+
+    assert result == "already done"
+    assert calls == []
+
+
 async def test_a_raise_is_not_a_crash_and_does_retry() -> None:
     """A step that raises has *reported* that it did not complete, so the intent is cleared.
 

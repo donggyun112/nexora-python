@@ -7,6 +7,7 @@ import pytest
 from nexora import AgentRuntime
 from nexora.contracts import BatchTools
 from nexora.engines.plain import react_loop
+from nexora.orchestrator import MemorySteps
 from nexora.tools import Concurrent, InvalidToolResult
 
 from tests.test_loop import Tools, a_call, says, scripted
@@ -102,7 +103,7 @@ async def test_a_concurrent_tool_cannot_return_a_suspension() -> None:
     tools = Asking(defs={"read": SAFE, "ask": SAFE}, names=["read", "ask"])
     calls = [a_call("a", "read"), a_call("b", "ask"), a_call("c", "read")]
     with pytest.raises(InvalidToolResult, match="pre_tool_use"):
-        await AgentRuntime().run(
+        await AgentRuntime(store=MemorySteps()).run(
             "concurrent-invalid-suspend",
             scripted(says("", *calls)),
             tools,

@@ -7,6 +7,17 @@ documentation corrections belong in the commit log, not here.
 
 ### Added
 
+- **Shared agent definitions.** `AgentDefinition` is the common identity contract implemented by
+  local, declarative, compiled, and remote agents. The executable local `Agent` binds a LangChain
+  model, `Tools`, and system prompt independently from run input and orchestration policy.
+  `AgentRuntime.run(run_id, agent, prompt)` accepts it while the previous model/tools call shape
+  remains supported.
+
+- **Detachable runtime orchestration.** `AgentRuntime()` now drives the ReAct planner directly,
+  without constructing an `Orchestrator` or recording model/tool steps. Pass
+  `orchestrator=DurableRuntimeOrchestrator(steps)` when suspension and recovery are required;
+  `store=steps` remains shorthand. Custom orchestrators can wrap the model and tool boundaries.
+
 - **Explicit built-in execution context.** `builtin_tools(context=...)` accepts a caller-managed
   `ToolContext` for direct execution while retaining the same `WorkspaceFS` confinement used by
   `AgentRuntime`; missing-workspace read errors now point callers to both supported setup paths.

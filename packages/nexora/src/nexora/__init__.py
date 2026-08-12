@@ -14,6 +14,8 @@ from .builtins import (
     builtin_tools,
 )
 from .contracts import (
+    Agent,
+    AgentDefinition,
     BaseMessage,
     CompactContext,
     DynamicTools,
@@ -27,6 +29,13 @@ from .contracts import (
     Tools,
 )
 from .engines.plain import react_loop
+from .orchestration import (
+    DurableRuntimeOrchestrator,
+    RuntimeInputSession,
+    RuntimeOrchestrationContext,
+    RuntimeOrchestrationSession,
+    RuntimeOrchestrator,
+)
 from .orchestrator import ModelFailurePolicy
 from .prompts import PromptSection, SystemPrompt, prompt_section, volatile_prompt_section
 from .providers import FallbackChatModel, ModelProvider, ProviderErrorKind
@@ -87,6 +96,8 @@ except PackageNotFoundError:  # pragma: no cover - source tree without installat
     __version__ = "0.0.0"
 
 __all__ = [
+    "Agent",
+    "AgentDefinition",
     "AgentRuntime",
     "Answering",
     "Authority",
@@ -102,6 +113,7 @@ __all__ = [
     "Declarative",
     "DeferredTools",
     "DirectorySkillSource",
+    "DurableRuntimeOrchestrator",
     "DynamicTools",
     "ExecToolOptions",
     "FallbackChatModel",
@@ -123,6 +135,10 @@ __all__ = [
     "RemoteSandboxError",
     "ResolvedWorkspacePath",
     "ResumableWorkspaceProvider",
+    "RuntimeInputSession",
+    "RuntimeOrchestrationContext",
+    "RuntimeOrchestrationSession",
+    "RuntimeOrchestrator",
     "SandboxCommand",
     "SandboxSessionState",
     "Skill",

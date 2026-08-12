@@ -11,10 +11,11 @@ import urllib.error
 import urllib.request
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 from uuid import uuid4
 
 from .background import BackgroundResult, BackgroundTasks
+from .contracts.agent import AgentDefinition
 from .contracts.events import EventType
 from .contracts.types import Emit, Tools
 
@@ -47,14 +48,6 @@ DEFAULT_MAX_DEPTH = 5
 DEFAULT_TIMEOUT = 300.0
 DEFAULT_BLOCKED_TOOLS_FOR_CHILD = ("delegate",)
 """Tools removed from delegated child authority by default."""
-
-
-@runtime_checkable
-class Named(Protocol):
-    """Protocol for named subagent definitions."""
-
-    name: str
-    description: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,7 +541,7 @@ class Subagents:
         built = self._factory(agent, self.authority_for(agent))
         return await built if isinstance(built, Awaitable) else built
 
-    async def _announce(self, event: EventType, agent: Subagent, **payload: Any) -> None:
+    async def _announce(self, event: EventType, agent: AgentDefinition, **payload: Any) -> None:
         """Publish a child lifecycle event when an emitter is configured."""
         if self._emit is None:
             return

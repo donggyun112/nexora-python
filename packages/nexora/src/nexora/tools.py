@@ -37,8 +37,8 @@ class RoundSuspended(ControlSignal):
         """Initialize the error with results completed before suspension."""
         super().__init__(
             "tool round suspended, and nothing here can park it: a suspension has to commit its "
-            "continuation. Drive the loop through `AgentRuntime`, pass "
-            "`execute_round=orchestrator.execute_round`, or let the gate deny instead of suspend"
+            "continuation. Attach `DurableRuntimeOrchestrator`, use `AgentRuntime(store=...)`, "
+            "or let the gate deny instead of suspend"
         )
         self.resolved = resolved
 

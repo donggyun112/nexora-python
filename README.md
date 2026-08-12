@@ -7,28 +7,51 @@ Durable multi-agent runtime for Python.
 
 ## Direction
 
-Nexora is an **agent runtime with durable execution**, not a general-purpose workflow engine.
+Nexora is an **agent runtime with optional durable execution**, not a general-purpose workflow engine.
 Its public API speaks in agent concepts — models, tools, permissions, sessions and subagents.
-The orchestrator is an internal execution substrate that records and recovers agent effects; it
-is not a second product users have to assemble beside the SDK.
+The planner is one ordinary `async while` loop. Runtime orchestration is a detachable execution
+boundary around model calls, tool rounds, and input admission.
 
 See [examples/](examples/) for runnable scripts — a tool round, permission suspend/resume, crash
 recovery, control-plane injection, a durable workflow, and the loop without a ledger. They need
 no API key.
 
 ```python
-from nexora import AgentRuntime
+from nexora import Agent, AgentRuntime
 
-runtime = AgentRuntime(store=steps, emit=events)
-outcome = await runtime.run("run-42", model, tools, "inspect this repository")
+agent = Agent(
+    name="reviewer",
+    description="Reviews a repository with read-only tools",
+    model=model,
+    tools=tools,
+    system_prompt="Inspect evidence before answering.",
+)
+
+runtime = AgentRuntime()
+outcome = await runtime.run("run-42", agent, "inspect this repository")
 ```
 
-The runtime has one execution path. Its agent planner is an ordinary `async while`; every tool
-effect crosses Nexora's durable `Orchestrator` before it runs:
+The default records no model or tool steps. It keeps the full control plane, but cannot park a
+suspension or recover a crashed round; a repeated run may execute the same tool call again.
+
+Attach durable orchestration when those guarantees are required:
+
+```python
+from nexora import AgentRuntime, DurableRuntimeOrchestrator
+
+runtime = AgentRuntime(
+    orchestrator=DurableRuntimeOrchestrator(steps),
+    emit=events,
+)
+```
+
+`AgentRuntime(store=steps)` is shorthand for the same durable attachment. The agent does
+not change when execution guarantees change. Either form keeps the
+planner unchanged while routing effects through the call-id ledger and durable input queue:
 
 ```python
 runtime = AgentRuntime(
-    store=steps,                 # effect ledger + durable input queue
+    store=steps,                 # compatibility shorthand for DurableRuntimeOrchestrator
     emit=events,
 )
 ```

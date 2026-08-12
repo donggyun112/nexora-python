@@ -2,9 +2,9 @@
 
     uv run python examples/06_bare_loop.py
 
-`react_loop` defaults `execute_round` to the plain `execute_calls`, so the durable boundary is
-something `AgentRuntime` *injects* rather than something the loop depends on. Drive the loop
-yourself and nothing in `nexora.orchestrator` participates.
+The default `AgentRuntime` drives `react_loop` with its direct `execute_calls`, so the durable
+boundary is optional rather than something the loop depends on. Nothing in
+`nexora.orchestrator` participates.
 
 You keep the whole control plane: `on_inputs`, `before_model`, `pre_tool_use`, `after_tool_call`,
 `before_finish`, the event stream, steers, and the stop hook. What you give up is the three things
@@ -19,9 +19,9 @@ import asyncio
 from typing import Any
 
 from _scripted import Files, calling, says, scripted
-from nexora.contracts import ToolCall
+from nexora import AgentRuntime
+from nexora.contracts import StopReason, ToolCall
 from nexora.controls import ControlPlane, Ctx, FinishPolicy, Halt, Permissions, Proceed, gate
-from nexora.engines.plain import react_loop
 from nexora.tools import RoundSuspended
 
 
@@ -32,7 +32,7 @@ async def no_deleting(call: ToolCall) -> dict[str, Any] | None:
     return None
 
 
-async def wants_a_citation(ctx: Ctx, reason: str) -> Any:
+async def wants_a_citation(ctx: Ctx, reason: StopReason) -> Any:
     """A `before_finish` gate, also ledger-free: it only sends the loop around again."""
     if "notes.md" not in ctx.text:
         return Proceed([])
@@ -52,7 +52,11 @@ async def main() -> None:
         says("notes.md 를 읽었다"),
     )
 
-    async for event in react_loop(
+    async def collect(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    await AgentRuntime().run(
+        "bare-example",
         model,
         Files(),
         controls=ControlPlane(
@@ -60,8 +64,8 @@ async def main() -> None:
             before_finish=FinishPolicy(wants_a_citation),
         ),
         should_stop_after_turn=cap,
-    ):
-        events.append(event)
+        on_event=collect,
+    )
 
     refused = next(e for e in events if e["type"] == "tool_result" and e["is_error"])
     print(f"denied      {refused['name']} · {refused['result']['message']}")
@@ -76,12 +80,12 @@ async def main() -> None:
         return {"type": "suspend", "pending_id": "approve-1"}
 
     try:
-        async for _ in react_loop(
+        await AgentRuntime().run(
+            "bare-suspension",
             scripted(says("", calling("c9", "read", path="notes.md"))),
             Files(),
             controls=ControlPlane(pre_tool_use=Permissions(gate(ask_a_person))),
-        ):
-            pass
+        )
         raise AssertionError("unreachable: there is nowhere to write the continuation")
     except RoundSuspended as refused_to_park:
         print(f"\nsuspend     {str(refused_to_park)[:66]}…")

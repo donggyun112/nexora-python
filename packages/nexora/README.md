@@ -4,21 +4,33 @@ Durable multi-agent runtime for Python. This is the core: the contracts every la
 control points, tool execution, the durable orchestrator, the plain `async while` planner, and the
 `AgentRuntime` facade over them.
 
+By default `AgentRuntime` drives the planner directly, without an orchestrator or step ledger:
+
+```python
+from nexora import Agent, AgentRuntime
+
+agent = Agent("reviewer", "Reviews repositories", model, tools, system_prompt)
+outcome = await AgentRuntime().run("attempt-42", agent, "inspect this repository")
+```
+
+This path cannot suspend or recover a crashed round; a repeated run may execute the same tool call
+again.
+
 ```python
 from nexora import AgentRuntime
 from nexora_store import MemoryTranscript
 
 runtime = AgentRuntime(store=steps, transcript=MemoryTranscript(), emit=events)
 outcome = await runtime.run(
-    "attempt-42", model, tools, "inspect this repository",
+    "attempt-42", agent, "inspect this repository",
     conversation_id="conversation-7",
 )
 ```
 
-Every tool effect crosses the orchestrator's durable boundary before it runs, keyed by the model's
-own `call_id`, so a run that dies mid-round is reconstructed from its transcript without replaying
-the model turn and a permission gate can park a run for days without holding a worker. Omit
-`transcript=` to keep transcript persistence caller-owned.
+With `store=` (or an explicit `DurableRuntimeOrchestrator`), every tool effect crosses the durable
+boundary before it runs, keyed by the model's own `call_id`. A run that dies mid-round can then be
+reconstructed without replaying the model turn, and a permission gate can park it without holding a
+worker. Omit `transcript=` to keep transcript persistence caller-owned.
 
 The core also exports ordered `FallbackChatModel` selection and the
 `WorkspaceProvider`/`WorkspaceSession` boundary. `HostWorkspaceProvider` is a usable path-confined

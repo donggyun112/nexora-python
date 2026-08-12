@@ -1,14 +1,25 @@
 """The public Agent Runtime facade over the single plain planner."""
 
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, ClassVar
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGenerationChunk
 from nexora import (
+    Agent,
     AgentRuntime,
     HostWorkspaceProvider,
     ModelFailurePolicy,
+    RuntimeOrchestrationContext,
+    RuntimeOrchestrationSession,
     ToolCall,
     ToolContext,
     run,
@@ -22,7 +33,7 @@ from nexora.orchestrator import (
     MemorySteps,
     Orchestrator,
 )
-from nexora.tools import InvalidToolResult
+from nexora.tools import InvalidToolResult, RoundSuspended
 from nexora.transcript import messages_of
 from nexora_store import MemoryTranscript
 
@@ -81,6 +92,150 @@ async def test_top_level_run_is_the_default_agent_entry_point() -> None:
     outcome = await run(scripted(says("done")), Tools(), "hello")
 
     assert outcome["content"] == "done"
+
+
+async def test_top_level_run_accepts_an_agent_definition() -> None:
+    agent = Agent("answerer", "Answers directly", scripted(says("done")), Tools())
+
+    outcome = await run(agent, "hello")
+
+    assert outcome["content"] == "done"
+
+
+async def test_agent_definition_supplies_its_tool_executor() -> None:
+    tools = Tools()
+    agent = Agent(
+        name="reader",
+        description="Reads the requested resource",
+        model=scripted(says("", a_call("c1", "read")), says("done")),
+        tools=tools,
+    )
+
+    await AgentRuntime().run("defined-agent", agent, "inspect")
+
+    assert tools.ran == ["read"]
+
+
+async def test_agent_definition_supplies_its_system_prompt() -> None:
+    model = scripted(says("done"))
+    agent = Agent(
+        name="reviewer",
+        description="Reviews code",
+        model=model,
+        tools=Tools(),
+        system_prompt="Review carefully.",
+    )
+
+    await AgentRuntime().run("prompted-agent", agent, "inspect")
+
+    system = model.seen[0][0]
+    assert isinstance(system, SystemMessage)
+    assert system.content == "Review carefully."
+
+
+async def test_agent_definition_rejects_a_system_prompt_override() -> None:
+    agent = Agent("reviewer", "Reviews code", scripted(says("done")), Tools())
+
+    with pytest.raises(TypeError, match="owns system_prompt"):
+        await AgentRuntime().run(
+            "prompt-conflict",
+            agent,
+            "inspect",
+            system_prompt="override",
+        )
+
+
+async def test_default_runtime_admits_the_prompt_without_orchestration() -> None:
+    """Direct execution must not bypass the loop's input screening boundary."""
+    model = scripted(says("done"))
+
+    async def redact(ctx: Any, inputs: list[PendingInput]) -> list[PendingInput]:
+        return [
+            PendingInput(item.kind, HumanMessage("redacted"), item.origin_id) for item in inputs
+        ]
+
+    await AgentRuntime().run(
+        "direct-input",
+        model,
+        Tools(),
+        "private",
+        controls=ControlPlane(on_inputs=Ingress(redact)),
+    )
+
+    assert model.seen[0][-1].content == "redacted"
+
+
+async def test_default_runtime_refuses_to_park_without_a_step_ledger() -> None:
+    """Direct execution exposes suspension instead of pretending it persisted a continuation."""
+
+    async def ask(_call: ToolCall) -> dict[str, Any]:
+        return {"type": "suspend", "pending_id": "approval-1"}
+
+    with pytest.raises(RoundSuspended):
+        await AgentRuntime().run(
+            "direct-suspension",
+            scripted(says("", a_call("c1", "read"))),
+            Tools(names=["read"]),
+            "inspect",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(ask))),
+        )
+
+
+async def test_runtime_orchestrator_wraps_model_and_tool_boundaries() -> None:
+    events: list[str] = []
+
+    class Session:
+        @property
+        def inputs(self) -> None:
+            return None
+
+        def wrap_model(self, inner: Any) -> Any:
+            async def invoke(step: str, factory: Any) -> AsyncIterator[Any]:
+                events.append("model:before")
+                async for chunk in inner(step, factory):
+                    yield chunk
+                events.append("model:after")
+
+            return invoke
+
+        def wrap_tools(self, inner: Any) -> Any:
+            async def execute(*args: Any, **kwargs: Any) -> Any:
+                events.append("tools:before")
+                result = await inner(*args, **kwargs)
+                events.append("tools:after")
+                return result
+
+            return execute
+
+    class TracingOrchestrator:
+        @asynccontextmanager
+        async def open(
+            self, context: RuntimeOrchestrationContext
+        ) -> AsyncGenerator[RuntimeOrchestrationSession, None]:
+            events.append(f"open:{context.run_id}")
+            try:
+                yield Session()
+            finally:
+                events.append("close")
+
+    outcome = await AgentRuntime(orchestrator=TracingOrchestrator()).run(
+        "wrapped",
+        scripted(says("", a_call("c1", "read")), says("done")),
+        Tools(),
+        "inspect",
+    )
+
+    assert outcome["content"] == "done"
+    assert events == [
+        "open:wrapped",
+        "model:before",
+        "model:after",
+        "tools:before",
+        "tools:after",
+        "model:before",
+        "model:after",
+        "close",
+    ]
 
 
 async def test_runtime_retries_a_transient_model_failure_inside_the_same_round() -> None:

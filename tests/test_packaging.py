@@ -125,6 +125,7 @@ LAYERS: dict[str, frozenset[str]] = {
     # store holds. Reaching `tools` would mean the transcript had an opinion about executing one.
     "transcript": frozenset({"contracts"}),
     "orchestrator": frozenset({"contracts", "controls", "history", "tools"}),
+    "orchestration": frozenset({"contracts", "orchestrator", "tools"}),
     "engines": frozenset({"contracts", "controls", "tools"}),
     "driver": frozenset({"contracts", "orchestrator"}),
     "runtime": frozenset(
@@ -137,6 +138,7 @@ LAYERS: dict[str, frozenset[str]] = {
             "engines",
             "history",
             "orchestrator",
+            "orchestration",
             "transcript",
             "workspace",
         }

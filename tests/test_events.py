@@ -252,7 +252,7 @@ async def test_an_ask_decision_announces_a_permission_request() -> None:
 
     stream = a_stream(sink)
     with pytest.raises(AgentSuspended):
-        await AgentRuntime(emit=stream).run(
+        await AgentRuntime(store=MemorySteps(), emit=stream).run(
             "ask-event",
             llm,
             Tools(),

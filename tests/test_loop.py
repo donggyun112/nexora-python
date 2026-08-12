@@ -22,7 +22,7 @@ from nexora.controls import (
     gate,
     writer,
 )
-from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended
+from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended, MemorySteps
 from nexora.tools import InvalidToolResult
 
 
@@ -133,7 +133,7 @@ async def run(
         ]
 
     with suppress(AgentAborted, AgentFailed, AgentSuspended):
-        await AgentRuntime().run(
+        await AgentRuntime(store=MemorySteps()).run(
             "loop-test",
             llm,
             tools or Tools(),

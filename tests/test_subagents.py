@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from nexora import (
+    AgentDefinition,
     AgentRuntime,
     Answering,
     Authority,
@@ -20,6 +21,16 @@ from nexora.subagents import Deliver, Reply
 from nexora_store import MemorySteps
 
 from tests.test_loop import Tools, a_call, says, scripted
+
+
+def test_every_subagent_variant_satisfies_the_agent_definition_contract() -> None:
+    definitions = [
+        Declarative("writer", "writes", "write"),
+        Compiled("reviewer", "reviews", answers("done")),
+        Remote("researcher", "researches", "https://example.test"),
+    ]
+
+    assert all(isinstance(definition, AgentDefinition) for definition in definitions)
 
 
 def child(*events: dict[str, Any], delay: float = 0.0) -> Any:
@@ -424,7 +435,7 @@ async def test_a_background_answer_re_enters_the_run_as_model_context() -> None:
     The child settles after the launching turn has ended, which is the case the reference needs
     its second delivery path (`deliverResult`) for. Here the durable queue holds it either way.
     """
-    runtime = AgentRuntime()
+    runtime = AgentRuntime(store=MemorySteps())
     tools = Subagents(
         Tools(),
         [Compiled("researcher", "digs", answers("40 papers", delay=0.05))],
@@ -449,7 +460,7 @@ async def test_a_background_answer_arriving_mid_run_does_not_fence_it() -> None:
     with. The parent died on its next durable write — with the child's answer already queued, so a
     retry replayed it into a run that had crashed for reasons the transcript could not show.
     """
-    runtime = AgentRuntime()
+    runtime = AgentRuntime(store=MemorySteps())
     deliver = runtime.background_sink("live")
 
     class Delivering(Tools):

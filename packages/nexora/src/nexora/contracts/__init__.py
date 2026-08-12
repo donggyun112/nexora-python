@@ -3,6 +3,7 @@
 Nothing here knows how the loop is driven.
 """
 
+from .agent import Agent, AgentDefinition
 from .events import BLOCKING, EventEnvelope, EventStream, EventType, RuntimeEvents, Sink
 from .types import (
     Aborted,
@@ -36,6 +37,8 @@ __all__ = [
     "BLOCKING",
     "Aborted",
     "AdmitInputs",
+    "Agent",
+    "AgentDefinition",
     "BaseMessage",
     "BatchTools",
     "CompactContext",

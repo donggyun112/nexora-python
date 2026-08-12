@@ -22,12 +22,12 @@ from .contracts.types import Emit, Tools
 __all__ = [
     "Answering",
     "Authority",
-    "Compiled",
-    "Declarative",
     "Deliver",
-    "Remote",
+    "FactoryAgent",
+    "HttpAgent",
     "Reply",
     "Runner",
+    "RunnerAgent",
     "Subagent",
     "Subagents",
 ]
@@ -51,8 +51,8 @@ DEFAULT_BLOCKED_TOOLS_FOR_CHILD = ("delegate",)
 
 
 @dataclass(frozen=True, slots=True)
-class Declarative:
-    """Declarative child specification built by a runner factory at launch time."""
+class FactoryAgent:
+    """Child specification built by a runner factory at launch time."""
 
     name: str
     description: str
@@ -62,8 +62,8 @@ class Declarative:
 
 
 @dataclass(frozen=True, slots=True)
-class Compiled:
-    """Subagent with a runner supplied by the host."""
+class RunnerAgent:
+    """Subagent with an executable runner supplied by the host."""
 
     name: str
     description: str
@@ -71,7 +71,7 @@ class Compiled:
 
 
 @dataclass(frozen=True, slots=True)
-class Remote:
+class HttpAgent:
     """Subagent invoked through an HTTP ``POST`` request.
 
     The request body is ``{"input": prompt}``, and the response body is used as the result.
@@ -84,7 +84,7 @@ class Remote:
     timeout: float = DEFAULT_TIMEOUT
 
 
-Subagent = Declarative | Compiled | Remote
+Subagent = FactoryAgent | RunnerAgent | HttpAgent
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +216,7 @@ class Subagents:
         subagents: Sequence[Subagent],
         *,
         run_id: str = "",
-        factory: Callable[[Declarative, "Authority"], Runner | Awaitable[Runner]] | None = None,
+        factory: Callable[[FactoryAgent, "Authority"], Runner | Awaitable[Runner]] | None = None,
         authority: Sequence[str] | None = None,
         deliver: Deliver | None = None,
         registry: BackgroundTasks | None = None,
@@ -500,7 +500,7 @@ class Subagents:
 
     async def _drain(self, agent: Subagent, prompt: str, reply: Reply, child_run: str) -> _Outcome:
         """Consume child events and return the terminal outcome."""
-        if isinstance(agent, Remote):
+        if isinstance(agent, HttpAgent):
             return await asyncio.to_thread(_post, agent, prompt)
 
         run = (await self._runner(agent))(prompt, reply, child_run)
@@ -524,19 +524,19 @@ class Subagents:
         Returns:
             Attenuated authority with blocked child tools removed.
         """
-        requested = agent.tools if isinstance(agent, Declarative) and agent.tools else None
+        requested = agent.tools if isinstance(agent, FactoryAgent) and agent.tools else None
         mine = Authority(ceiling=self.authority, depth=self._depth)
         return mine.attenuate(requested).without(self.blocked_tools_for_child)
 
     async def _runner(self, agent: Subagent) -> Runner:
-        """Resolve a compiled or declarative child runner."""
-        if isinstance(agent, Compiled):
+        """Resolve a supplied or factory-built child runner."""
+        if isinstance(agent, RunnerAgent):
             return agent.run
-        if not isinstance(agent, Declarative):  # pragma: no cover - Remote answered above
+        if not isinstance(agent, FactoryAgent):  # pragma: no cover - HttpAgent answered above
             raise TypeError(f"unsupported subagent: {type(agent).__name__}")
         if self._factory is None:
             raise RuntimeError(
-                f'declarative subagent "{agent.name}" needs a factory to be built into a runner'
+                f'FactoryAgent "{agent.name}" needs a factory to be built into a runner'
             )
         built = self._factory(agent, self.authority_for(agent))
         return await built if isinstance(built, Awaitable) else built
@@ -735,8 +735,8 @@ class Subagents:
         ]
 
 
-def _post(agent: Remote, prompt: str) -> _Outcome:
-    """Send a blocking HTTP request to a remote child."""
+def _post(agent: HttpAgent, prompt: str) -> _Outcome:
+    """Send a blocking HTTP request to an HTTP child."""
     # The URL is the host's own configuration, not model input: a subagent is registered by
     # the application, and the model only names one that is already there.
     request = urllib.request.Request(

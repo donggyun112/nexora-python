@@ -8,8 +8,8 @@ documentation corrections belong in the commit log, not here.
 ### Added
 
 - **Shared agent definitions.** `AgentDefinition` is the common identity contract implemented by
-  local, declarative, compiled, and remote agents. The executable local `Agent` binds a LangChain
-  model, `Tools`, and system prompt independently from run input and orchestration policy.
+  `Agent`, `FactoryAgent`, `RunnerAgent`, and `HttpAgent`. The executable local `Agent` binds a
+  LangChain model, `Tools`, and system prompt independently from run input and orchestration policy.
   `AgentRuntime.run(run_id, agent, prompt)` accepts it while the previous model/tools call shape
   remains supported.
 

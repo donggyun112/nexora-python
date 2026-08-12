@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import ToolMessage
-from nexora import Compiled
+from nexora import RunnerAgent
 from nexora.runtime import AgentRuntime
 from nexora_store import MemoryTranscript
 from nexora_ui.execution import AgentEvent, stream_attempt
@@ -39,7 +39,7 @@ async def test_a_delegated_child_streams_into_the_console_while_it_works() -> No
     state = RuntimeState()
 
     async def attempt(_runtime: AgentRuntime, tools: Any, _on_event: AgentEvent) -> dict[str, Any]:
-        tools._subagents["scout"] = Compiled("scout", "scouts", answering("found it"))
+        tools._subagents["scout"] = RunnerAgent("scout", "scouts", answering("found it"))
         await tools.execute("delegate", "c1", {"agent": "scout", "input": "look"})
         return {"type": "done"}
 
@@ -55,7 +55,7 @@ async def test_the_console_announces_a_child_starting_and_stopping() -> None:
     state = RuntimeState()
 
     async def attempt(_runtime: AgentRuntime, tools: Any, _on_event: AgentEvent) -> dict[str, Any]:
-        tools._subagents["scout"] = Compiled("scout", "scouts", answering("found it"))
+        tools._subagents["scout"] = RunnerAgent("scout", "scouts", answering("found it"))
         await tools.execute("delegate", "c1", {"agent": "scout", "input": "look"})
         return {"type": "done"}
 
@@ -72,7 +72,7 @@ async def test_an_independent_agent_is_listed_by_address_and_not_as_a_task() -> 
     state = RuntimeState()
 
     async def attempt(_runtime: AgentRuntime, tools: Any, _on_event: AgentEvent) -> dict[str, Any]:
-        tools._subagents["scout"] = Compiled("scout", "scouts", answering("mine"))
+        tools._subagents["scout"] = RunnerAgent("scout", "scouts", answering("mine"))
         await tools.execute("delegate", "c1", {"agent": "scout", "input": "x", "wait": "none"})
         return {"type": "done"}
 
@@ -88,7 +88,7 @@ async def test_a_handed_off_child_is_listed_as_a_task_the_console_can_cancel() -
     state = RuntimeState()
 
     async def attempt(_runtime: AgentRuntime, tools: Any, _on_event: AgentEvent) -> dict[str, Any]:
-        tools._subagents["slow"] = Compiled("slow", "slow", answering("late", delay=1.0))
+        tools._subagents["slow"] = RunnerAgent("slow", "slow", answering("late", delay=1.0))
         await tools.execute("delegate", "c1", {"agent": "slow", "input": "x", "wait": "async"})
         return {"type": "done"}
 

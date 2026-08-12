@@ -362,12 +362,12 @@ per-call tool failure — a tool that raises is reported to the model as an erro
 four tools that hold the leash on what it launches:
 
 ```python
-from nexora import AgentRuntime, Compiled, Subagents
+from nexora import AgentRuntime, RunnerAgent, Subagents
 
 runtime = AgentRuntime()
 tools = Subagents(
     my_tools,
-    [Compiled("researcher", "digs through papers", researcher_runner)],
+    [RunnerAgent("researcher", "digs through papers", researcher_runner)],
     run_id="run-42",
     deliver=runtime.background_sink("run-42"),
 )
@@ -379,7 +379,7 @@ id is its idempotency key, so recovery may retry an interrupted call — but a s
 nothing does not repeat one write, it repeats every model round and every effect together. Given
 the same name on the same store, the child's own effects are in the ledger under it and the retry
 becomes the child's own recovery. A runner that ignores the id it is handed gives up exactly this;
-a `Remote` child cannot have it at all, since what is behind the POST owns its own durability.
+an `HttpAgent` cannot have it at all, since what is behind the POST owns its own durability.
 
 A subtask is handed over one of three ways, and they are different shapes rather than three speeds
 of one thing:
@@ -412,8 +412,8 @@ the mode `async` and uses "handoff" for the `delegate` hop itself, as opposed to
 anonymous broadcast.) `tasks=[...]` fans
 several children out inside one call, so parallelism is the caller's decision rather than a hope
 that the model emits several tool calls at once. The three subagent kinds are the reference's —
-`Declarative` (a spec a host factory builds at call time), `Compiled` (a child already wired), and
-`Remote` (an HTTP endpoint). `SUBAGENT_START`/`SUBAGENT_STOP` are published around every child.
+`FactoryAgent` (a spec the host builds at call time), `RunnerAgent` (a supplied runner), and
+`HttpAgent` (an HTTP endpoint). `SUBAGENT_START`/`SUBAGENT_STOP` are published around every child.
 
 The reference needs two delivery paths, `ctx.steerSelf` for a result beating the turn's end and
 `ctx.deliverResult` for one that misses it. Here both are the durable input queue, which the

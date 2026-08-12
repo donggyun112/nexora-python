@@ -11,9 +11,9 @@ from nexora import (
     Answering,
     Authority,
     BackgroundResult,
-    Compiled,
-    Declarative,
-    Remote,
+    FactoryAgent,
+    HttpAgent,
+    RunnerAgent,
     Subagents,
     react_loop,
 )
@@ -25,9 +25,9 @@ from tests.test_loop import Tools, a_call, says, scripted
 
 def test_every_subagent_variant_satisfies_the_agent_definition_contract() -> None:
     definitions = [
-        Declarative("writer", "writes", "write"),
-        Compiled("reviewer", "reviews", answers("done")),
-        Remote("researcher", "researches", "https://example.test"),
+        FactoryAgent("writer", "writes", "write"),
+        RunnerAgent("reviewer", "reviews", answers("done")),
+        HttpAgent("researcher", "researches", "https://example.test"),
     ]
 
     assert all(isinstance(definition, AgentDefinition) for definition in definitions)
@@ -84,7 +84,7 @@ async def call(tools: Subagents, args: dict[str, Any]) -> dict[str, Any]:
 
 async def test_a_sync_hop_answers_with_the_childs_own_answer() -> None:
     """`runRuntime` returns the child's `done` content, not a wrapper around it."""
-    tools = sole([Compiled("reviewer", "reviews code", answers("looks fine"))])
+    tools = sole([RunnerAgent("reviewer", "reviews code", answers("looks fine"))])
 
     assert await call(tools, {"agent": "reviewer", "input": "check it"}) == {
         "type": "text",
@@ -95,7 +95,7 @@ async def test_a_sync_hop_answers_with_the_childs_own_answer() -> None:
 async def test_a_child_that_errors_comes_back_as_an_error_result() -> None:
     """A failed child is a failed tool call, so the parent model can react to it."""
     failing = child({"type": "error", "message": "no such file"})
-    tools = sole([Compiled("reader", "reads", failing)])
+    tools = sole([RunnerAgent("reader", "reads", failing)])
 
     assert await call(tools, {"agent": "reader", "input": "x"}) == {
         "type": "error",
@@ -111,7 +111,7 @@ async def test_the_input_reaches_the_child_as_the_prompt() -> None:
         seen.append(prompt)
         yield {"type": "done", "content": "ok"}
 
-    tools = sole([Compiled("worker", "works", run)])
+    tools = sole([RunnerAgent("worker", "works", run)])
     await call(tools, {"agent": "worker", "input": {"file": "a.py"}})
 
     assert seen == [json.dumps({"file": "a.py"})]
@@ -119,7 +119,7 @@ async def test_the_input_reaches_the_child_as_the_prompt() -> None:
 
 async def test_an_unknown_agent_names_the_ones_that_exist() -> None:
     """An error the model can act on: the roster, not just a refusal."""
-    tools = sole([Compiled("reviewer", "reviews", answers("hi"))])
+    tools = sole([RunnerAgent("reviewer", "reviews", answers("hi"))])
 
     result = await call(tools, {"agent": "ghost", "input": "x"})
 
@@ -134,7 +134,7 @@ async def test_delegation_deeper_than_the_cap_is_refused_before_the_child_runs()
         ran.append("child")
         yield {"type": "done", "content": "never"}
 
-    tools = sole([Compiled("peer", "peers", run)], depth=5, max_depth=5)
+    tools = sole([RunnerAgent("peer", "peers", run)], depth=5, max_depth=5)
 
     result = await call(tools, {"agent": "peer", "input": "x"})
 
@@ -149,8 +149,8 @@ async def test_a_batch_runs_its_children_together_and_answers_once() -> None:
     """Deterministic parallelism: one call fans out, instead of hoping for three tool calls."""
     tools = sole(
         [
-            Compiled("a", "first", answers("A", delay=0.03)),
-            Compiled("b", "second", answers("B", delay=0.03)),
+            RunnerAgent("a", "first", answers("A", delay=0.03)),
+            RunnerAgent("b", "second", answers("B", delay=0.03)),
         ]
     )
 
@@ -172,7 +172,9 @@ async def test_one_failing_child_does_not_take_its_siblings_answers_down() -> No
         raise RuntimeError("boom")
         yield  # pragma: no cover - unreachable, marks this an async generator
 
-    tools = sole([Compiled("ok", "fine", answers("kept")), Compiled("bad", "breaks", explode)])
+    tools = sole(
+        [RunnerAgent("ok", "fine", answers("kept")), RunnerAgent("bad", "breaks", explode)]
+    )
 
     result = await call(
         tools, {"tasks": [{"agent": "ok", "input": "1"}, {"agent": "bad", "input": "2"}]}
@@ -188,7 +190,9 @@ async def test_one_failing_child_does_not_take_its_siblings_answers_down() -> No
 async def test_a_handoff_answers_before_the_child_finishes() -> None:
     """The point of the mode: the parent's round ends while the child is still working."""
     _, deliver = collector()
-    tools = sole([Compiled("slow", "takes a while", answers("late", delay=0.05))], deliver=deliver)
+    tools = sole(
+        [RunnerAgent("slow", "takes a while", answers("late", delay=0.05))], deliver=deliver
+    )
 
     result = await call(tools, {"agent": "slow", "input": "x", "wait": "handoff"})
 
@@ -207,7 +211,7 @@ async def settle(tools: Subagents) -> None:
 async def test_a_launched_childs_answer_reaches_the_sink_when_it_settles() -> None:
     """Without this the background mode is a way to run a child and throw its work away."""
     delivered, deliver = collector()
-    tools = sole([Compiled("slow", "takes a while", answers("done at last"))], deliver=deliver)
+    tools = sole([RunnerAgent("slow", "takes a while", answers("done at last"))], deliver=deliver)
 
     await call(tools, {"agent": "slow", "input": "x", "wait": "handoff"})
     await settle(tools)
@@ -220,7 +224,7 @@ async def test_a_launched_childs_answer_reaches_the_sink_when_it_settles() -> No
 async def test_wait_false_is_fire_and_forget_rather_than_a_silent_sync_hop() -> None:
     """`resolveWaitMode` — models emit `false`, and a strict check drops it into the sync path."""
     delivered, deliver = collector()
-    tools = sole([Compiled("worker", "works", answers("unread"))], deliver=deliver)
+    tools = sole([RunnerAgent("worker", "works", answers("unread"))], deliver=deliver)
 
     result = await call(tools, {"agent": "worker", "input": "x", "wait": False})
     await asyncio.sleep(0)
@@ -235,7 +239,7 @@ async def test_an_independent_agent_is_answered_with_its_run_id() -> None:
     _, deliver = collector()
     tools = Subagents(
         Tools(),
-        [Compiled("worker", "works", answers("mine to keep"))],
+        [RunnerAgent("worker", "works", answers("mine to keep"))],
         deliver=deliver,
         run_id="parent-7",
     )
@@ -249,7 +253,7 @@ async def test_an_independent_agent_is_answered_with_its_run_id() -> None:
 async def test_an_independent_agent_is_not_on_the_parents_leash() -> None:
     """A thing `cancel_task` can kill is not independent — so it is not in that registry."""
     _, deliver = collector()
-    tools = sole([Compiled("worker", "works", answers("mine", delay=0.05))], deliver=deliver)
+    tools = sole([RunnerAgent("worker", "works", answers("mine", delay=0.05))], deliver=deliver)
 
     await call(tools, {"agent": "worker", "input": "x", "wait": "none"})
 
@@ -258,7 +262,7 @@ async def test_an_independent_agent_is_not_on_the_parents_leash() -> None:
 
 async def test_a_handoff_without_a_sink_says_so_instead_of_dropping_the_answer() -> None:
     """A handoff whose answer has nowhere to land is a refusal, not a silent success."""
-    tools = sole([Compiled("worker", "works", answers("x"))])
+    tools = sole([RunnerAgent("worker", "works", answers("x"))])
 
     result = await call(tools, {"agent": "worker", "input": "x", "wait": "handoff"})
 
@@ -268,7 +272,7 @@ async def test_a_handoff_without_a_sink_says_so_instead_of_dropping_the_answer()
 async def test_a_cancelled_task_neither_delivers_nor_reports_done() -> None:
     """`cancel_task` is the parent's leash; a child that outlives it was never cut off."""
     delivered, deliver = collector()
-    tools = sole([Compiled("slow", "slow", answers("too late", delay=1.0))], deliver=deliver)
+    tools = sole([RunnerAgent("slow", "slow", answers("too late", delay=1.0))], deliver=deliver)
 
     await call(tools, {"agent": "slow", "input": "x", "wait": "handoff"})
     task_id = tools.tasks.list()[0]["task_id"]
@@ -286,7 +290,7 @@ async def test_a_cancelled_task_neither_delivers_nor_reports_done() -> None:
 async def test_check_tasks_reports_the_task_a_launch_created() -> None:
     """The id it prints is the one `cancel_task` takes; a mismatch makes the leash unusable."""
     _, deliver = collector()
-    tools = sole([Compiled("worker", "works", answers("ok"))], deliver=deliver)
+    tools = sole([RunnerAgent("worker", "works", answers("ok"))], deliver=deliver)
 
     await call(tools, {"agent": "worker", "input": "x", "wait": "handoff"})
     listed = json.loads((await tools.execute("check_tasks", "c2", {}))["text"])
@@ -298,7 +302,7 @@ async def test_check_tasks_reports_the_task_a_launch_created() -> None:
 async def test_watch_notifies_once_the_tasks_it_names_have_settled() -> None:
     """Non-blocking by construction: the notice is a later input, never a held-open round."""
     delivered, deliver = collector()
-    tools = sole([Compiled("worker", "works", answers("fin", delay=0.02))], deliver=deliver)
+    tools = sole([RunnerAgent("worker", "works", answers("fin", delay=0.02))], deliver=deliver)
 
     await call(tools, {"agent": "worker", "input": "x", "wait": "handoff"})
     task_id = tools.tasks.list()[0]["task_id"]
@@ -322,7 +326,7 @@ async def test_the_hosts_tools_still_run_through_the_wrapper() -> None:
 
 async def test_the_delegation_tools_are_offered_beside_the_hosts() -> None:
     """A tool the model is never shown is a tool it never calls."""
-    tools = Subagents(Tools(names=["read"]), [Compiled("r", "reviews", answers("x"))])
+    tools = Subagents(Tools(names=["read"]), [RunnerAgent("r", "reviews", answers("x"))])
 
     offered = [item["name"] for item in tools.list()]
 
@@ -336,15 +340,15 @@ async def test_the_delegation_tools_are_offered_beside_the_hosts() -> None:
     ]
 
 
-async def test_a_declarative_child_is_built_by_the_factory_at_call_time() -> None:
+async def test_a_factory_agent_is_built_at_call_time() -> None:
     """The spec carries no runtime, so nothing runs unless the host's factory builds one."""
     built: list[str] = []
 
-    def factory(spec: Declarative, _authority: Authority) -> Any:
+    def factory(spec: FactoryAgent, _authority: Authority) -> Any:
         built.append(spec.system_prompt)
         return answers("from a spec")
 
-    tools = sole([Declarative("writer", "writes", "you write")], factory=factory)
+    tools = sole([FactoryAgent("writer", "writes", "you write")], factory=factory)
 
     assert await call(tools, {"agent": "writer", "input": "x"}) == {
         "type": "text",
@@ -363,12 +367,12 @@ async def test_a_childs_authority_is_a_subset_of_its_parents() -> None:
     """
     granted: list[Authority] = []
 
-    def factory(_spec: Declarative, authority: Authority) -> Any:
+    def factory(_spec: FactoryAgent, authority: Authority) -> Any:
         granted.append(authority)
         return answers("done")
 
     tools = sole(
-        [Declarative("writer", "writes", "you write", tools=("read", "write", "deploy"))],
+        [FactoryAgent("writer", "writes", "you write", tools=("read", "write", "deploy"))],
         factory=factory,
         authority=["read", "write"],
         blocked_tools_for_child=(),
@@ -382,12 +386,12 @@ async def test_an_unrestricted_parent_grants_exactly_what_was_asked_for() -> Non
     """A root scoping itself down for the first time. `None` is the top, not a wildcard grant."""
     granted: list[Authority] = []
 
-    def factory(_spec: Declarative, authority: Authority) -> Any:
+    def factory(_spec: FactoryAgent, authority: Authority) -> Any:
         granted.append(authority)
         return answers("done")
 
     tools = sole(
-        [Declarative("reader", "reads", "you read", tools=("read",))],
+        [FactoryAgent("reader", "reads", "you read", tools=("read",))],
         factory=factory,
         blocked_tools_for_child=(),
     )
@@ -400,12 +404,12 @@ async def test_a_blocked_tool_is_refused_even_when_the_parent_held_it() -> None:
     """`blocked_tools_for_child` applies after the intersection, so it cannot be asked around."""
     granted: list[Authority] = []
 
-    def factory(_spec: Declarative, authority: Authority) -> Any:
+    def factory(_spec: FactoryAgent, authority: Authority) -> Any:
         granted.append(authority)
         return answers("done")
 
     tools = sole(
-        [Declarative("peer", "peers", "you peer", tools=("read", "delegate"))],
+        [FactoryAgent("peer", "peers", "you peer", tools=("read", "delegate"))],
         factory=factory,
         authority=["read", "delegate"],
     )
@@ -438,7 +442,7 @@ async def test_a_background_answer_re_enters_the_run_as_model_context() -> None:
     runtime = AgentRuntime(store=MemorySteps())
     tools = Subagents(
         Tools(),
-        [Compiled("researcher", "digs", answers("40 papers", delay=0.05))],
+        [RunnerAgent("researcher", "digs", answers("40 papers", delay=0.05))],
         deliver=runtime.background_sink("delegated"),
     )
     launch = a_call("c1", "delegate", {"agent": "researcher", "input": "dig", "wait": "handoff"})
@@ -480,7 +484,7 @@ async def test_a_background_answer_arriving_mid_run_does_not_fence_it() -> None:
     assert sum("found it" in content for content in arrived) == 2, "and both answers landed"
 
 
-# ── Remote children ─────────────────────────────────────────────────────────
+# ── HTTP children ───────────────────────────────────────────────────────────
 
 
 async def test_a_remote_child_is_reached_over_http_and_its_body_is_the_answer() -> None:
@@ -504,7 +508,7 @@ async def test_a_remote_child_is_reached_over_http_and_its_body_is_the_answer() 
     Thread(target=server.serve_forever, daemon=True).start()
     try:
         url = f"http://127.0.0.1:{server.server_port}/"
-        tools = sole([Remote("far", "lives elsewhere", url)])
+        tools = sole([HttpAgent("far", "lives elsewhere", url)])
 
         result = await call(tools, {"agent": "far", "input": "ping"})
     finally:
@@ -520,7 +524,7 @@ async def test_a_remote_child_is_reached_over_http_and_its_body_is_the_answer() 
 async def test_a_handed_off_child_answers_through_its_reply_tool() -> None:
     """The mode's contract: the answer travels because the child sent it, not because we read it."""
     delivered, deliver = collector()
-    tools = sole([Compiled("scout", "scouts", speaks("found three leaks"))], deliver=deliver)
+    tools = sole([RunnerAgent("scout", "scouts", speaks("found three leaks"))], deliver=deliver)
 
     await call(tools, {"agent": "scout", "input": "look", "wait": "handoff"})
     await settle(tools)
@@ -541,7 +545,7 @@ async def test_a_reply_reaches_the_parent_before_the_child_stops_running() -> No
         await running.wait()
         yield {"type": "done", "content": "finally done"}
 
-    tools = sole([Compiled("slow", "lingers", lingering)], deliver=deliver)
+    tools = sole([RunnerAgent("slow", "lingers", lingering)], deliver=deliver)
     await call(tools, {"agent": "slow", "input": "x", "wait": "handoff"})
     await asyncio.sleep(0.01)
 
@@ -553,7 +557,7 @@ async def test_a_reply_reaches_the_parent_before_the_child_stops_running() -> No
 async def test_a_handed_off_child_that_never_replies_still_answers_from_its_last_turn() -> None:
     """Handing work to an agent without the reply tool must not lose the work."""
     delivered, deliver = collector()
-    tools = sole([Compiled("quiet", "never replies", answers("said nothing on purpose"))],
+    tools = sole([RunnerAgent("quiet", "never replies", answers("said nothing on purpose"))],
                  deliver=deliver)
 
     await call(tools, {"agent": "quiet", "input": "x", "wait": "handoff"})
@@ -564,7 +568,7 @@ async def test_a_handed_off_child_that_never_replies_still_answers_from_its_last
 
 async def test_a_sync_child_that_replies_is_answered_by_the_reply_not_its_last_words() -> None:
     """A child that named its answer is not overruled by whatever it trailed off with."""
-    tools = sole([Compiled("scout", "scouts", speaks("the answer"))])
+    tools = sole([RunnerAgent("scout", "scouts", speaks("the answer"))])
 
     assert await call(tools, {"agent": "scout", "input": "x"}) == {
         "type": "text",
@@ -576,7 +580,7 @@ async def test_a_child_reporting_a_failure_reaches_the_parent_as_an_error() -> N
     """`is_error` on the reply is how a child says "I could not", distinct from crashing."""
     delivered, deliver = collector()
     failing = speaks("the repo has no tests to run", is_error=True)
-    tools = sole([Compiled("runner", "runs tests", failing)], deliver=deliver)
+    tools = sole([RunnerAgent("runner", "runs tests", failing)], deliver=deliver)
 
     await call(tools, {"agent": "runner", "input": "x", "wait": "handoff"})
     await settle(tools)
@@ -648,7 +652,7 @@ async def test_the_childs_own_tools_still_run_under_the_reply_wrapper() -> None:
 async def test_sync_holds_the_round_and_handoff_releases_it() -> None:
     """The distinction the two modes exist for, measured rather than asserted from the name."""
     _, deliver = collector()
-    tools = sole([Compiled("slow", "slow", speaks("eventually", delay=0.05))], deliver=deliver)
+    tools = sole([RunnerAgent("slow", "slow", speaks("eventually", delay=0.05))], deliver=deliver)
 
     started = asyncio.get_running_loop().time()
     await call(tools, {"agent": "slow", "input": "x", "wait": "handoff"})
@@ -673,7 +677,7 @@ async def test_the_child_run_id_is_derived_from_the_call_that_asked_for_it() -> 
         seen.append(run_id)
         yield {"type": "done", "content": "ok"}
 
-    agents = [Compiled("worker", "works", run)]
+    agents = [RunnerAgent("worker", "works", run)]
     await Subagents(Tools(), agents, run_id="run-42").execute(
         "delegate", "c7", {"agent": "worker", "input": "x"}
     )
@@ -705,7 +709,7 @@ async def test_a_retried_delegate_resumes_the_child_instead_of_repeating_its_eff
         await steps.finish(run_id, "write", {"wrote": "the report"})
         raise RuntimeError("died between the effect and the answer")
 
-    tools = Subagents(Tools(), [Compiled("worker", "writes", run)], run_id="run-42")
+    tools = Subagents(Tools(), [RunnerAgent("worker", "writes", run)], run_id="run-42")
 
     crashed = await tools.execute("delegate", "c7", {"agent": "worker", "input": "write it"})
     retried = await tools.execute("delegate", "c7", {"agent": "worker", "input": "write it"})

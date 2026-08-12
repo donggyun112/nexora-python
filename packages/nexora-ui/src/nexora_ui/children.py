@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from nexora import Answering, Compiled, Subagent
+from nexora import Answering, RunnerAgent, Subagent
 from nexora.runtime import AgentRuntime
 from nexora.subagents import Reply
 
@@ -59,7 +59,7 @@ child that is told nothing about its own job answers whatever the roster promise
 def subagents(model: str, store: Any, transcripts: Any) -> list[Subagent]:
     """Build compiled child definitions for the console roster."""
     return [
-        Compiled(name, description, _runner(model, store, transcripts, instruction))
+        RunnerAgent(name, description, _runner(model, store, transcripts, instruction))
         for name, description, instruction in ROSTER
     ]
 

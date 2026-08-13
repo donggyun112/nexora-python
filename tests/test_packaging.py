@@ -116,7 +116,12 @@ LAYERS: dict[str, frozenset[str]] = {
     "workspace": frozenset({"contracts"}),
     "sandbox_remote": frozenset({"workspace"}),
     "controls": frozenset({"contracts"}),
+    # Peer of `tools`, not above it: a finish gate decides with a flag and a tool's name, and
+    # reaching the execution boundary would let a goal run one.
+    "goal": frozenset({"contracts", "controls"}),
     "tools": frozenset({"contracts", "controls"}),
+    # Above both: a permission policy reads a tool's flag and answers with a control decision.
+    "plan_mode": frozenset({"contracts", "controls", "tools"}),
     # Beside `tools`, not above it: a subagent wrapper composes a `Tools` the way a host does, and
     # reaching the execution boundary would make a child's launch a second kind of tool round.
     "subagents": frozenset({"background", "contracts"}),

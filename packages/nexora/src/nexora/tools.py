@@ -488,6 +488,11 @@ def terminates_loop(tools: Tools, call: ToolCall) -> bool:
     return _flag(tools, call, "terminates_loop")
 
 
+def is_read_only(tools: Tools, call: ToolCall) -> bool:
+    """Whether this call only reads. Claude Code's `Tool.isReadOnly(input)` is the reference."""
+    return _flag(tools, call, "is_read_only")
+
+
 def _as_tool_call(call: dict[str, Any]) -> ToolCall:
     return {
         "id": call["call_id"],

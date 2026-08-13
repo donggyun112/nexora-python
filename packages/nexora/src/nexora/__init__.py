@@ -29,6 +29,7 @@ from .contracts import (
     Tools,
 )
 from .engines.plain import react_loop
+from .goal import Goal, goal_complete, goal_gate
 from .orchestration import (
     DurableRuntimeOrchestrator,
     RuntimeInputSession,
@@ -37,6 +38,7 @@ from .orchestration import (
     RuntimeOrchestrator,
 )
 from .orchestrator import ModelFailurePolicy
+from .plan_mode import PlanMode, plan_mode_exit, plan_mode_gate
 from .prompts import PromptSection, SystemPrompt, prompt_section, volatile_prompt_section
 from .providers import FallbackChatModel, ModelProvider, ProviderErrorKind
 from .runtime import AgentRuntime, run
@@ -116,6 +118,7 @@ __all__ = [
     "ExecToolOptions",
     "FactoryAgent",
     "FallbackChatModel",
+    "Goal",
     "HTTPResponse",
     "HTTPTransport",
     "HostWorkspaceProvider",
@@ -128,6 +131,7 @@ __all__ = [
     "ModelProvider",
     "OnModelFailure",
     "PendingInput",
+    "PlanMode",
     "PromptSection",
     "ProviderErrorKind",
     "RemoteSandboxClient",
@@ -173,6 +177,10 @@ __all__ = [
     "WorkspaceViolation",
     "__version__",
     "builtin_tools",
+    "goal_complete",
+    "goal_gate",
+    "plan_mode_exit",
+    "plan_mode_gate",
     "prompt_section",
     "react_loop",
     "run",

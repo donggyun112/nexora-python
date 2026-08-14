@@ -120,13 +120,15 @@ class PostgresSteps:
         if token < issued:
             raise Fenced(run_id, token, issued)
 
-    async def forget(self, run_id: str, key: str) -> None:
-        """Remove an unfinished step so an explicit retry can proceed."""
-        async with self._pool.connection() as connection, connection.cursor() as cursor:
-            await cursor.execute(
-                "delete from nexora_step where run_id = %s and key = %s and status = 'running'",
-                (run_id, key),
-            )
+    async def forget(self, run_id: str, key: str, token: int = 0) -> None:
+        """Remove an unfinished step after validating the fencing token."""
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    "delete from nexora_step where run_id = %s and key = %s and status = 'running'",
+                    (run_id, key),
+                )
 
     async def acquire(self, run_id: str, owner: str, ttl_seconds: float = 60.0) -> int:
         """Acquire or renew a run lease and return its fencing token, or zero on contention."""

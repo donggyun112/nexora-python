@@ -18,7 +18,6 @@ from langchain_core.messages import (
     messages_from_dict,
 )
 from nexora_store import (
-    ClearableSteps,
     Contended,
     Fenced,
     Indeterminate,
@@ -904,13 +903,10 @@ class Orchestrator:
         return fresh[0] if fresh else None
 
     async def _clear(self, step: str) -> None:
-        if isinstance(self._log, ClearableSteps):
-            await self._log.forget(self.run_id, step)
+        await self._log.forget(self.run_id, step, self._token)
 
     async def force_retry(self, step: str) -> None:
         """Clear an indeterminate step so a subsequent attempt can execute it again."""
-        if not isinstance(self._log, ClearableSteps):
-            raise NotImplementedError(f"{type(self._log).__name__} cannot clear a step")
         await self._clear(step)
         self._seen.discard(step)
 

@@ -11,6 +11,24 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Without a database the store conformance suite skips its durable half, and a skip is not a
+    # pass: every divergence that file was written to catch was a method both stores had, doing
+    # different things. The health check is what makes a wait step unnecessary.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nexora_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -33,5 +51,7 @@ jobs:
         run: uv run mypy
 
       - name: Test
+        env:
+          NEXORA_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/nexora_test
         run: uv run pytest
 

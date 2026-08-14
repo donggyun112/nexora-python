@@ -35,8 +35,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from nexora_store import MemorySteps, MemoryTranscript, StepLog, Transcript
-from nexora_store_pg import PostgresSteps, PostgresTranscript
+from nexora_store import Fenced, MemorySteps, MemoryTranscript, StepLog, Transcript
+from nexora_store_pg import SCHEMA, TRANSCRIPT_SCHEMA, PostgresSteps, PostgresTranscript
 from psycopg_pool import AsyncConnectionPool
 
 pytestmark = pytest.mark.anyio
@@ -75,8 +75,6 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Transcript]:
         return
     if not DSN:
         pytest.skip("set NEXORA_TEST_DSN to run the durable half of this suite")
-    from nexora_store_pg import TRANSCRIPT_SCHEMA
-
     async for durable in _postgres(
         TRANSCRIPT_SCHEMA,
         "nexora_transcript, nexora_run, nexora_run_model",
@@ -93,8 +91,6 @@ async def steps(request: pytest.FixtureRequest) -> AsyncIterator[StepLog]:
         return
     if not DSN:
         pytest.skip("set NEXORA_TEST_DSN to run the durable half of this suite")
-    from nexora_store_pg import SCHEMA
-
     async for durable in _postgres(
         SCHEMA, "nexora_step, nexora_run_lease, nexora_input", PostgresSteps
     ):
@@ -174,8 +170,6 @@ async def test_the_holder_renewing_keeps_its_token(steps: StepLog) -> None:
 
 async def test_a_write_from_a_replaced_worker_is_fenced(steps: StepLog) -> None:
     """Renewal cannot make a lease safe — only the token can, which is why it is carried."""
-    from nexora_store import Fenced
-
     stale = await steps.acquire("run-1", "worker-a", 60.0)
     await steps.release("run-1", "worker-a")
     current = await steps.acquire("run-1", "worker-b", 60.0)

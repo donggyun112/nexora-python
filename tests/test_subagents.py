@@ -3,6 +3,8 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 from typing import Any
 
 from nexora import (
@@ -489,9 +491,6 @@ async def test_a_background_answer_arriving_mid_run_does_not_fence_it() -> None:
 
 async def test_a_remote_child_is_reached_over_http_and_its_body_is_the_answer() -> None:
     """The third subagent kind. A real socket, because the point is that it leaves the process."""
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-    from threading import Thread
-
     received: list[bytes] = []
 
     class Handler(BaseHTTPRequestHandler):

@@ -14,6 +14,7 @@ fastapi = pytest.importorskip("fastapi", reason="the console is the `ui` extra")
 from fastapi.testclient import TestClient  # noqa: E402
 from nexora_ui.app import app  # noqa: E402
 from nexora_ui.config import ENV_FILE, UI_ROOT  # noqa: E402
+from nexora_ui.state import FaultInjectingMemorySteps  # noqa: E402
 
 
 def test_the_static_directory_ships_inside_the_package() -> None:
@@ -65,8 +66,6 @@ def test_the_ledger_panel_shows_step_state_and_not_only_events() -> None:
 
 async def test_the_ledger_reports_a_committed_step_and_an_unfinished_one() -> None:
     """The ledger panel distinguishes committed and unfinished steps."""
-    from nexora_ui.state import FaultInjectingMemorySteps
-
     log = FaultInjectingMemorySteps()
     await log.start("r", "committed")
     await log.finish("r", "committed", {"type": "text", "text": "sent"})

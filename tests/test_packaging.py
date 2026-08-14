@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
+PYTHON_ROOTS = (ROOT / "packages", ROOT / "tests", ROOT / "examples")
 
 
 class Distribution(NamedTuple):
@@ -73,6 +74,22 @@ def _imported_modules(source: Path) -> dict[str, str]:
             if root.startswith("nexora"):
                 reached.setdefault(root, str(path.relative_to(ROOT)))
     return reached
+
+
+def test_all_python_imports_are_eager() -> None:
+    """An import below module scope would hide a dependency until that branch executes."""
+    lazy: list[str] = []
+    for source in PYTHON_ROOTS:
+        for path in sorted(source.rglob("*.py")):
+            tree = ast.parse(path.read_text())
+            top_level = {id(node) for node in tree.body}
+            lazy.extend(
+                f"{path.relative_to(ROOT)}:{node.lineno}"
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) not in top_level
+            )
+
+    assert lazy == [], "imports must be module-level:\n" + "\n".join(lazy)
 
 
 def test_no_distribution_imports_beyond_what_it_declares() -> None:

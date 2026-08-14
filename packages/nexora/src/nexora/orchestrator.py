@@ -424,7 +424,13 @@ class Orchestrator:
         self._token = 0
 
     async def _renew(self) -> None:
-        """Extend the lease at a step boundary, if one is held at all."""
+        """Extend the lease at a step boundary, if one is held at all.
+
+        A failed renewal keeps the old token rather than reporting it: the fence is the authority,
+        so the next protected write raises `Fenced` on its own. The one cost is that a lease lost
+        to a worker already executing this step surfaces as `Indeterminate` instead, because the
+        read below reaches that worker's record before any write is attempted.
+        """
         if self._token:
             self._token = await self._log.acquire(self.run_id, self.owner, self._ttl) or self._token
 
@@ -511,6 +517,17 @@ class Orchestrator:
                 close = getattr(stream, "aclose", None)
                 if close is not None:
                     await close()
+        except GeneratorExit:
+            # The consumer stopped pulling on purpose, and that is the abort path: the loop
+            # discards the partial reply and never appends it to history, so the next attempt
+            # rebuilds this same request and has to be allowed to make it. Freezing the step here
+            # would make an abort unresumable, which is the one thing a resume exists to get past.
+            # A crash never runs `aclose`, and cancellation arrives as `CancelledError`, so
+            # neither of those facts is confused with this one. The ceiling is one duplicate
+            # request when the close lands after the final chunk but before the record.
+            await self._clear(step)
+            self._seen.discard(step)
+            raise
         except ControlSignal:
             raise
         except Exception:

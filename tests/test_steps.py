@@ -4,9 +4,12 @@ import asyncio
 from typing import Any
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
+from nexora import AgentRuntime
 from nexora.contracts import PendingInput
+from nexora.engines.plain import react_loop
 from nexora.orchestrator import (
+    AgentAborted,
     Contended,
     Fenced,
     Indeterminate,
@@ -14,7 +17,11 @@ from nexora.orchestrator import (
     Orchestrator,
     Step,
     StepLog,
+    run_agent,
 )
+from nexora_store_pg import SCHEMA
+
+from tests.test_loop import Tools, a_call, says, scripted
 
 
 async def test_a_crash_leaves_an_intent_and_the_next_attempt_refuses_to_guess() -> None:
@@ -258,10 +265,6 @@ async def test_a_tools_wrapper_runs_inside_the_step_so_the_ledger_records_what_i
     `Stepped`. If that nesting ever inverts, the ledger keeps the raw value and the recipe in the
     module docstring becomes another promise the code does not keep.
     """
-    from nexora import AgentRuntime
-
-    from tests.test_loop import Tools, a_call, says, scripted
-
     class Masking(Tools):
         """A `Tools` that redacts what the real executor returned. Subclassed, per test rule 2."""
 
@@ -287,11 +290,6 @@ async def test_an_interruption_is_not_recorded_as_the_answer() -> None:
     Same family as recording a failure or a suspension. `stop_reason == "policy"` is the one that
     does record — a supervisor's decision is an answer, and repeating the run reaches it again.
     """
-    from nexora.engines.plain import react_loop
-    from nexora.orchestrator import AgentAborted, run_agent
-
-    from tests.test_loop import Tools, says, scripted
-
     log = MemorySteps()
     calls: list[str] = []
 
@@ -316,6 +314,48 @@ async def test_an_interruption_is_not_recorded_as_the_answer() -> None:
     assert len(calls) == 2
 
 
+async def test_an_aborted_model_stream_leaves_its_step_retryable() -> None:
+    """The same rule one level down, where the abort actually lands: inside the model stream.
+
+    Aborting mid-turn closes the stream and drops the partial reply without appending it, so the
+    next attempt rebuilds the identical request — and its step key is that request. If the
+    abandoned step keeps its intent, the resume reaches `Indeterminate` instead of the provider,
+    and the run can never get past the abort.
+    """
+    log = MemorySteps()
+    history: list[BaseMessage] = [HumanMessage("hi")]
+    llm = scripted(says("one two three"), says("one two three"))
+    stop = False
+
+    def attempt() -> Any:
+        return react_loop(
+            llm,
+            Tools(),
+            history=history,
+            aborted=lambda: stop,
+            # Same identity and same history on both attempts, so both hash to one step key.
+            model_identity="fake",
+            invoke_model=Orchestrator("run-abort", log).invoke_model,
+        )
+
+    interrupted = []
+    async for event in attempt():
+        if event["type"] == "text":
+            stop = True  # lands between chunks, which is where a real stop button lands
+        if event["type"] == "done":
+            interrupted.append(event["stop_reason"])
+
+    assert interrupted == ["aborted"]
+    assert len(llm.seen) == 1
+
+    stop = False
+    resumed = [event async for event in attempt() if event["type"] == "done"]
+
+    assert [event["stop_reason"] for event in resumed] == ["completed"]
+    assert resumed[0]["content"] == "one two three"
+    assert len(llm.seen) == 2  # asked again, not replayed from a frozen step
+
+
 async def test_a_signal_is_a_step_that_only_an_outsider_can_finish() -> None:
     log = MemorySteps()
     assert (await log.read("run-6", "signal:signoff")) == Step("absent")
@@ -334,12 +374,9 @@ async def test_the_postgres_log_matches_the_protocol() -> None:
     divergence found so far was in what those methods *did*. What is left here is the schema text,
     which no behavioural test reads.
 
-    Skipped when the `postgres` extra is not installed: psycopg stopped being a hard dependency when
-    the store became substitutable, so a default install must not fail this file.
+    The repository's development environment installs the `postgres` extra so this dependency is
+    resolved eagerly with every other test dependency.
     """
-    pytest.importorskip("psycopg")
-    from nexora_store_pg import SCHEMA
-
     assert "nexora_run_lease" in SCHEMA
     assert "nexora_input" in SCHEMA
     assert "discarded" in SCHEMA

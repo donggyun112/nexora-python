@@ -66,6 +66,19 @@ declares, and each layer inside `nexora` against what it is allowed to reach.
 
 ### Fixed
 
+- **An aborted model stream no longer freezes the turn it was serving.** Stopping mid-generation
+  closes the model stream, and the durable step it belonged to kept its `running` intent even
+  though the partial reply was discarded and never appended to history. The next attempt rebuilt
+  the identical request, hashed to the same step key, and raised `Indeterminate` instead of asking
+  the provider — so the run could not get past its own stop button without an explicit
+  `force_retry`. Closing the stream now clears the intent, which a crash still does not do: a dead
+  worker never runs the close path, and cancellation arrives separately as `CancelledError`.
+
+- **Clearing an unfinished step is lease-protected.** `forget` was the only mutating ledger write
+  that skipped its fencing token. A worker whose lease had lapsed did not know it — renewal keeps
+  the old token deliberately — so on its way out it could delete the running intent of the worker
+  that had taken over that step, and the effect in flight would replay on the attempt after that.
+
 - **Model failures retain a stable policy classification at the orchestrator boundary.** Error
   events now carry both the provider exception class (`error_type`) and a normalized
   `error_kind`; `AgentFailed` preserves both instead of discarding the classification before
@@ -90,6 +103,14 @@ declares, and each layer inside `nexora` against what it is allowed to reach.
   continues; it cannot relabel an ending it did not object to.
 
 ### Breaking
+
+- **`StepLog` declares `forget`, and `nexora_store.ClearableSteps` is gone.** Clearing was modelled
+  as an optional capability the orchestrator checked for, but three core paths depend on it — a step
+  that raises, a model request that failed before its first chunk, and an aborted stream all end by
+  removing their intent. A ledger without it turned every one of those into a permanent
+  `Indeterminate` and said nothing. A custom `StepLog` must now implement
+  `forget(run_id, key, token=0)`, removing only unfinished intent and leaving a `done` step alone;
+  both bundled stores already did. `Orchestrator.force_retry` no longer raises `NotImplementedError`.
 
 - **`controls.gate()` maps `{"type": "allow"}` to `Continue` instead of `Deny`.** A stage answering
   `allow` is an opinion that later stages still overrule — the rule `Permissions` and

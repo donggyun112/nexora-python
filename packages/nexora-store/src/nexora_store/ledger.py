@@ -8,7 +8,6 @@ from time import monotonic
 from typing import Any, Literal, NamedTuple, Protocol, runtime_checkable
 
 __all__ = [
-    "ClearableSteps",
     "Contended",
     "Fenced",
     "Indeterminate",
@@ -120,15 +119,19 @@ class StepLog(Protocol):
         """Atomically finish metadata steps and append idempotent inbox inputs."""
         ...
 
-@runtime_checkable
-class ClearableSteps(StepLog, Protocol):
-    """Optional ledger capability for removing unfinished step intent.
+    async def forget(self, run_id: str, key: str, token: int = 0) -> None:
+        """Remove an unfinished step. A `done` step is left alone.
 
-    Implementations must preserve completed steps so recorded effects are never replayed.
-    """
+        Not optional, because clearing is what makes a reported failure retryable: a step that
+        raises, a model request that failed before its first chunk, and an aborted stream all end
+        by removing their intent. A ledger that silently kept them would turn every one of those
+        into a permanent `Indeterminate`.
 
-    async def forget(self, run_id: str, key: str) -> None:
-        """Remove an unfinished step. A `done` step is left alone."""
+        Lease-protected like every other write, and for the sharper reason: erasing intent is the
+        one write that can make a *live* worker's step look like it never happened. A replaced
+        worker clearing its own abandoned attempt would otherwise delete the successor's running
+        intent, and the effect the successor is mid-way through would replay on the attempt after.
+        """
         ...
 
 
@@ -160,8 +163,9 @@ class MemorySteps:
         self._fence(run_id, token)
         self._entries[run_id, key] = Step("done", value)
 
-    async def forget(self, run_id: str, key: str) -> None:
+    async def forget(self, run_id: str, key: str, token: int = 0) -> None:
         """Remove unfinished step intent while preserving completed results."""
+        self._fence(run_id, token)
         if self._entries.get((run_id, key), Step("absent")).status != "done":
             self._entries.pop((run_id, key), None)
 

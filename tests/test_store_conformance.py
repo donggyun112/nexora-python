@@ -115,8 +115,8 @@ def test_both_implementations_expose_the_same_surface(
 
     Structural typing will not catch it: a `MemoryTranscript` passed where a `Transcript` is wanted
     satisfies the Protocol whatever extra it carries, and the extra is exactly what a test reaches
-    for. `forget` is the standing example — both stores have it, the Protocol declares it on
-    neither, and `Orchestrator.force_retry` reaches it through `getattr`.
+    for. `forget` used to be the standing example — declared on neither Protocol while both stores
+    had it and the orchestrator reached for it behind a capability check.
     """
     assert _api(memory) == _api(postgres)
     declared = {name for name in dir(protocol) if not name.startswith("_")}
@@ -289,12 +289,54 @@ async def test_a_transition_does_not_re_insert_an_input_it_already_holds(steps: 
 
 
 async def test_forgetting_a_step_clears_the_intent(steps: StepLog) -> None:
-    """What `Orchestrator.force_retry` needs: the explicit way out of `Indeterminate`."""
+    """What every retryable failure needs, not just `force_retry`.
+
+    A step that raised, a model request that failed before its first chunk, and an aborted stream
+    all end by clearing their intent. That is why `StepLog` declares `forget` rather than treating
+    it as a capability to check for: a ledger that could skip it would turn all three into a
+    permanent `Indeterminate` without saying so.
+    """
     await steps.start("run-1", "meds")
 
-    await steps.forget("run-1", "meds")  # type: ignore[attr-defined]
+    await steps.forget("run-1", "meds")
 
     assert (await steps.read("run-1", "meds")).status == "absent"
+
+
+async def test_forgetting_a_finished_step_leaves_its_result_alone(steps: StepLog) -> None:
+    """The invariant that keeps clearing from becoming a way to replay a recorded effect.
+
+    Every retryable failure clears, so a ledger that deleted by key alone would erase results the
+    run is entitled to replay instead of re-executing. The two implementations word the guard
+    differently — one skips a `done` entry, the other deletes only `running` rows — and this is
+    what says they must agree.
+    """
+    await steps.start("run-1", "meds")
+    await steps.finish("run-1", "meds", {"dispensed": True})
+
+    await steps.forget("run-1", "meds")
+
+    record = await steps.read("run-1", "meds")
+    assert record.status == "done"
+    assert record.value == {"dispensed": True}
+
+
+async def test_forgetting_from_a_replaced_worker_is_fenced(steps: StepLog) -> None:
+    """The one write where a missing fence loses an effect instead of just failing.
+
+    A stalled worker does not know it was replaced — `_renew` keeps its old token — so on its way
+    out it clears the step it thinks is its own. Unfenced, that deletes the running intent of the
+    worker now executing that step, and the next attempt reads `absent` and charges twice.
+    """
+    stale = await steps.acquire("run-1", "worker-a", 60.0)
+    await steps.release("run-1", "worker-a")
+    current = await steps.acquire("run-1", "worker-b", 60.0)
+    await steps.start("run-1", "meds", current)
+
+    with pytest.raises(Fenced):
+        await steps.forget("run-1", "meds", stale)
+
+    assert (await steps.read("run-1", "meds")).status == "running"
 
 
 # ── transcript ───────────────────────────────────────────────────────────────

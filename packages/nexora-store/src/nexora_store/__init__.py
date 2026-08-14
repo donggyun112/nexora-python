@@ -1,7 +1,6 @@
 """Expose dependency-free step-ledger and transcript contracts."""
 
 from .ledger import (
-    ClearableSteps,
     Contended,
     Fenced,
     Indeterminate,
@@ -21,7 +20,6 @@ from .transcript import (
 __all__ = [
     "MODEL_USAGE_FIELDS",
     "RUN_FIELDS",
-    "ClearableSteps",
     "Contended",
     "Fenced",
     "Indeterminate",

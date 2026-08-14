@@ -7,6 +7,7 @@ Behavior is ported from ``packages/architectures/src/react.ts``.
 
 import hashlib
 import json
+import re
 from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import aclosing
@@ -758,7 +759,7 @@ def _model_error_kind(failure: Exception) -> ModelErrorKind:
     ):
         return "server"
     if any("invalidrequest" in marker or "badrequest" in marker for marker in compact):
-        return "invalid_request"
+        return _invalid_request_kind(failure)
 
     status = _status_code_of(failure)
     if status == 429:
@@ -766,8 +767,23 @@ def _model_error_kind(failure: Exception) -> ModelErrorKind:
     if status is not None and status >= 500:
         return "server"
     if status == 400:
-        return "invalid_request"
+        return _invalid_request_kind(failure)
     return "unknown"
+
+
+def _invalid_request_kind(failure: Exception) -> ModelErrorKind:
+    """Separate an over-long prompt from every other rejected request.
+
+    Anthropic reports overflow as a plain `invalid_request_error` carrying the token counts in its
+    message alone, so no structured field distinguishes it and compaction would never be offered a
+    request it could actually shrink. Message text is read here and nowhere else: every kind that a
+    provider does expose structurally has already been decided by this point, and a wording change
+    can only cost this one failure its compaction, never misroute another category.
+    """
+    return "context_overflow" if _OVERFLOW_TEXT.search(str(failure)) else "invalid_request"
+
+
+_OVERFLOW_TEXT = re.compile(r"prompt is too long|context (length|window)|too many tokens", re.I)
 
 
 def _error_markers(body: Mapping[Any, Any]) -> set[str]:

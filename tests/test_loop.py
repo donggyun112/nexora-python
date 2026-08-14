@@ -692,6 +692,47 @@ async def test_structured_provider_codes_become_stable_policy_categories() -> No
     assert events[-1]["error_kind"] == "context_overflow"
 
 
+async def test_an_overflow_reported_as_a_bare_invalid_request_stays_compactable() -> None:
+    """Anthropic states the token counts only in the message — no code separates this from a 400.
+
+    Classifying it as `invalid_request` makes `ModelFailurePolicy` give up on the one failure it
+    could have fixed, so compaction would be dead on that provider while OpenAI kept working.
+    """
+
+    class BadRequestError(RuntimeError):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            self.status_code = 400
+            self.body = {"type": "error", "error": {"type": "invalid_request_error"}}
+
+    class Overflows(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            raise BadRequestError("prompt is too long: 210000 tokens > 200000 maximum")
+            yield  # pragma: no cover — makes this a generator
+
+    events = await run(Overflows(messages=iter([])), durable=False)
+
+    assert events[-1]["error_kind"] == "context_overflow"
+
+
+async def test_a_rejected_request_that_is_not_an_overflow_stays_invalid_request() -> None:
+    """The text fallback must not turn every 400 into something the policy retries by compacting."""
+
+    class BadRequestError(RuntimeError):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            self.status_code = 400
+
+    class Rejects(Llm):
+        def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+            raise BadRequestError("tool_use ids must be unique")
+            yield  # pragma: no cover — makes this a generator
+
+    events = await run(Rejects(messages=iter([])), durable=False)
+
+    assert events[-1]["error_kind"] == "invalid_request"
+
+
 async def test_an_abort_cuts_a_generation_instead_of_waiting_it_out() -> None:
     """Checked per chunk. A shutdown arriving early must not have to wait out a long answer.
 

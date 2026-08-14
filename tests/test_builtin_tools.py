@@ -16,6 +16,7 @@ from nexora import (
     WebFetchToolOptions,
     builtin_tools,
 )
+from nexora.builtins._types import BuiltinToolState
 
 from .test_loop import a_call, says, scripted
 
@@ -49,11 +50,21 @@ async def in_workspace(
     root: Path,
     *,
     exec_options: ExecToolOptions | None = None,
+    engine: str | None = None,
 ) -> BuiltinTools:
+    """Bind the built-ins to a workspace, optionally pinning which search engine they resolve to.
+
+    `engine` seeds the detection cache instead of probing, because whichever engine the machine
+    has is the only one its tests would ever reach otherwise.
+    """
     session = await HostWorkspaceProvider(root=root).acquire(run_id="builtins")
+    state = BuiltinToolState()
+    if engine is not None:
+        state.search_engines[session.id] = engine
     return BuiltinTools(
         context=ToolContext(workdir=str(root), workspace=session),
         exec_options=exec_options,
+        _state=state,
     )
 
 
@@ -216,6 +227,28 @@ async def test_grep_returns_matching_content(tmp_path: Path) -> None:
 
     assert "one.txt:2:needle" in str(result["text"])
     assert "two.txt" not in str(result["text"])
+
+
+async def test_grep_falls_back_to_system_grep_and_says_what_it_lost(tmp_path: Path) -> None:
+    """The fallback is a supported path that no run reaches, because detection prefers ripgrep.
+
+    `_detect_engine` picks whichever engine the machine has, so a developer or runner with ripgrep
+    installed never executes `_grep_args` or the degradation notice — and one without it never
+    executes the ripgrep half. Pinning the engine is what makes both reachable in the same run.
+    """
+    (tmp_path / "one.txt").write_text("alpha\nneedle\n")
+    (tmp_path / "two.txt").write_text("other\n")
+    tools = await in_workspace(tmp_path, engine="grep")
+
+    result = await tools.execute("grep", "call-1", {"pattern": "needle", "type": "py"})
+
+    # Found through POSIX grep arguments, which are built separately from ripgrep's.
+    assert "one.txt:2:needle" in str(result["text"])
+    assert "two.txt" not in str(result["text"])
+    # And the answer says which requested behaviour grep could not honour, rather than pretending.
+    assert "[grep fallback: ripgrep not found — type, .gitignore not respected unavailable]" in str(
+        result["text"]
+    )
 
 
 async def test_bash_is_disabled_until_an_allow_list_is_supplied(tmp_path: Path) -> None:

@@ -50,6 +50,11 @@ jobs:
       - name: Type-check
         run: uv run mypy
 
+      # The `glob` builtin requires ripgrep rather than falling back, so without it on PATH its
+      # test skips and the runner reports a pass for a dependency it never exercised.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
+
       - name: Test
         env:
           NEXORA_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/nexora_test

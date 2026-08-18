@@ -94,6 +94,7 @@ async def stream_attempt(
                     "kind": "suspended",
                     "pending_id": stopped.pending_id,
                     "tool_call_id": stopped.tool_call_id,
+                    "pending": [list(pair) for pair in stopped.pending],
                 }
             )
         except SimulatedWorkerCrash as failure:

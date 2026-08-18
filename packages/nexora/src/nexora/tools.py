@@ -116,15 +116,32 @@ async def execute_calls(
     controls: Controls | None = None,
     ctx: Ctx | None = None,
 ) -> list[Resolved]:
-    """Execute a gated tool round and preserve model call order.
+    """Execute a gated tool round and preserve model call order."""
+    return await _advance_calls(tools, calls, aborted, emit, turn, controls, ctx, replayed={})
+
+
+async def _advance_calls(
+    tools: Tools,
+    calls: list[ToolCall],
+    aborted: Aborted,
+    emit: Emit | None,
+    turn: int,
+    controls: Controls | None,
+    ctx: Ctx | None,
+    *,
+    replayed: Mapping[str, dict[str, Any]],
+) -> list[Resolved]:
+    """Advance live or recovering calls through one lifecycle path.
 
     Batch-capable executors own their concurrency policy. Other executors run calls sequentially.
     Suspension or cancellation ends the round without synthesizing results for unexecuted calls.
+    Completed results supplied by recovery skip their gate and effect, but cross the same ordered
+    post-effect boundary as results produced by the live attempt.
     """
     here = ctx if ctx is not None else Ctx(turn=turn)
     if isinstance(tools, BatchTools):
         batch_resolved = await _execute_batched(
-            tools.execute_batch, calls, aborted, emit, here, controls
+            tools.execute_batch, calls, aborted, emit, here, controls, replayed
         )
         if any(item.result.get("type") == "suspend" for item in batch_resolved):
             raise RoundSuspended(batch_resolved)
@@ -135,15 +152,19 @@ async def execute_calls(
     for call in calls:
         if aborted():
             break
+        call_id = call["id"] or ""
+        if call_id in replayed:
+            result = replayed[call_id]
+            await record_resolved(controls, emit, here, call, result)
+            resolved.append(Resolved(call, result, refused=False))
+            continue
+        if collecting:
+            suspended = await _collect_suspension(controls, emit, here, call)
+            if suspended is not None:
+                resolved.append(Resolved(call, suspended, refused=True))
+            continue
         decision = await decide_tool_call(controls, emit, here, call)
         stood_in = _stands_in_for(decision)
-        if collecting:
-            # Past the first suspension nothing executes, but the gate keeps running so every
-            # approval the round needs surfaces in one park. Only suspensions are kept: an
-            # allowed or denied call behind the gate is pruned and the model asks again.
-            if stood_in is not None and stood_in.get("type") == "suspend":
-                resolved.append(Resolved(call, stood_in, refused=True))
-            continue
         result = (
             stood_in
             if stood_in is not None
@@ -176,9 +197,20 @@ async def decide_tool_call(
     """Ask the control point, then say publicly what it decided."""
     if emit is not None:
         await emit(EventType.PRE_TOOL_USE, tool_payload(ctx, call))
-    decision: ToolDecision = (
-        await controls.pre_tool_use(ctx, call) if controls is not None else Continue()
-    )
+    decision = await _ask_tool_call(controls, ctx, call)
+    await _emit_tool_decision(emit, ctx, call, decision)
+    return decision
+
+
+async def _ask_tool_call(controls: Controls | None, ctx: Ctx, call: ToolCall) -> ToolDecision:
+    """Return the load-bearing gate decision without publishing an observation."""
+    return await controls.pre_tool_use(ctx, call) if controls is not None else Continue()
+
+
+async def _emit_tool_decision(
+    emit: Emit | None, ctx: Ctx, call: ToolCall, decision: ToolDecision
+) -> None:
+    """Publish the observable consequence of one already-made gate decision."""
     if emit is not None:
         match decision:
             case Deny(result):
@@ -193,7 +225,20 @@ async def decide_tool_call(
                 )
             case _:
                 pass
-    return decision
+
+
+async def _collect_suspension(
+    controls: Controls | None, emit: Emit | None, ctx: Ctx, call: ToolCall
+) -> dict[str, Any] | None:
+    """Keep and announce only a suspension after an earlier call already stopped the round."""
+    decision = await _ask_tool_call(controls, ctx, call)
+    result = _stands_in_for(decision)
+    if result is None or result.get("type") != "suspend":
+        return None
+    if emit is not None:
+        await emit(EventType.PRE_TOOL_USE, tool_payload(ctx, call))
+    await _emit_tool_decision(emit, ctx, call, decision)
+    return result
 
 
 async def record_resolved(
@@ -397,23 +442,33 @@ async def _execute_batched(
     emit: Emit | None,
     ctx: Ctx,
     controls: Controls | None,
+    replayed: Mapping[str, dict[str, Any]],
 ) -> list[Resolved]:
-    """Gate a batch before dispatch and record results in call order."""
-    decided: list[tuple[ToolCall, dict[str, Any] | None]] = []
+    """Gate a batch before dispatch, replay completed calls, and record in call order."""
+    decided: list[
+        tuple[ToolCall, dict[str, Any] | None, dict[str, Any] | None]
+    ] = []
     collecting = False
     for call in calls:
         if aborted():
             break
-        decision = _stands_in_for(await decide_tool_call(controls, emit, ctx, call))
-        if collecting and (decision is None or decision.get("type") != "suspend"):
-            # Same collect rule as the sequential path: past the first suspension, keep gating
-            # to gather every approval request, prune everything else for the model to re-ask.
+        call_id = call["id"] or ""
+        if call_id in replayed:
+            decided.append((call, None, replayed[call_id]))
             continue
-        decided.append((call, decision))
+        if collecting:
+            suspension = await _collect_suspension(controls, emit, ctx, call)
+            if suspension is not None:
+                decided.append((call, suspension, None))
+            continue
+        decision = _stands_in_for(await decide_tool_call(controls, emit, ctx, call))
+        decided.append((call, decision, None))
         if decision is not None and decision.get("type") == "suspend":
             collecting = True
 
-    allowed = [call for call, decision in decided if decision is None]
+    allowed = [
+        call for call, decision, recovered in decided if decision is None and recovered is None
+    ]
     batch = [{"call_id": c["id"], "name": c["name"], "input": c["args"]} for c in allowed]
     ran = await run_batch(batch) if allowed else []
     by_id = {
@@ -421,8 +476,10 @@ async def _execute_batched(
     }
 
     resolved: list[Resolved] = []
-    for call, decision in decided:
-        if decision is not None:
+    for call, decision, recovered in decided:
+        if recovered is not None:
+            resolved.append(Resolved(call, recovered, refused=False))
+        elif decision is not None:
             resolved.append(Resolved(call, decision, refused=True))
         elif call["id"] in by_id:
             resolved.append(Resolved(call, by_id[call["id"]], refused=False))

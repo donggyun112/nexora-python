@@ -22,6 +22,7 @@ from nexora.controls import (
     Ingress,
     Permissions,
     Proceed,
+    Suspend,
     ToolDecision,
     gate,
 )
@@ -96,6 +97,35 @@ async def test_a_tool_round_emits_the_full_hook_sequence() -> None:
         EventType.POST_TOOL_USE,
         EventType.CONTEXT_INJECTED,
         EventType.STOP,
+    ]
+
+
+async def test_a_pruned_continue_after_suspension_emits_no_orphan_gate_event() -> None:
+    """A call removed from the round must leave no PRE_TOOL_USE without a terminal event."""
+    observed: list[tuple[str, str]] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type in {EventType.PRE_TOOL_USE, EventType.PERMISSION_REQUEST}:
+            observed.append((event_type, str(payload["call_id"])))
+
+    async def suspend_first(ctx: Any, call: ToolCall) -> ToolDecision:
+        if call["id"] == "c1":
+            return Suspend({"type": "suspend", "pending_id": "approve-c1"})
+        return Continue()
+
+    controls = ControlPlane(pre_tool_use=Permissions(suspend_first))
+    with pytest.raises(AgentSuspended):
+        await AgentRuntime(store=MemorySteps(), emit=emit).run(
+            "pruned-gate-event",
+            scripted(says("", a_call("c1", "read"), a_call("c2", "read"))),
+            Tools(),
+            "go",
+            controls=controls,
+        )
+
+    assert observed == [
+        (EventType.PRE_TOOL_USE, "c1"),
+        (EventType.PERMISSION_REQUEST, "c1"),
     ]
 
 

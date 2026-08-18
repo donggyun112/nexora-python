@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { runId: null, parentRunId: null, attachTo: null, callId: null, pendingId: null, model: "", busy: false, nextFault: false, recoverable: false, rounds: new Set(), effectIds: new Set(), events: 0, assistant: null, toolCalls: new Map(), children: new Map(), watching: null };
+const state = { runId: null, parentRunId: null, attachTo: null, callId: null, pendingId: null, pending: [], model: "", busy: false, nextFault: false, recoverable: false, rounds: new Set(), effectIds: new Set(), events: 0, assistant: null, toolCalls: new Map(), children: new Map(), watching: null };
 
 function setStatus(value, label = value.toUpperCase()) {
   const el = $("status");
@@ -120,6 +120,7 @@ function toolRequestCancelled(payload) {
   entry.result.textContent = json(payload.reason);
   state.callId = null;
   state.pendingId = null;
+  state.pending = [];
   state.recoverable = false;
   $("approval").classList.add("hidden");
   $("recovery").classList.add("hidden");
@@ -229,6 +230,7 @@ function resetRun(prompt) {
   $("agents").innerHTML = '<div class="rail-empty">No children yet</div>';
   state.callId = null;
   state.pendingId = null;
+  state.pending = [];
   state.recoverable = false;
   state.assistant = state.thinking = null;
   state.rounds = new Set();
@@ -299,15 +301,18 @@ function handle(frame) {
     return;
   }
   if (frame.kind === "suspended") {
-    state.callId = frame.tool_call_id;
-    state.pendingId = frame.pending_id;
+    state.pending = Array.isArray(frame.pending) && frame.pending.length
+      ? frame.pending
+      : [[frame.pending_id, frame.tool_call_id]];
+    [state.pendingId, state.callId] = state.pending[0];
     $("approval").classList.remove("hidden");
-    setStatus("suspended", "WAITING FOR SIGNAL");
+    setStatus("suspended", `WAITING FOR ${state.pending.length} SIGNAL${state.pending.length === 1 ? "" : "S"}`);
     return;
   }
   if (frame.kind === "outcome") {
     state.callId = null;
     state.pendingId = null;
+    state.pending = [];
     $("approval").classList.add("hidden");
     $("recovery").classList.add("hidden");
     state.recoverable = false;

@@ -53,14 +53,15 @@ from .history import (
     encode_continuation,
     encode_pending_input,
     suspend_history_snapshot,
+    suspension_result_message,
 )
 from .tools import (
     Concurrent,
     Resolved,
     RoundSuspended,
     Stepped,
+    _advance_calls,
     absorb_round,
-    execute_calls,
     record_resolved,
     require_call_ids,
     tool_payload,
@@ -76,6 +77,7 @@ __all__ = [
     "Fenced",
     "Indeterminate",
     "InputRecord",
+    "InvalidSuspension",
     "MemorySteps",
     "ModelFailurePolicy",
     "Orchestrator",
@@ -83,6 +85,7 @@ __all__ = [
     "Step",
     "StepLog",
     "Suspended",
+    "require_pending_ids",
     "run_agent",
 ]
 
@@ -231,6 +234,30 @@ class AgentSuspended(Suspended):
         )
 
 
+class InvalidSuspension(RuntimeError):
+    """Report an external suspension identity that cannot route one answer unambiguously."""
+
+
+def require_pending_ids(
+    parked: list[tuple[ToolCall, dict[str, Any]]],
+) -> dict[str, ToolCall]:
+    """Index unambiguous external identities or reject the parked round."""
+    indexed: dict[str, ToolCall] = {}
+    for position, (call, request) in enumerate(parked):
+        pending_id = request.get("pending_id")
+        if not isinstance(pending_id, str) or not pending_id:
+            raise InvalidSuspension(
+                f"parked tool call {position} ({call['id']!r}) has no non-empty pending_id"
+            )
+        if pending_id in indexed:
+            raise InvalidSuspension(
+                f"pending id {pending_id!r} appears twice in one parked round; "
+                "an answer could not identify which tool call to resume"
+            )
+        indexed[pending_id] = call
+    return indexed
+
+
 class RecoveredTools(NamedTuple):
     """A persisted assistant tool round completed without replaying its model call."""
 
@@ -331,14 +358,15 @@ class Orchestrator:
 
     async def cancel_and_switch(
         self,
-        call: ToolCall,
+        parked: list[tuple[ToolCall, dict[str, Any]]],
         continuation: dict[str, Any],
         cancellation_result: dict[str, Any],
-        cancellations: list[PendingInput],
         replacement: PendingInput,
-    ) -> list[PendingInput]:
+    ) -> tuple[list[PendingInput], list[ToolCall]]:
         """Close an unanswered model request and order the replacing user input after it."""
-        call_id = call["id"] or ""
+        if not parked:
+            raise RuntimeError("cannot switch an empty suspension")
+        call_id = parked[0][0]["id"] or ""
         controls: dict[str, Any] = {
             _active_suspension_key(): {
                 "state": "switching",
@@ -346,26 +374,51 @@ class Orchestrator:
                 "continuation": continuation,
             }
         }
-        # Every suspension is now a pre-effect permission wait. Finishing it as cancelled prevents
-        # a stale approval from executing it later with the same idempotency key — and a batch
-        # park has one such effect per parked call, so all of them close here.
-        parked_ids = [cid for _, cid in await self._parked_requests()] or [call_id]
+        # An absent parked effect is a pre-effect permission wait. Finishing it as cancelled
+        # prevents a stale approval from executing later with the same idempotency key. A re-park
+        # may also retain a committed sibling; that immutable fact is replayed into the protocol.
         completions: list[EffectCompletion] = []
-        for parked_id in parked_ids:
+        closures: list[PendingInput] = []
+        cancelled: list[ToolCall] = []
+        for call, _ in parked:
+            parked_id = call["id"] or ""
             effect = await self._log.read(self.run_id, parked_id)
             if effect.status == "absent":
                 completions.append(EffectCompletion(parked_id, cancellation_result, "absent"))
-            elif not (
-                effect.status == "done"
-                and isinstance(effect.value, dict)
-                and effect.value.get("code") == "cancelled"
-            ):
-                raise RuntimeError(
-                    f"cannot cancel effect {parked_id!r}: ledger says {effect.status!r}"
+                result = cancellation_result
+                kind = "cancelled_tool_result"
+                origin_id = f"cancel:{parked_id}"
+                cancelled.append(call)
+            elif effect.status == "done" and isinstance(effect.value, dict):
+                result = effect.value
+                if result.get("code") == "cancelled":
+                    kind = "cancelled_tool_result"
+                    origin_id = f"cancel:{parked_id}"
+                    cancelled.append(call)
+                else:
+                    # A re-park can contain effects committed before a later sibling suspended.
+                    # The replacing input must observe that fact, not try to cancel or hide it.
+                    kind = "tool_result"
+                    origin_id = f"tool:{parked_id}:result"
+            elif effect.status == "running":
+                raise Indeterminate(self.run_id, parked_id)
+            else:
+                raise TypeError(f"tool step {parked_id!r} did not record a result dict")
+            closures.append(
+                PendingInput(
+                    kind,
+                    suspension_result_message(
+                        parked_id,
+                        result,
+                        name=call.get("name", ""),
+                    ),
+                    origin_id,
                 )
-        return await self.commit_transition_inputs(
-            [*cancellations, replacement], controls, tuple(completions)
+            )
+        normalized = await self.commit_transition_inputs(
+            [*closures, replacement], controls, tuple(completions)
         )
+        return normalized, cancelled
 
     async def continue_with_input(
         self,
@@ -389,23 +442,34 @@ class Orchestrator:
             },
         )
 
-    async def record_suspension_answer(self, call_id: str, answer: dict[str, Any]) -> None:
-        """Durably record one batch answer without executing anything.
+    async def record_suspension_answer(
+        self, call_id: str, answer: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Durably record one batch answer before executing anything.
 
         A partial answer is input, not effect: the run stays waiting until every parked call
-        of the round is decided, and only then may any of them execute.
+        of the round is decided. The final answer moves the continuation to ``finalizing`` before
+        any effect runs, so a crashed finalize can be re-entered without asking a person again.
         """
         active = await self.active_continuation()
-        if active is None or active.get("state") != "waiting":
+        if active is None or active.get("state") not in {"waiting", "finalizing", "resuming"}:
             raise RuntimeError(f"no waiting suspension to answer for call {call_id!r}")
         answers = dict(active.get("answers") or {})
+        if call_id in answers and answers[call_id] != answer:
+            raise ValueError(f"suspension answer for call {call_id!r} is already committed")
         answers[call_id] = answer
+        call_ids = [str(item) for item in active.get("call_ids") or [active.get("call_id", "")]]
+        state = str(active.get("state"))
+        if state == "waiting" and all(item in answers for item in call_ids):
+            state = "finalizing"
+        updated = {**active, "state": state, "answers": answers}
         await self._log.write_control(
             self.run_id,
             _active_suspension_key(),
-            {**active, "answers": answers},
+            updated,
             self._token,
         )
+        return updated
 
     async def complete_continuation(self, call_id: str) -> None:
         """Clear only the switching/resuming continuation this successful attempt consumed."""
@@ -642,13 +706,45 @@ class Orchestrator:
         # engine checks this too; this is the durable boundary, and it is public.
         require_call_ids(calls)
         await self.record_pending(calls, turn)
-        durable = Concurrent(Stepped(tools, self), aborted)
-        try:
-            result = await execute_calls(durable, calls, aborted, publisher, turn, controls, ctx)
-        except RoundSuspended as stopped:
-            result = stopped.resolved
+        result = await self._advance_tool_round(
+            tools,
+            calls,
+            aborted=aborted,
+            publisher=publisher,
+            turn=turn,
+            controls=controls,
+            context=ctx,
+        )
         await self._terminate_if_suspended(tools, result, publisher, turn, controls, ctx)
         return result
+
+    async def _advance_tool_round(
+        self,
+        tools: Tools,
+        calls: list[ToolCall],
+        *,
+        aborted: Aborted,
+        publisher: Emit | None,
+        turn: int,
+        controls: Controls | None,
+        context: Ctx | None,
+        replayed: dict[str, dict[str, Any]] | None = None,
+    ) -> list[Resolved]:
+        """Advance live and recovering calls through the same lifecycle boundary."""
+        durable = Concurrent(Stepped(tools, self), aborted)
+        try:
+            return await _advance_calls(
+                durable,
+                calls,
+                aborted,
+                publisher,
+                turn,
+                controls,
+                context,
+                replayed=replayed or {},
+            )
+        except RoundSuspended as stopped:
+            return stopped.resolved
 
     async def resume_effect(
         self,
@@ -680,43 +776,51 @@ class Orchestrator:
 
         publisher = emit if emit is not None else self._emit
         context = ctx if ctx is not None else Ctx(turn=turn)
-        if publisher is not None:
-            await publisher(EventType.PRE_TOOL_USE, tool_payload(context, call))
+        record = await self._log.read(self.run_id, call["id"] or "")
+        if record.status == "running":
+            raise Indeterminate(self.run_id, call["id"] or "")
+        if record.status == "done":
+            if not isinstance(record.value, dict):
+                raise TypeError(f"tool step {call['id']!r} did not record a result dict")
+            resolved = Resolved(call, record.value, refused=False)
+        else:
+            if publisher is not None:
+                await publisher(EventType.PRE_TOOL_USE, tool_payload(context, call))
 
-        resume = ResumeInput(
-            answer=answer,
-            request=request,
-            suspended_rules_version=suspended_rules_version,
-            current_rules_version=self._rules_version,
-        )
-        decision = (
-            Deny(answer)
-            if answer.get("type") == "error"
-            else await controls.on_resume(context, call, resume)
-            if controls is not None
-            else Continue()
-        )
+            resume = ResumeInput(
+                answer=answer,
+                request=request,
+                suspended_rules_version=suspended_rules_version,
+                current_rules_version=self._rules_version,
+            )
+            decision = (
+                Deny(answer)
+                if answer.get("type") == "error"
+                else await controls.on_resume(context, call, resume)
+                if controls is not None
+                else Continue()
+            )
 
-        match decision:
-            case Deny(result):
-                if publisher is not None:
-                    await publisher(
-                        EventType.PERMISSION_DENIED,
-                        tool_payload(context, call, reason=result, source="on_resume"),
+            match decision:
+                case Deny(result):
+                    if publisher is not None:
+                        await publisher(
+                            EventType.PERMISSION_DENIED,
+                            tool_payload(context, call, reason=result, source="on_resume"),
+                        )
+                    resolved = Resolved(call, result, refused=True)
+                case Suspend(new_request):
+                    if publisher is not None:
+                        await publisher(
+                            EventType.PERMISSION_REQUEST,
+                            tool_payload(context, call, request=new_request, source="on_resume"),
+                        )
+                    resolved = Resolved(call, new_request, refused=True)
+                case _:
+                    result = await Stepped(tools, self).execute(
+                        call["name"], call["id"] or "", call["args"]
                     )
-                resolved = Resolved(call, result, refused=True)
-            case Suspend(new_request):
-                if publisher is not None:
-                    await publisher(
-                        EventType.PERMISSION_REQUEST,
-                        tool_payload(context, call, request=new_request, source="on_resume"),
-                    )
-                resolved = Resolved(call, new_request, refused=True)
-            case _:
-                result = await Stepped(tools, self).execute(
-                    call["name"], call["id"] or "", call["args"]
-                )
-                resolved = Resolved(call, result, refused=False)
+                    resolved = Resolved(call, result, refused=False)
 
         if not resolved.refused:
             await record_resolved(controls, publisher, context, call, resolved.result)
@@ -742,6 +846,7 @@ class Orchestrator:
         if not round_.suspended:
             return
         parked = round_.suspended
+        require_pending_ids(parked)
         context = ctx if ctx is not None else Ctx(turn=turn)
         messages = [
             *context.messages,
@@ -852,25 +957,24 @@ class Orchestrator:
 
         context = Ctx(turn=recovery_turn, messages=list(history))
         publisher = emit if emit is not None else self._emit
-        resolved: list[Resolved] = []
+        replayed: dict[str, dict[str, Any]] = {}
         for call, record in records:
-            if aborted():
-                break
-            item = await self._recover_call(
-                call,
-                record,
-                tools=tools,
-                aborted=aborted,
-                publisher=publisher,
-                turn=recovery_turn,
-                controls=controls,
-                context=context,
-            )
-            if item is None:
-                break
-            resolved.append(item)
-            if item.result.get("type") == "suspend":
-                break
+            if record.status != "done":
+                continue
+            if not isinstance(record.value, dict):
+                raise TypeError(f"tool step {call['id']!r} did not record a result dict")
+            replayed[call["id"] or ""] = record.value
+
+        resolved = await self._advance_tool_round(
+            tools,
+            pending,
+            aborted=aborted,
+            publisher=publisher,
+            turn=recovery_turn,
+            controls=controls,
+            context=context,
+            replayed=replayed,
+        )
 
         await self._terminate_if_suspended(
             tools,
@@ -896,7 +1000,7 @@ class Orchestrator:
     async def _parked_requests(self) -> list[tuple[str, str]]:
         """The live suspension's ``(pending_id, call_id)`` pairs in model order, or ``[]``."""
         active = await self.active_continuation()
-        if active is None or active.get("state") not in {"waiting", "resuming"}:
+        if active is None or active.get("state") not in {"waiting", "finalizing", "resuming"}:
             return []
         payload = active.get("continuation")
         if not isinstance(payload, dict):
@@ -955,44 +1059,6 @@ class Orchestrator:
             for call, record in records
         ]
 
-    async def _recover_call(
-        self,
-        call: ToolCall,
-        record: Step,
-        *,
-        tools: Tools,
-        aborted: Aborted,
-        publisher: Emit | None,
-        turn: int,
-        controls: Controls | None,
-        context: Ctx,
-    ) -> Resolved | None:
-        """Replay one completed result or execute one absent call through the shared boundary."""
-        if record.status == "done":
-            if not isinstance(record.value, dict):
-                raise TypeError(f"tool step {call['id']!r} did not record a result dict")
-            await record_resolved(controls, publisher, context, call, record.value)
-            return Resolved(call, record.value, refused=False)
-
-        # The original pending-round record keeps the complete model order. Calling the public
-        # `execute_round` for this one recovery item would overwrite it with a one-call subset and
-        # make a second crash lose the remaining calls. `execute_calls` is still the one execution
-        # boundary; only the pending-round bookkeeping is bypassed here.
-        durable = Concurrent(Stepped(tools, self), aborted)
-        try:
-            fresh = await execute_calls(
-                durable,
-                [call],
-                aborted,
-                publisher,
-                turn,
-                controls,
-                context,
-            )
-        except RoundSuspended as stopped:
-            fresh = stopped.resolved
-        return fresh[0] if fresh else None
-
     async def _clear(self, step: str) -> None:
         await self._log.forget(self.run_id, step, self._token)
 
@@ -1030,6 +1096,7 @@ class Orchestrator:
         writes would leave some approval requests durable and others silently lost. A re-park
         carries the answers already decided and announces only the reissued requests.
         """
+        require_pending_ids(parked)
         first_call, first_request = parked[0]
         continuation = encode_continuation(
             first_call,
@@ -1041,8 +1108,11 @@ class Orchestrator:
             subject=subject,
             parked=parked,
         )
+        # Per-call keys are indexes into the one run-level continuation. Keeping the full
+        # snapshot under every call made a batch store N+1 copies of the same transcript.
+        marker = {"active_call_id": first_call["id"] or ""}
         controls: dict[str, Any] = {
-            _suspend_key(call["id"] or ""): continuation for call, _ in parked
+            _suspend_key(call["id"] or ""): marker for call, _ in parked
         }
         controls[_active_suspension_key()] = {
             "state": "waiting",
@@ -1106,7 +1176,8 @@ class Orchestrator:
         if (
             active is None
             or active.get("state") != "waiting"
-            or active.get("call_id") != call_id
+            or call_id
+            not in [str(item) for item in active.get("call_ids") or [active.get("call_id", "")]]
             or not isinstance(active.get("continuation"), dict)
         ):
             raise RuntimeError(f"cannot compact inactive suspension {call_id!r}")
@@ -1116,10 +1187,10 @@ class Orchestrator:
             leaf_uuid=leaf_uuid,
         )
         # A rewrite, not a reset: `call_ids`/`answers` carry over (dropping an answer loses a
-        # person's decision), and every parked call's key holds the same snapshot, so all of
-        # them compact together.
+        # person's decision), and every parked call remains indexed to the one active snapshot.
         parked_ids = [cid for _, cid in await self._parked_requests()] or [call_id]
-        controls: dict[str, Any] = {_suspend_key(cid): continuation for cid in parked_ids}
+        marker = {"active_call_id": active.get("call_id", "")}
+        controls: dict[str, Any] = {_suspend_key(cid): marker for cid in parked_ids}
         controls[_active_suspension_key()] = {**active, "continuation": continuation}
         await self._log.commit_transition(
             self.run_id,
@@ -1130,7 +1201,17 @@ class Orchestrator:
     async def suspension(self, key: str) -> dict[str, Any] | None:
         """The parked payload, still opaque, or None if there is none."""
         record = await self._log.read(self.run_id, _suspend_key(key))
-        return record.value if record.status == "done" else None
+        if record.status != "done" or not isinstance(record.value, dict):
+            return None
+        marker = record.value.get("active_call_id")
+        if marker is None:
+            return record.value  # backward-compatible read of pre-index suspension records
+        active = await self.active_continuation()
+        if active is None or marker != active.get("call_id"):
+            return None
+        call_ids = [str(item) for item in active.get("call_ids") or [active.get("call_id", "")]]
+        continuation = active.get("continuation")
+        return continuation if key in call_ids and isinstance(continuation, dict) else None
 
     async def resolve(self, name: str, answer: Any) -> None:
         """Write a signal's answer. Called from outside the workflow, then replay it."""

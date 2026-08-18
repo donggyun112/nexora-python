@@ -4,10 +4,11 @@ import asyncio
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage
 from nexora import AgentRuntime
-from nexora.contracts import BatchTools
+from nexora.contracts import BaseMessage, BatchTools
 from nexora.engines.plain import react_loop
-from nexora.orchestrator import MemorySteps
+from nexora.orchestrator import MemorySteps, Orchestrator
 from nexora.tools import Concurrent, InvalidToolResult
 
 from tests.test_loop import Tools, a_call, says, scripted
@@ -40,6 +41,21 @@ async def test_a_batch_that_all_declared_itself_safe_runs_together() -> None:
 
     assert tools.trace == ["start:a", "start:b", "start:c", "end:a", "end:b", "end:c"]
     assert [e["id"] for e in events if e["type"] == "tool_result"] == ["a", "b", "c"]
+
+
+async def test_recovery_preserves_the_live_rounds_concurrency_contract() -> None:
+    """Absent calls recovered from one safe round must re-enter one concurrent batch."""
+    log = MemorySteps()
+    tools = Traced(defs={"read": SAFE, "grep": SAFE}, names=["read", "grep"])
+    calls = [a_call("a", "read"), a_call("b", "grep"), a_call("c", "read")]
+    history: list[BaseMessage] = [AIMessage(content="", tool_calls=calls)]
+
+    async with Orchestrator("recover-safe-batch", log) as owner:
+        await owner.record_pending(calls, 0)
+    async with Orchestrator("recover-safe-batch", log) as owner:
+        await owner.recover_pending(history, tools)
+
+    assert tools.trace == ["start:a", "start:b", "start:c", "end:a", "end:b", "end:c"]
 
 
 async def test_one_undeclared_call_makes_the_whole_round_sequential() -> None:

@@ -33,7 +33,6 @@ from .controls import Controls, Ctx
 from .driver import drive
 from .engines.plain import react_loop
 from .history import (
-    cancelled_tool_inputs,
     continuation_cursor,
     decode_continuation,
     decode_cursor_continuation,
@@ -47,7 +46,7 @@ from .orchestration import (
     _DurableRuntimeSession,
     _execute_direct,
 )
-from .orchestrator import AgentSuspended, Orchestrator, StepLog
+from .orchestrator import AgentSuspended, Orchestrator, StepLog, require_pending_ids
 from .subagents import Deliver
 from .transcript import TranscriptWriter, active_branch, messages_at, messages_of
 from .workspace import ContextualTools, ToolContext, WorkspaceProvider, WorkspaceSeed
@@ -506,17 +505,14 @@ class AgentRuntime:
             active = await orchestrator.active_continuation()
             waiting = await self._decode_waiting(active, conversation, execution)
             parked = list(waiting.parked) if waiting is not None else []
-            by_pending = {
-                str(request.get("pending_id")): call for call, request in parked
-            }
+            by_pending = require_pending_ids(parked)
             if (
                 waiting is None
                 or active is None
-                or active.get("state") not in {"waiting", "resuming"}
+                or active.get("state") not in {"waiting", "finalizing", "resuming"}
                 or pending_id not in by_pending
             ):
                 raise LookupError(f"no active suspension for pending id {pending_id!r}")
-            tool_call_id = waiting.call["id"] or ""
             if execution.subject is not None and waiting.subject not in {"", execution.subject}:
                 raise ValueError("subject cannot differ from the suspended execution context")
             supplied_subject = engine_options.get("subject")
@@ -528,85 +524,112 @@ class AgentRuntime:
                 raise ValueError("subject cannot differ from the trusted execution context")
             subject = execution.subject or str(supplied_subject or waiting.subject)
             engine_options["subject"] = subject
+            active = await orchestrator.record_suspension_answer(
+                by_pending[pending_id]["id"] or "", answer
+            )
             answers = dict(active.get("answers") or {})
-            answers[by_pending[pending_id]["id"] or ""] = answer
             undecided = [
                 (str(request.get("pending_id")), call["id"] or "")
                 for call, request in parked
                 if (call["id"] or "") not in answers
             ]
             if undecided:
-                await orchestrator.record_suspension_answer(
-                    by_pending[pending_id]["id"] or "", answer
-                )
                 raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
-            async with self._workspace_tools(execution.run_id, tools) as active_tools:
-                items: list[PendingInput] = []
-                for index, (call, request) in enumerate(parked):
-                    result = await orchestrator.resume_effect(
-                        active_tools,
-                        call,
-                        answers[call["id"] or ""],
-                        request,
-                        waiting.rules_version,
-                        aborted=engine_options.get("aborted", lambda: False),
-                        turn=waiting.turn,
-                        controls=controls,
-                        # The parked subject, unless the caller names one. A different person
-                        # approving does not change who the run acts for, and the effect is about
-                        # to run under that authority — the record's subject is the default, not
-                        # the resumer's.
-                        ctx=Ctx(
-                            turn=waiting.turn,
-                            messages=list(waiting.messages),
-                            subject=subject,
-                        ),
-                        park=False,
-                    )
-                    if result.get("type") == "suspend":
-                        # A resume-time gate reissued this request. Re-park the whole batch so
-                        # the answers already decided survive; calls executed earlier in this
-                        # loop replay idempotently from the ledger on the next finalize.
-                        await orchestrator.repark_suspension(
-                            [
-                                (c, result if i == index else r)
-                                for i, (c, r) in enumerate(parked)
-                            ],
-                            list(waiting.messages),
-                            waiting.completed,
-                            turn=waiting.turn,
-                            subject=subject,
-                            answers={
-                                k: v for k, v in answers.items() if k != (call["id"] or "")
-                            },
-                            reissued=(call, result),
-                        )
-                    items.append(
-                        PendingInput(
-                            "resume_result",
-                            suspension_result_message(
-                                call["id"] or "", result, name=call.get("name", "")
-                            ),
-                            f"resume:{request.get('pending_id')}",
-                        )
-                    )
-                await orchestrator.continue_with_input(
-                    tool_call_id, active["continuation"], items
-                )
-                outcome = await self._drive_active(
-                    orchestrator,
-                    model,
+            return await self._finalize_suspension(
+                orchestrator,
+                active,
+                waiting,
+                answers,
+                model,
+                tools,
+                controls=controls,
+                on_event=on_event,
+                conversation=conversation,
+                model_identity=model_identity,
+                subject=subject,
+                aborted=engine_options.get("aborted", lambda: False),
+                engine_options=engine_options,
+            )
+
+    async def _finalize_suspension(
+        self,
+        orchestrator: Orchestrator,
+        active: dict[str, Any],
+        waiting: Any,
+        answers: dict[str, Any],
+        model: Any,
+        tools: Tools,
+        *,
+        controls: Controls | None,
+        on_event: OnAgentEvent | None,
+        conversation: str,
+        model_identity: str | None,
+        subject: str,
+        aborted: Aborted,
+        engine_options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Idempotently finish a fully answered continuation after resume or recovery."""
+        parked = list(waiting.parked)
+        tool_call_id = waiting.call["id"] or ""
+        drive_options = {**engine_options, "aborted": aborted}
+        async with self._workspace_tools(orchestrator.run_id, tools) as active_tools:
+            items: list[PendingInput] = []
+            for index, (call, request) in enumerate(parked):
+                result = await orchestrator.resume_effect(
                     active_tools,
-                    history=waiting.messages,
+                    call,
+                    answers[call["id"] or ""],
+                    request,
+                    waiting.rules_version,
+                    aborted=aborted,
+                    turn=waiting.turn,
                     controls=controls,
-                    on_event=on_event,
-                    recover_pending=False,
-                    conversation_id=conversation,
-                    model_identity=model_identity,
-                    **engine_options,
+                    ctx=Ctx(
+                        turn=waiting.turn,
+                        messages=list(waiting.messages),
+                        subject=subject,
+                    ),
+                    park=False,
                 )
-            await orchestrator.complete_continuation(tool_call_id)
-            return outcome
+                if result.get("type") == "suspend":
+                    await orchestrator.repark_suspension(
+                        [
+                            (candidate, result if position == index else old_request)
+                            for position, (candidate, old_request) in enumerate(parked)
+                        ],
+                        list(waiting.messages),
+                        waiting.completed,
+                        turn=waiting.turn,
+                        subject=subject,
+                        answers={key: value for key, value in answers.items() if key != call["id"]},
+                        reissued=(call, result),
+                    )
+                items.append(
+                    PendingInput(
+                        "resume_result",
+                        suspension_result_message(
+                            call["id"] or "", result, name=call.get("name", "")
+                        ),
+                        f"resume:{request.get('pending_id')}",
+                    )
+                )
+            await orchestrator.continue_with_input(
+                tool_call_id, active["continuation"], items
+            )
+            outcome = await self._drive_active(
+                orchestrator,
+                model,
+                active_tools,
+                history=waiting.messages,
+                controls=controls,
+                on_event=on_event,
+                recover_pending=False,
+                conversation_id=conversation,
+                model_identity=model_identity,
+                **drive_options,
+            )
+        await orchestrator.complete_continuation(tool_call_id)
+        return outcome
 
     async def recover(
         self,
@@ -632,39 +655,73 @@ class AgentRuntime:
             if supplied_subject not in {None, "", execution.subject}:
                 raise ValueError("subject cannot differ from the trusted execution context")
             engine_options["subject"] = execution.subject
-        async with (
-            self._orchestrator(execution, on_suspend, rules_version, on_event) as orchestrator,
-            self._workspace_tools(execution.run_id, tools) as active_tools,
-        ):
-            recovered = await orchestrator.recover_pending(
-                history,
-                active_tools,
-                controls=controls,
-                aborted=aborted,
-                retry_running=retry_running,
-            )
-            for message in recovered.history[len(history) :]:
-                if isinstance(message, ToolMessage):
-                    await orchestrator.enqueue_input(
-                        PendingInput(
-                            "tool_result",
-                            message,
-                            f"tool:{message.tool_call_id}:result",
+        conversation = conversation_id or execution.run_id
+        async with self._orchestrator(
+            execution, on_suspend, rules_version, on_event
+        ) as orchestrator:
+            active = await orchestrator.active_continuation()
+            waiting = await self._decode_waiting(active, conversation, execution)
+            if active is not None and waiting is not None and active.get("state") in {
+                "waiting",
+                "finalizing",
+                "resuming",
+            }:
+                parked = list(waiting.parked)
+                answers = dict(active.get("answers") or {})
+                undecided = [
+                    (str(request["pending_id"]), call["id"] or "")
+                    for call, request in parked
+                    if (call["id"] or "") not in answers
+                ]
+                if undecided:
+                    raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
+                subject = execution.subject or str(engine_options.get("subject") or waiting.subject)
+                engine_options["subject"] = subject
+                return await self._finalize_suspension(
+                    orchestrator,
+                    active,
+                    waiting,
+                    answers,
+                    model,
+                    tools,
+                    controls=controls,
+                    on_event=on_event,
+                    conversation=conversation,
+                    model_identity=model_identity,
+                    subject=subject,
+                    aborted=aborted,
+                    engine_options=engine_options,
+                )
+            async with self._workspace_tools(execution.run_id, tools) as active_tools:
+                recovered = await orchestrator.recover_pending(
+                    history,
+                    active_tools,
+                    controls=controls,
+                    aborted=aborted,
+                    retry_running=retry_running,
+                )
+                for message in recovered.history[len(history) :]:
+                    if isinstance(message, ToolMessage):
+                        await orchestrator.enqueue_input(
+                            PendingInput(
+                                "tool_result",
+                                message,
+                                f"tool:{message.tool_call_id}:result",
+                            )
                         )
-                    )
-            return await self._drive_active(
-                orchestrator,
-                model,
-                active_tools,
-                history=history,
-                controls=controls,
-                on_event=on_event,
-                recover_pending=False,
-                conversation_id=conversation_id or execution.run_id,
-                aborted=aborted,
-                model_identity=model_identity,
-                **engine_options,
-            )
+                return await self._drive_active(
+                    orchestrator,
+                    model,
+                    active_tools,
+                    history=history,
+                    controls=controls,
+                    on_event=on_event,
+                    recover_pending=False,
+                    conversation_id=conversation,
+                    aborted=aborted,
+                    model_identity=model_identity,
+                    **engine_options,
+                )
 
     async def _drive(
         self,
@@ -946,25 +1003,24 @@ class AgentRuntime:
         waiting: Any,
         incoming: PendingInput,
     ) -> PendingInput:
-        cancellations = cancelled_tool_inputs(waiting.messages, reason=_CANCELLED["message"])
-        normalized = await orchestrator.cancel_and_switch(
-            waiting.call,
+        normalized, cancelled = await orchestrator.cancel_and_switch(
+            list(waiting.parked),
             active["continuation"],
             dict(_CANCELLED),
-            cancellations,
             incoming,
         )
-        await orchestrator.emit(
-            EventType.TOOL_REQUEST_CANCELLED,
-            {
-                "turn": waiting.turn,
-                "call_id": waiting.call["id"],
-                "name": waiting.call["name"],
-                "input": waiting.call["args"],
-                "reason": dict(_CANCELLED),
-                "replacement_input_id": normalized[-1].origin_id,
-            },
-        )
+        for call in cancelled:
+            await orchestrator.emit(
+                EventType.TOOL_REQUEST_CANCELLED,
+                {
+                    "turn": waiting.turn,
+                    "call_id": call["id"],
+                    "name": call["name"],
+                    "input": call["args"],
+                    "reason": dict(_CANCELLED),
+                    "replacement_input_id": normalized[-1].origin_id,
+                },
+            )
         return normalized[-1]
 
 

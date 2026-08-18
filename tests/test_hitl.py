@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from nexora import AgentRuntime
-from nexora.contracts import ToolCall
+from nexora.contracts import BaseMessage, EventType, ToolCall
 from nexora.controls import (
     Continue,
     ControlPlane,
@@ -21,7 +21,7 @@ from nexora.controls import (
     gate,
 )
 from nexora.history import decode_continuation, encode_continuation
-from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
+from nexora.orchestrator import AgentSuspended, InvalidSuspension, MemorySteps, Orchestrator
 from nexora_permissions import PolicyContext, Rule, resolve_rules
 
 from tests.test_loop import Tools, a_call, says, scripted
@@ -141,6 +141,30 @@ async def test_every_approval_in_one_round_parks_together_and_surfaces_at_once()
     assert tools.ran == ["read"]  # execution still stops at the first gate
 
 
+async def test_a_parked_round_rejects_duplicate_pending_ids_before_persistence() -> None:
+    """Every external answer identity in one parked round must route to exactly one call."""
+
+    async def same_pending_id(call: ToolCall) -> dict[str, Any] | None:
+        if call["name"] == DEPLOY:
+            return {"type": "suspend", "pending_id": "approval-mid"}
+        return None
+
+    log = MemorySteps()
+    controls = ControlPlane(pre_tool_use=Permissions(gate(same_pending_id)))
+    calls = [a_call("c1", DEPLOY), a_call("c2", DEPLOY)]
+
+    with pytest.raises(InvalidSuspension, match="appears twice"):
+        await AgentRuntime(store=log).run(
+            "duplicate-pending",
+            scripted(says("", *calls)),
+            Tools(names=[DEPLOY]),
+            "ship both",
+            controls=controls,
+        )
+
+    assert await Orchestrator("duplicate-pending", log).active_continuation() is None
+
+
 async def test_a_partial_batch_answer_is_recorded_but_executes_nothing() -> None:
     """Contract: partial answers are inputs, not effects.
 
@@ -203,11 +227,11 @@ async def test_the_last_answer_executes_the_whole_batch_in_model_order() -> None
     assert answered == ["c1", "c2", "c3"]  # nothing dangles, nothing doubled
 
 
-async def test_recover_leaves_a_parked_batch_waiting_with_its_original_pending_ids() -> None:
-    """Contract: recovery consults the parked set.
+async def test_recover_exposes_only_the_still_undecided_pending_ids() -> None:
+    """Contract: recovery consults both the parked set and its durable answers.
 
     Re-gating parked calls would reissue pending ids and orphan answers already in flight —
-    recover must re-raise the originals.
+    recover must re-raise only the original requests that still need an answer.
     """
     log = MemorySteps()
     controls = await _parked_batch(log, "run-recover")
@@ -233,7 +257,7 @@ async def test_recover_leaves_a_parked_batch_waiting_with_its_original_pending_i
             controls=controls,
         )
 
-    assert parked.value.pending == [("approve-c2", "c2"), ("approve-c3", "c3")]
+    assert parked.value.pending == [("approve-c3", "c3")]
     assert fresh.ran == []  # a parked call is never "absent"
 
     # and the partial answer recorded before the crash still counts
@@ -247,6 +271,27 @@ async def test_recover_leaves_a_parked_batch_waiting_with_its_original_pending_i
         controls=controls,
     )
     assert final.ran == [DEPLOY, DEPLOY]
+
+
+async def test_recovery_collects_every_approval_from_the_interrupted_round() -> None:
+    """Recovery must re-enter the complete gate phase, not stop after its first suspension."""
+    log = MemorySteps()
+    calls = [a_call("c1", DEPLOY), a_call("c2", DEPLOY)]
+    history: list[BaseMessage] = [AIMessage(content="", tool_calls=calls)]
+    controls = ControlPlane(pre_tool_use=Permissions(gate(_ask_deploy)))
+
+    async with Orchestrator("run-recover-gates", log) as owner:
+        await owner.record_pending(calls, 0)
+
+    with pytest.raises(AgentSuspended) as parked:
+        async with Orchestrator("run-recover-gates", log) as owner:
+            await owner.recover_pending(
+                history,
+                Tools(names=[DEPLOY]),
+                controls=controls,
+            )
+
+    assert parked.value.pending == [("approve-c1", "c1"), ("approve-c2", "c2")]
 
 
 async def test_a_denied_answer_in_a_batch_refuses_only_that_call() -> None:
@@ -283,12 +328,11 @@ async def test_a_denied_answer_in_a_batch_refuses_only_that_call() -> None:
     assert by_id["c2"].status == "success"
 
 
-async def test_compaction_keeps_the_batch_fields_and_compacts_every_parked_key() -> None:
+async def test_compaction_accepts_a_sibling_and_keeps_one_indexed_batch_snapshot() -> None:
     """`compact_suspension` is a field-preserving rewrite, not a reset.
 
     The active record must keep `call_ids`/`answers` (dropping answers loses a person's
-    decision), and every parked call's suspend key holds the same snapshot, so all of them
-    compact — leaving N-1 full snapshots behind defeats the compaction.
+    decision), and every parked call's suspend key resolves through the one active snapshot.
     """
     log = MemorySteps()
     await _parked_batch(log, "run-compact")
@@ -302,16 +346,30 @@ async def test_compaction_keeps_the_batch_fields_and_compacts_every_parked_key()
         )
 
     async with Orchestrator("run-compact", log) as o:
-        await o.compact_suspension("c2", conversation_id="run-compact", leaf_uuid=None)
+        await o.compact_suspension("c3", conversation_id="run-compact", leaf_uuid=None)
         active = await o.active_continuation()
         assert active is not None
         assert active["answers"] == {"c2": {"type": "text", "text": "approved"}}
         assert active["call_ids"] == ["c2", "c3"]
         for call_id in ("c2", "c3"):
+            raw = await log.read("run-compact", f"suspend:{call_id}")
+            assert raw.value == {"active_call_id": "c2"}
             payload = await o.suspension(call_id)
             assert payload is not None
             assert "messages" not in payload  # the snapshot became a cursor
             assert payload["transcript"]["conversation_id"] == "run-compact"
+
+
+async def test_a_parked_batch_stores_one_snapshot_plus_per_call_indexes() -> None:
+    log = MemorySteps()
+    await _parked_batch(log, "run-indexed-snapshot")
+
+    active = await log.read("run-indexed-snapshot", "agent:active-suspension")
+    assert isinstance(active.value, dict)
+    assert "messages" in active.value["continuation"]
+    for call_id in ("c2", "c3"):
+        per_call = await log.read("run-indexed-snapshot", f"suspend:{call_id}")
+        assert per_call.value == {"active_call_id": "c2"}
 
 
 async def test_a_resume_time_suspension_reparks_the_batch_without_orphaning_answers() -> None:
@@ -374,6 +432,190 @@ async def test_a_resume_time_suspension_reparks_the_batch_without_orphaning_answ
     assert outcome["content"] == "done"
     answered = [m.tool_call_id for m in model.seen[0] if isinstance(m, ToolMessage)]
     assert answered == ["c1", "c2", "c3"]
+
+
+async def test_switching_from_a_repark_preserves_effects_that_already_committed() -> None:
+    """A completed sibling is replayed while only the still-parked effect is cancelled."""
+
+    class ReAskSecond:
+        async def __call__(self, ctx: Ctx, call: ToolCall, resume: ResumeInput) -> Any:
+            if call["id"] == "c3":
+                return Suspend({"type": "suspend", "pending_id": "re-approve-c3"})
+            return Continue()
+
+    log = MemorySteps()
+    await _parked_batch(log, "switch-repark")
+    runtime = AgentRuntime(store=log)
+    with pytest.raises(AgentSuspended):
+        await runtime.resume(
+            "switch-repark",
+            "approve-c2",
+            {"type": "text", "text": "approved"},
+            scripted(says("unused")),
+            Tools(names=["read", DEPLOY, "notify"]),
+        )
+
+    executed = Tools(names=["read", DEPLOY, "notify"])
+    with pytest.raises(AgentSuspended):
+        await runtime.resume(
+            "switch-repark",
+            "approve-c3",
+            {"type": "text", "text": "approved"},
+            scripted(says("unused")),
+            executed,
+            controls=ControlPlane(on_resume=ReAskSecond()),
+        )
+    assert executed.ran == [DEPLOY]
+
+    model = scripted(says("switched"))
+    outcome = await runtime.run(
+        "switch-repark",
+        model,
+        Tools(names=["read", DEPLOY, "notify"]),
+        "cancel the remaining deployment",
+    )
+
+    results = {m.tool_call_id: m for m in model.seen[0] if isinstance(m, ToolMessage)}
+    assert results["c2"].status == "success"
+    assert results["c3"].status == "error"
+    assert outcome["content"] == "switched"
+
+
+async def test_switching_from_a_batch_emits_one_cancellation_event_per_cancelled_call() -> None:
+    log = MemorySteps()
+    await _parked_batch(log, "switch-events")
+    cancelled: list[str] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == EventType.TOOL_REQUEST_CANCELLED:
+            cancelled.append(str(payload["call_id"]))
+
+    await AgentRuntime(store=log, emit=emit).run(
+        "switch-events",
+        scripted(says("switched")),
+        Tools(names=["read", DEPLOY, "notify"]),
+        "cancel both deployments",
+    )
+
+    assert cancelled == ["c2", "c3"]
+
+
+async def test_finalize_replays_a_committed_effect_before_revalidating_policy() -> None:
+    """A crash after effect commit cannot turn that completed fact into a later denial."""
+
+    class CrashAfterFirstDeploy(MemorySteps):
+        crashed = False
+
+        async def finish_effect(
+            self, run_id: str, key: str, value: Any, token: int = 0
+        ) -> None:
+            await super().finish_effect(run_id, key, value, token)
+            if key == "c2" and not self.crashed:
+                self.crashed = True
+                raise RuntimeError("worker crashed after committed deploy")
+
+    log = CrashAfterFirstDeploy()
+    await _parked_batch(log, "finalize-commit-wins")
+    runtime = AgentRuntime(store=log)
+    with pytest.raises(AgentSuspended):
+        await runtime.resume(
+            "finalize-commit-wins",
+            "approve-c2",
+            {"type": "text", "text": "approved"},
+            scripted(says("unused")),
+            Tools(names=["read", DEPLOY, "notify"]),
+        )
+
+    async def changed_policy(ctx: Ctx, call: ToolCall, resume: ResumeInput) -> Any:
+        if call["id"] == "c2" and log.crashed:
+            return Deny({"type": "error", "message": "policy changed"})
+        return Continue()
+
+    controls = ControlPlane(on_resume=changed_policy)
+    first = Tools(names=["read", DEPLOY, "notify"])
+    with pytest.raises(RuntimeError, match="worker crashed after committed deploy"):
+        await runtime.resume(
+            "finalize-commit-wins",
+            "approve-c3",
+            {"type": "text", "text": "approved"},
+            scripted(says("unused")),
+            first,
+            controls=controls,
+        )
+
+    active = await Orchestrator("finalize-commit-wins", log).active_continuation()
+    assert active is not None
+    assert active["state"] == "finalizing"
+    assert set(active["answers"]) == {"c2", "c3"}  # the final answer preceded every effect
+
+    waiting = decode_continuation(active["continuation"])
+    assert waiting is not None
+    final = Tools(names=["read", DEPLOY, "notify"])
+    model = scripted(says("done"))
+    await runtime.recover(
+        "finalize-commit-wins",
+        list(waiting.messages),
+        model,
+        final,
+        controls=controls,
+    )
+
+    by_id = {m.tool_call_id: m for m in model.seen[0] if isinstance(m, ToolMessage)}
+    assert (first.ran, final.ran, by_id["c2"].status) == ([DEPLOY], [DEPLOY], "success")
+
+
+async def test_repeated_final_answer_can_reenter_a_committed_resuming_transition() -> None:
+    """A response retry after the finalize transition commits must not fail with a 500."""
+
+    class CrashAfterResumingTransition(MemorySteps):
+        crashed = False
+
+        async def commit_transition(
+            self, run_id: str, transition: Any, token: int = 0
+        ) -> set[str]:
+            inserted = await super().commit_transition(run_id, transition, token)
+            if not self.crashed and any(
+                isinstance(value, dict) and value.get("state") == "resuming"
+                for value in transition.controls.values()
+            ):
+                self.crashed = True
+                raise RuntimeError("worker crashed after resuming commit")
+            return inserted
+
+    log = CrashAfterResumingTransition()
+    await _parked_batch(log, "resume-redelivery")
+    runtime = AgentRuntime(store=log)
+    with pytest.raises(AgentSuspended):
+        await runtime.resume(
+            "resume-redelivery",
+            "approve-c2",
+            {"type": "text", "text": "approved"},
+            scripted(says("unused")),
+            Tools(names=["read", DEPLOY, "notify"]),
+        )
+
+    with pytest.raises(RuntimeError, match="worker crashed after resuming commit"):
+        await runtime.resume(
+            "resume-redelivery",
+            "approve-c3",
+            {"type": "text", "text": "approved"},
+            scripted(says("unused")),
+            Tools(names=["read", DEPLOY, "notify"]),
+        )
+
+    active = await Orchestrator("resume-redelivery", log).active_continuation()
+    assert active is not None and active["state"] == "resuming"
+    final = Tools(names=["read", DEPLOY, "notify"])
+    outcome = await runtime.resume(
+        "resume-redelivery",
+        "approve-c3",
+        {"type": "text", "text": "approved"},
+        scripted(says("done")),
+        final,
+    )
+
+    assert final.ran == []  # both effects were already committed before the crash
+    assert outcome["content"] == "done"
 
 
 async def test_a_suspension_survives_the_process_and_the_run_continues() -> None:

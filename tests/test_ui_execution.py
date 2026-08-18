@@ -139,6 +139,29 @@ async def test_agent_stream_marks_a_post_commit_worker_crash_as_recoverable() ->
     }
 
 
+async def test_agent_stream_exposes_the_complete_pending_batch() -> None:
+    async def attempt(
+        _runtime: AgentRuntime, _tools: Tools, _on_event: AgentEvent
+    ) -> dict[str, Any]:
+        raise AgentSuspended(
+            "approval-1",
+            "call-1",
+            pending=[("approval-1", "call-1"), ("approval-2", "call-2")],
+        )
+
+    frames = [
+        json.loads(line)
+        async for line in stream_attempt("batch-approval", attempt, RuntimeState())
+    ]
+
+    assert frames[-1] == {
+        "kind": "suspended",
+        "pending_id": "approval-1",
+        "tool_call_id": "call-1",
+        "pending": [["approval-1", "call-1"], ["approval-2", "call-2"]],
+    }
+
+
 async def test_pre_tool_permission_suspends_before_effect_then_runs_on_approval() -> None:
     tools = TrackingTools()
     store = MemorySteps()

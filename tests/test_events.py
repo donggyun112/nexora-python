@@ -3,7 +3,7 @@
 from typing import Any
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from nexora import AgentRuntime
 from nexora.contracts import (
     BLOCKING,
@@ -27,7 +27,7 @@ from nexora.controls import (
     gate,
 )
 from nexora.engines.plain import react_loop
-from nexora.orchestrator import AgentSuspended, MemorySteps
+from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora_store import ExecutionContext
 
 from tests.test_loop import Tools, a_call, says, scripted
@@ -127,6 +127,28 @@ async def test_a_pruned_continue_after_suspension_emits_no_orphan_gate_event() -
         (EventType.PRE_TOOL_USE, "c1"),
         (EventType.PERMISSION_REQUEST, "c1"),
     ]
+
+
+async def test_a_replayed_tool_result_reuses_its_original_event_id() -> None:
+    """Recovery re-emission must be deduplicable: the same logical event carries the same id."""
+    log = MemorySteps()
+    posts: list[str] = []
+
+    async def sink(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == EventType.POST_TOOL_USE:
+            posts.append(str(payload["event_id"]))
+
+    calls = [a_call("c1", "read")]
+    async with Orchestrator("replay-event-id", log, emit=sink) as owner:
+        await owner.execute_round(Tools(names=["read"]), calls, lambda: False)
+    async with Orchestrator("replay-event-id", log, emit=sink) as owner:
+        await owner.recover_pending(
+            [AIMessage(content="", tool_calls=calls)], Tools(names=["read"])
+        )
+
+    assert len(posts) == 2
+    assert posts[0]  # identity exists
+    assert posts[0] == posts[1]  # and survives the replay unchanged
 
 
 async def test_a_failing_tool_emits_the_failure_variant() -> None:

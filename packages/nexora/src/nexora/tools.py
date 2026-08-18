@@ -196,7 +196,7 @@ async def decide_tool_call(
 ) -> ToolDecision:
     """Ask the control point, then say publicly what it decided."""
     if emit is not None:
-        await emit(EventType.PRE_TOOL_USE, tool_payload(ctx, call))
+        await emit(EventType.PRE_TOOL_USE, tool_payload(ctx, call, event=EventType.PRE_TOOL_USE))
     decision = await _ask_tool_call(controls, ctx, call)
     await _emit_tool_decision(emit, ctx, call, decision)
     return decision
@@ -216,12 +216,24 @@ async def _emit_tool_decision(
             case Deny(result):
                 await emit(
                     EventType.PERMISSION_DENIED,
-                    tool_payload(ctx, call, reason=result, source="pre_tool_use"),
+                    tool_payload(
+                        ctx,
+                        call,
+                        event=EventType.PERMISSION_DENIED,
+                        reason=result,
+                        source="pre_tool_use",
+                    ),
                 )
             case Suspend(request):
                 await emit(
                     EventType.PERMISSION_REQUEST,
-                    tool_payload(ctx, call, request=request, source="pre_tool_use"),
+                    tool_payload(
+                        ctx,
+                        call,
+                        event=EventType.PERMISSION_REQUEST,
+                        request=request,
+                        source="pre_tool_use",
+                    ),
                 )
             case _:
                 pass
@@ -236,7 +248,7 @@ async def _collect_suspension(
     if result is None or result.get("type") != "suspend":
         return None
     if emit is not None:
-        await emit(EventType.PRE_TOOL_USE, tool_payload(ctx, call))
+        await emit(EventType.PRE_TOOL_USE, tool_payload(ctx, call, event=EventType.PRE_TOOL_USE))
     await _emit_tool_decision(emit, ctx, call, decision)
     return result
 
@@ -254,10 +266,8 @@ async def record_resolved(
     if emit is None:
         return
     failed = result.get("type") == "error"
-    await emit(
-        EventType.POST_TOOL_USE_FAILURE if failed else EventType.POST_TOOL_USE,
-        tool_payload(ctx, call, result=result),
-    )
+    outcome = EventType.POST_TOOL_USE_FAILURE if failed else EventType.POST_TOOL_USE
+    await emit(outcome, tool_payload(ctx, call, event=outcome, result=result))
 
 
 class Stepped:
@@ -423,9 +433,15 @@ def as_model_tools(available: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def tool_payload(ctx: Ctx, call: ToolCall, **extra: Any) -> dict[str, Any]:
-    """Build the common payload for tool lifecycle events."""
-    return {
+def tool_payload(ctx: Ctx, call: ToolCall, event: str = "", **extra: Any) -> dict[str, Any]:
+    """Build the common payload for tool lifecycle events.
+
+    When ``event`` names the event type, the payload carries a deterministic ``event_id``: the
+    same logical event keeps the same identity across recovery re-emission, so consumers can
+    deduplicate replays. A reissued permission request has a new pending id and therefore a new
+    identity.
+    """
+    payload = {
         "turn": ctx.turn,
         "call_id": call["id"],
         "name": call["name"],
@@ -433,6 +449,15 @@ def tool_payload(ctx: Ctx, call: ToolCall, **extra: Any) -> dict[str, Any]:
         **({"subject": ctx.subject} if ctx.subject else {}),
         **extra,
     }
+    if event:
+        identity = [str(event), str(ctx.turn), str(call["id"])]
+        if extra.get("source"):
+            identity.append(str(extra["source"]))
+        request = extra.get("request")
+        if isinstance(request, dict) and request.get("pending_id"):
+            identity.append(str(request["pending_id"]))
+        payload["event_id"] = ":".join(identity)
+    return payload
 
 
 async def _execute_batched(

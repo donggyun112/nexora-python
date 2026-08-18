@@ -618,6 +618,34 @@ async def test_repeated_final_answer_can_reenter_a_committed_resuming_transition
     assert outcome["content"] == "done"
 
 
+async def test_after_tool_call_crosses_its_durable_boundary_once_per_call() -> None:
+    """A replayed result must not re-run `after_tool_call`.
+
+    The hook may write to external stores; its `after:` marker is the durable boundary, so a
+    recovery replay of a done step skips a hook that already crossed it.
+    """
+    log = MemorySteps()
+    seen: list[str] = []
+
+    async def audit(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+        seen.append(str(call["id"]))
+
+    controls = ControlPlane(after_tool_call=audit)
+    calls = [a_call("c1", "read")]
+    async with Orchestrator("hook-once", log) as owner:
+        await owner.execute_round(Tools(names=["read"]), calls, lambda: False, controls=controls)
+    assert seen == ["c1"]
+
+    async with Orchestrator("hook-once", log) as owner:
+        await owner.recover_pending(
+            [AIMessage(content="", tool_calls=calls)],
+            Tools(names=["read"]),
+            controls=controls,
+        )
+
+    assert seen == ["c1"]  # the replay skipped the hook
+
+
 async def test_a_suspension_survives_the_process_and_the_run_continues() -> None:
     """The whole cycle. `on_suspend` writes to the same ledger the steps use — no second store."""
     log = MemorySteps()

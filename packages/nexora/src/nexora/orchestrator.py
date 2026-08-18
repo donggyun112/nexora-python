@@ -258,6 +258,21 @@ def require_pending_ids(
     return indexed
 
 
+class _DurableControls:
+    """Delegate every control point; make ``after_tool_call`` once-per-call durable."""
+
+    def __init__(self, controls: Controls, orchestrator: "Orchestrator") -> None:
+        self._controls = controls
+        self._orchestrator = orchestrator
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._controls, name)
+
+    async def after_tool_call(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+        """Run the post-effect hook once per call across replays."""
+        await self._orchestrator.after_tool_call_once(self._controls, ctx, call, result)
+
+
 class RecoveredTools(NamedTuple):
     """A persisted assistant tool round completed without replaying its model call."""
 
@@ -701,6 +716,7 @@ class Orchestrator:
         Calls are recorded by identifier and execute sequentially unless the complete batch is
         declared concurrency-safe.
         """
+        controls = self._durable_controls(controls)
         publisher = emit if emit is not None else self._emit
         # Before `record_pending`, so an unkeyable round leaves no durable trace of itself. The
         # engine checks this too; this is the durable boundary, and it is public.
@@ -774,6 +790,7 @@ class Orchestrator:
         if aborted():
             raise AgentAborted()
 
+        controls = self._durable_controls(controls)
         publisher = emit if emit is not None else self._emit
         context = ctx if ctx is not None else Ctx(turn=turn)
         record = await self._log.read(self.run_id, call["id"] or "")
@@ -785,7 +802,10 @@ class Orchestrator:
             resolved = Resolved(call, record.value, refused=False)
         else:
             if publisher is not None:
-                await publisher(EventType.PRE_TOOL_USE, tool_payload(context, call))
+                await publisher(
+                    EventType.PRE_TOOL_USE,
+                    tool_payload(context, call, event=EventType.PRE_TOOL_USE),
+                )
 
             resume = ResumeInput(
                 answer=answer,
@@ -806,14 +826,26 @@ class Orchestrator:
                     if publisher is not None:
                         await publisher(
                             EventType.PERMISSION_DENIED,
-                            tool_payload(context, call, reason=result, source="on_resume"),
+                            tool_payload(
+                                context,
+                                call,
+                                event=EventType.PERMISSION_DENIED,
+                                reason=result,
+                                source="on_resume",
+                            ),
                         )
                     resolved = Resolved(call, result, refused=True)
                 case Suspend(new_request):
                     if publisher is not None:
                         await publisher(
                             EventType.PERMISSION_REQUEST,
-                            tool_payload(context, call, request=new_request, source="on_resume"),
+                            tool_payload(
+                                context,
+                                call,
+                                event=EventType.PERMISSION_REQUEST,
+                                request=new_request,
+                                source="on_resume",
+                            ),
                         )
                     resolved = Resolved(call, new_request, refused=True)
                 case _:
@@ -888,6 +920,28 @@ class Orchestrator:
             )
         raise AgentSuspended(pending[0][0], pending[0][1], pending=pending)
 
+    def _durable_controls(self, controls: Controls | None) -> Controls | None:
+        """Wrap caller controls so the post-effect hook crosses its durable boundary once."""
+        if controls is None or isinstance(controls, _DurableControls):
+            return controls
+        return cast(Controls, _DurableControls(controls, self))
+
+    async def after_tool_call_once(
+        self, controls: Controls, ctx: Ctx, call: ToolCall, result: dict[str, Any]
+    ) -> None:
+        """Run ``after_tool_call`` exactly once per call across replays.
+
+        The ``after:{call_id}`` marker is the hook's durable boundary: a replayed result skips
+        a hook that already crossed it. A crash between the hook and its marker re-runs the
+        hook once — at-least-once, bounded to that window instead of every replay.
+        """
+        key = _after_key(call["id"] or "")
+        record = await self._log.read(self.run_id, key)
+        if record.status == "done":
+            return
+        await controls.after_tool_call(ctx, call, result)
+        await self._log.write_control(self.run_id, key, {"hooked": True}, self._token)
+
     async def record_pending(self, calls: list[ToolCall], turn: int) -> None:
         """Commit call order before the first policy check or external effect."""
         # Do not copy the transcript here: the agent's history store already owns it, and copying
@@ -944,6 +998,7 @@ class Orchestrator:
         Raises:
             Indeterminate: If a running step exists and retry is disabled.
         """
+        controls = self._durable_controls(controls)
         recovery_turn, pending = await self._pending_recovery_calls(history, turn)
         if not pending:
             return RecoveredTools(list(history), [], [], [])
@@ -1237,6 +1292,10 @@ def _signal_key(name: str) -> str:
 
 def _suspend_key(call_id: str) -> str:
     return f"suspend:{call_id}"
+
+
+def _after_key(call_id: str) -> str:
+    return f"after:{call_id}"
 
 
 def _active_suspension_key() -> str:

@@ -178,7 +178,9 @@ RecordMessages = Callable[[list[BaseMessage]], Awaitable[None]]
 ShouldStopAfterTurn = Callable[[int, str, list[dict[str, Any]]], Awaitable[bool]]
 """Asked after every model round with (turn, text, calls_made). True ends the run.
 
-This is also where an iteration cap lives — the loop does not impose one.
+This is also where an iteration cap lives — the loop does not impose one. A refused call carries
+``"refused": True`` in its ``calls_made`` entry, so "a denial ends the turn" is a policy the host
+writes here rather than one the runtime assumes.
 """
 
 Emit = Callable[[str, dict[str, Any]], Awaitable[Any]]

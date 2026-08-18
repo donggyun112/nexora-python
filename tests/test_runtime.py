@@ -493,6 +493,57 @@ async def test_conversation_history_is_independent_from_run_identity() -> None:
     assert second_run is not None and second_run["conversation_id"] == "conversation-1"
 
 
+async def test_a_denial_that_ended_a_turn_reaches_the_model_on_the_next_one() -> None:
+    """The turn stops without a second model round, and the denial rides the next request.
+
+    Ending the turn is only half of it. If the refusal were not recorded with its assistant turn,
+    the restored conversation would carry a tool call with no answer — the next request breaks,
+    and the effect a person declined is invisible to the model that would ask for it again.
+    """
+    steps, transcripts = MemorySteps(), MemoryTranscript()
+    runtime = AgentRuntime(store=steps, transcript=transcripts)
+
+    async def deny_rm(call: ToolCall) -> dict[str, Any] | None:
+        return {"type": "error", "message": "not allowed"} if call["name"] == "rm" else None
+
+    async def stop_on_refusal(turn: int, text: str, calls: list[Any]) -> bool:
+        return any(call.get("refused") for call in calls)
+
+    denied = scripted(says("", a_call("c1", "rm"), a_call("c2", "read")), says("never reached"))
+    outcome = await runtime.run(
+        "attempt-1",
+        denied,
+        Tools(names=["rm", "read"]),
+        "remove it",
+        controls=ControlPlane(pre_tool_use=Permissions(gate(deny_rm))),
+        should_stop_after_turn=stop_on_refusal,
+        conversation_id="conversation-denied",
+    )
+
+    assert outcome["stop_reason"] == "policy"
+    assert len(denied.seen) == 1  # the denial did not buy another round in this turn
+
+    model = scripted(says("reading only, then"))
+    await runtime.run(
+        "attempt-2",
+        model,
+        Tools(names=["rm", "read"]),
+        "just read then",
+        conversation_id="conversation-denied",
+    )
+
+    assert [
+        (type(message).__name__, getattr(message, "status", None), message.content)
+        for message in model.seen[0]
+    ] == [
+        ("HumanMessage", None, "remove it"),
+        ("AIMessage", None, ""),  # the turn that asked, so neither answer dangles
+        ("ToolMessage", "error", "[ERROR] not allowed"),
+        ("ToolMessage", "success", "ok"),  # the call allowed beside it kept its result
+        ("HumanMessage", None, "just read then"),
+    ]
+
+
 async def test_runtime_recovers_an_unanswered_transcript_round_automatically() -> None:
     """An unanswered stored tool call recovers without explicit history or model replay."""
 

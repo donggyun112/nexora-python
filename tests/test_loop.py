@@ -907,6 +907,39 @@ async def test_the_gate_can_deny_a_call_without_stopping_the_round() -> None:
     assert events[-1]["content"] == "recovered"
 
 
+async def test_a_denial_can_end_the_turn_instead_of_buying_another_model_round() -> None:
+    """A refused call is marked in `calls_made`, so the host — not the loop — decides to stop.
+
+    Without the mark the hook cannot tell a denial from a completed effect, and the loop spends a
+    model round on a decision a person already made.
+    """
+    llm = scripted(says("", a_call("c1", "rm"), a_call("c2", "read")), says("recovered"))
+    tools = Tools(names=["rm", "read"])
+
+    async def deny_rm(call: dict[str, Any]) -> dict[str, Any] | None:
+        return {"type": "error", "message": "not allowed"} if call["name"] == "rm" else None
+
+    async def stop_on_refusal(turn: int, content: str, calls: list[Any]) -> bool:
+        return any(call.get("refused") for call in calls)
+
+    events = await run(
+        llm,
+        tools,
+        pre_tool_use=deny_rm,
+        should_stop_after_turn=stop_on_refusal,
+        durable=False,
+    )
+
+    assert tools.ran == ["read"]  # the round still completed; the allowed call ran
+    assert len(llm.seen) == 1  # and the denial did not buy a second one
+    done = next(event for event in events if event["type"] == "done")
+    assert done["tool_calls"] == [
+        {"name": "rm", "input": {}, "refused": True},
+        {"name": "read", "input": {}},
+    ]
+    assert [e["stop_reason"] for e in events if e["type"] == "done"] == ["policy"]
+
+
 async def test_the_gate_suspends_instead_of_blocking_on_an_answer() -> None:
     """One approval path: a policy `ask` checkpoints the turn exactly like a handraise."""
     llm = scripted(says("", a_call("c1", "deploy"), a_call("c2", "read")))

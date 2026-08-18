@@ -232,8 +232,11 @@ async def react_loop(
             reply, turn_text, requested_tool_calls, response_metadata=turn_response_metadata
         )
         messages.append(assistant)
+        round_records: dict[str, dict[str, Any]] = {}
         for call in requested_tool_calls:
-            calls_made.append({"name": call["name"], "input": call["args"]})
+            record: dict[str, Any] = {"name": call["name"], "input": call["args"]}
+            calls_made.append(record)
+            round_records[call["id"] or ""] = record
             yield {
                 "type": "tool_call",
                 "id": call["id"],
@@ -265,6 +268,11 @@ async def react_loop(
             event = tool_result(call, result)
             event["executed"] = not refused
             yield event
+            # A refused call is one the model made, not work the runtime did. Marking it is what
+            # lets `should_stop_after_turn` end the turn on a denial instead of spending another
+            # model round on it, and stops a budget hook from billing a denial as an effect.
+            if refused:
+                round_records[call["id"] or ""]["refused"] = True
 
         round_ = absorb_round(tools, resolved)
         carried_inputs += _round_inputs(round_)

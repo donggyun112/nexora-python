@@ -131,11 +131,19 @@ async def execute_calls(
         return batch_resolved
 
     resolved: list[Resolved] = []
+    collecting = False
     for call in calls:
         if aborted():
             break
         decision = await decide_tool_call(controls, emit, here, call)
         stood_in = _stands_in_for(decision)
+        if collecting:
+            # Past the first suspension nothing executes, but the gate keeps running so every
+            # approval the round needs surfaces in one park. Only suspensions are kept: an
+            # allowed or denied call behind the gate is pruned and the model asks again.
+            if stood_in is not None and stood_in.get("type") == "suspend":
+                resolved.append(Resolved(call, stood_in, refused=True))
+            continue
         result = (
             stood_in
             if stood_in is not None
@@ -147,7 +155,7 @@ async def execute_calls(
             await record_resolved(controls, emit, here, call, result)
         resolved.append(Resolved(call, result, refused=stood_in is not None))
         if result.get("type") == "suspend":
-            break
+            collecting = True
     if any(item.result.get("type") == "suspend" for item in resolved):
         raise RoundSuspended(resolved)
     return resolved
@@ -302,7 +310,7 @@ class Absorbed(NamedTuple):
     Attributes:
         answers: One tool answer per completed call, in call order.
         completed: Rendered results carried into a suspension record.
-        suspended: The call that parked the round, if any.
+        suspended: Every call that parked the round, in model order; empty when none did.
         ended_by_tool: Whether a terminating call succeeded.
         images: ``(call id, message)`` pairs re-entering images the answers could only name.
         context: Extra model context emitted after a tool answer, such as an invoked skill body.
@@ -310,7 +318,7 @@ class Absorbed(NamedTuple):
 
     answers: list[BaseMessage]
     completed: list[dict[str, Any]]
-    suspended: tuple[ToolCall, dict[str, Any]] | None
+    suspended: list[tuple[ToolCall, dict[str, Any]]]
     ended_by_tool: bool
     images: list[tuple[str, BaseMessage]]
     context: list[tuple[str, BaseMessage]]
@@ -320,14 +328,14 @@ def absorb_round(tools: Tools, resolved: list[Resolved]) -> Absorbed:
     """Normalize a complete tool round without dropping results before suspension."""
     answers: list[BaseMessage] = []
     completed: list[dict[str, Any]] = []
-    suspended: tuple[ToolCall, dict[str, Any]] | None = None
+    suspended: list[tuple[ToolCall, dict[str, Any]]] = []
     ended_by_tool = False
     images: list[tuple[str, BaseMessage]] = []
     context: list[tuple[str, BaseMessage]] = []
 
     for call, result, _refused in resolved:
         if result.get("type") == "suspend":
-            suspended = suspended or (call, result)
+            suspended.append((call, result))
             continue
         failed = result.get("type") == "error"
         rendered = render_for_model(result)
@@ -392,13 +400,18 @@ async def _execute_batched(
 ) -> list[Resolved]:
     """Gate a batch before dispatch and record results in call order."""
     decided: list[tuple[ToolCall, dict[str, Any] | None]] = []
+    collecting = False
     for call in calls:
         if aborted():
             break
         decision = _stands_in_for(await decide_tool_call(controls, emit, ctx, call))
+        if collecting and (decision is None or decision.get("type") != "suspend"):
+            # Same collect rule as the sequential path: past the first suspension, keep gating
+            # to gather every approval request, prune everything else for the model to re-ask.
+            continue
         decided.append((call, decision))
         if decision is not None and decision.get("type") == "suspend":
-            break
+            collecting = True
 
     allowed = [call for call, decision in decided if decision is None]
     batch = [{"call_id": c["id"], "name": c["name"], "input": c["args"]} for c in allowed]

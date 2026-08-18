@@ -5,9 +5,9 @@ tool-round recovery. The planner remains responsible for the model/tool control 
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple, NoReturn, cast
 from uuid import uuid4
 
 from langchain_core.messages import (
@@ -175,7 +175,9 @@ async def run_agent(
                 error_kind=event.get("error_kind", "unknown"),
             )
         if event["type"] == "suspended":
-            raise AgentSuspended(event["pending_id"], event["tool_call_id"])
+            raise AgentSuspended(
+                event["pending_id"], event["tool_call_id"], pending=event.get("pending")
+            )
         if event["type"] == "done":
             if event.get("stop_reason") == "aborted":
                 raise AgentAborted(event.get("content", ""))
@@ -208,11 +210,25 @@ class Suspended(ControlSignal):
 class AgentSuspended(Suspended):
     """Report an agent tool call suspended with a persisted continuation."""
 
-    def __init__(self, pending_id: str, tool_call_id: str) -> None:
-        """Initialize the suspension with external and tool-call identifiers."""
+    def __init__(
+        self,
+        pending_id: str,
+        tool_call_id: str,
+        pending: Iterable[tuple[str, str]] | None = None,
+    ) -> None:
+        """Initialize the suspension with external and tool-call identifiers.
+
+        ``pending`` lists every undecided ``(pending_id, tool_call_id)`` of the round in model
+        order; ``pending_id``/``tool_call_id`` are its first entry.
+        """
         super().__init__(pending_id)
         self.pending_id = pending_id
         self.tool_call_id = tool_call_id
+        self.pending = (
+            [(str(p), str(c)) for p, c in pending]
+            if pending is not None
+            else [(pending_id, tool_call_id)]
+        )
 
 
 class RecoveredTools(NamedTuple):
@@ -222,7 +238,7 @@ class RecoveredTools(NamedTuple):
     """The supplied history plus reconstructed `ToolMessage`s, ready for `react_loop`."""
     resolved: list[Resolved]
     completed: list[dict[str, Any]]
-    suspended: tuple[ToolCall, dict[str, Any]] | None
+    suspended: list[tuple[ToolCall, dict[str, Any]]]
 
 
 class Orchestrator:
@@ -331,41 +347,65 @@ class Orchestrator:
             }
         }
         # Every suspension is now a pre-effect permission wait. Finishing it as cancelled prevents
-        # a stale approval from executing it later with the same idempotency key.
-        effect = await self._log.read(self.run_id, call_id)
-        effects: tuple[EffectCompletion, ...]
-        if effect.status == "absent":
-            effects = (EffectCompletion(call_id, cancellation_result, "absent"),)
-        elif not (
-            effect.status == "done"
-            and isinstance(effect.value, dict)
-            and effect.value.get("code") == "cancelled"
-        ):
-            raise RuntimeError(f"cannot cancel effect {call_id!r}: ledger says {effect.status!r}")
-        else:
-            effects = ()
+        # a stale approval from executing it later with the same idempotency key — and a batch
+        # park has one such effect per parked call, so all of them close here.
+        parked_ids = [cid for _, cid in await self._parked_requests()] or [call_id]
+        completions: list[EffectCompletion] = []
+        for parked_id in parked_ids:
+            effect = await self._log.read(self.run_id, parked_id)
+            if effect.status == "absent":
+                completions.append(EffectCompletion(parked_id, cancellation_result, "absent"))
+            elif not (
+                effect.status == "done"
+                and isinstance(effect.value, dict)
+                and effect.value.get("code") == "cancelled"
+            ):
+                raise RuntimeError(
+                    f"cannot cancel effect {parked_id!r}: ledger says {effect.status!r}"
+                )
         return await self.commit_transition_inputs(
-            [*cancellations, replacement], controls, effects
+            [*cancellations, replacement], controls, tuple(completions)
         )
 
     async def continue_with_input(
         self,
         call_id: str,
         continuation: dict[str, Any],
-        item: PendingInput,
-    ) -> PendingInput:
-        """Atomically bind a suspension answer to the continuation it will resume."""
-        [normalized] = await self.commit_transition_inputs(
-            [item],
+        items: list[PendingInput],
+    ) -> list[PendingInput]:
+        """Atomically bind the suspension answers to the continuation they will resume."""
+        active = await self.active_continuation() or {}
+        return await self.commit_transition_inputs(
+            items,
             {
                 _active_suspension_key(): {
+                    # `call_ids`/`answers` survive into `resuming` so a crash mid-finalize can
+                    # re-derive which calls were decided and with what.
+                    **{k: v for k, v in active.items() if k in {"call_ids", "answers"}},
                     "state": "resuming",
                     "call_id": call_id,
                     "continuation": continuation,
                 }
             },
         )
-        return normalized
+
+    async def record_suspension_answer(self, call_id: str, answer: dict[str, Any]) -> None:
+        """Durably record one batch answer without executing anything.
+
+        A partial answer is input, not effect: the run stays waiting until every parked call
+        of the round is decided, and only then may any of them execute.
+        """
+        active = await self.active_continuation()
+        if active is None or active.get("state") != "waiting":
+            raise RuntimeError(f"no waiting suspension to answer for call {call_id!r}")
+        answers = dict(active.get("answers") or {})
+        answers[call_id] = answer
+        await self._log.write_control(
+            self.run_id,
+            _active_suspension_key(),
+            {**active, "answers": answers},
+            self._token,
+        )
 
     async def complete_continuation(self, call_id: str) -> None:
         """Clear only the switching/resuming continuation this successful attempt consumed."""
@@ -623,12 +663,17 @@ class Orchestrator:
         turn: int = 0,
         controls: Controls | None = None,
         ctx: Ctx | None = None,
+        park: bool = True,
     ) -> dict[str, Any]:
         """Revalidate and finish the effect that a permission gate parked before execution.
 
         This is deliberately not `execute_round`: the original approval-request gate has already
         run, and replaying it would ask the same question forever. `on_resume` receives the human
         answer and current policy window; only `Continue` crosses the durable effect boundary.
+
+        With ``park=False`` a fresh `on_resume` suspension is returned as a ``suspend`` result
+        instead of being persisted here — a batch caller re-parks the whole round itself so the
+        sibling answers survive.
         """
         if aborted():
             raise AgentAborted()
@@ -676,8 +721,9 @@ class Orchestrator:
         if not resolved.refused:
             await record_resolved(controls, publisher, context, call, resolved.result)
         items = [resolved]
-        await self._terminate_if_suspended(tools, items, publisher, turn, controls, context)
-        if self._on_agent_event is not None:
+        if park:
+            await self._terminate_if_suspended(tools, items, publisher, turn, controls, context)
+        if self._on_agent_event is not None and resolved.result.get("type") != "suspend":
             event = tool_result(call, resolved.result)
             event["executed"] = not resolved.refused
             await self._on_agent_event(event)
@@ -693,9 +739,9 @@ class Orchestrator:
         ctx: Ctx | None,
     ) -> None:
         round_ = absorb_round(tools, resolved)
-        if round_.suspended is None:
+        if not round_.suspended:
             return
-        call, request = round_.suspended
+        parked = round_.suspended
         context = ctx if ctx is not None else Ctx(turn=turn)
         messages = [
             *context.messages,
@@ -705,22 +751,23 @@ class Orchestrator:
         ]
         snapshot = suspend_history_snapshot(
             messages,
-            call["id"] or "",
+            [call["id"] or "" for call, _ in parked],
             [str(completed["id"]) for completed in round_.completed],
         )
-        suspended_result = next(item for item in resolved if item.call["id"] == call["id"])
-        if not suspended_result.refused:
+        parked_ids = {call["id"] for call, _ in parked}
+        if any(item.call["id"] in parked_ids and not item.refused for item in resolved):
             raise RuntimeError("only a pre_tool_use permission gate may suspend a tool request")
         if controls is not None:
-            await controls.on_suspend(context, call, request, snapshot, round_.completed)
+            for call, request in parked:
+                await controls.on_suspend(context, call, request, snapshot, round_.completed)
         await self.persist_suspension(
-            call,
-            request,
+            list(parked),
             snapshot,
             round_.completed,
             turn=turn,
             subject=context.subject,
         )
+        pending = [(str(request["pending_id"]), call["id"] or "") for call, request in parked]
         if self._on_agent_event is not None:
             for item in resolved:
                 event = tool_result(item.call, item.result)
@@ -729,11 +776,12 @@ class Orchestrator:
             await self._on_agent_event(
                 {
                     "type": "suspended",
-                    "pending_id": request["pending_id"],
-                    "tool_call_id": call["id"],
+                    "pending_id": pending[0][0],
+                    "tool_call_id": pending[0][1],
+                    "pending": [list(pair) for pair in pending],
                 }
             )
-        raise AgentSuspended(str(request["pending_id"]), call["id"] or "")
+        raise AgentSuspended(pending[0][0], pending[0][1], pending=pending)
 
     async def record_pending(self, calls: list[ToolCall], turn: int) -> None:
         """Commit call order before the first policy check or external effect."""
@@ -793,7 +841,13 @@ class Orchestrator:
         """
         recovery_turn, pending = await self._pending_recovery_calls(history, turn)
         if not pending:
-            return RecoveredTools(list(history), [], [], None)
+            return RecoveredTools(list(history), [], [], [])
+        parked = await self._parked_requests()
+        if parked and any((call["id"] or "") in {cid for _, cid in parked} for call in pending):
+            # These calls are not crash-absent — their approval requests already reached a
+            # person. Re-gating would mint new pending ids and orphan every answer in flight,
+            # so the run stays parked under its original identities.
+            raise AgentSuspended(parked[0][0], parked[0][1], pending=parked)
         records = await self._recovery_records(pending, retry_running)
 
         context = Ctx(turn=recovery_turn, messages=list(history))
@@ -838,6 +892,23 @@ class Orchestrator:
             absorbed.completed,
             absorbed.suspended,
         )
+
+    async def _parked_requests(self) -> list[tuple[str, str]]:
+        """The live suspension's ``(pending_id, call_id)`` pairs in model order, or ``[]``."""
+        active = await self.active_continuation()
+        if active is None or active.get("state") not in {"waiting", "resuming"}:
+            return []
+        payload = active.get("continuation")
+        if not isinstance(payload, dict):
+            return []
+        entries = payload.get("calls") or [
+            {"call": payload.get("call"), "request": payload.get("request")}
+        ]
+        return [
+            (str(entry["request"].get("pending_id")), str(entry["call"].get("id") or ""))
+            for entry in entries
+            if isinstance(entry.get("call"), dict) and isinstance(entry.get("request"), dict)
+        ]
 
     async def _pending_recovery_calls(
         self,
@@ -944,41 +1015,88 @@ class Orchestrator:
 
     async def persist_suspension(
         self,
-        call: ToolCall,
-        request: dict[str, Any],
+        parked: list[tuple[ToolCall, dict[str, Any]]],
         snapshot: list[BaseMessage],
         completed: list[dict[str, Any]],
         *,
         turn: int,
         subject: str = "",
+        answers: dict[str, Any] | None = None,
+        announce: list[tuple[ToolCall, dict[str, Any]]] | None = None,
     ) -> None:
-        """Persist a tool-round continuation before terminating the attempt."""
-        call_id = call["id"] or ""
+        """Persist a tool-round continuation before terminating the attempt.
+
+        Every parked call of the round commits in one transition: a crash between per-call
+        writes would leave some approval requests durable and others silently lost. A re-park
+        carries the answers already decided and announces only the reissued requests.
+        """
+        first_call, first_request = parked[0]
         continuation = encode_continuation(
-            call,
-            request,
+            first_call,
+            first_request,
             snapshot,
             completed,
             self._rules_version,
             turn=turn,
             subject=subject,
+            parked=parked,
         )
+        controls: dict[str, Any] = {
+            _suspend_key(call["id"] or ""): continuation for call, _ in parked
+        }
+        controls[_active_suspension_key()] = {
+            "state": "waiting",
+            "call_id": first_call["id"] or "",
+            "continuation": continuation,
+            "call_ids": [call["id"] or "" for call, _ in parked],
+            "answers": dict(answers or {}),
+        }
         await self._log.commit_transition(
             self.run_id,
-            ExecutionTransition(
-                controls={
-                    _suspend_key(call_id): continuation,
-                    _active_suspension_key(): {
-                        "state": "waiting",
-                        "call_id": call_id,
-                        "continuation": continuation,
-                    },
-                },
-            ),
+            ExecutionTransition(controls=controls),
             self._token,
         )
         if self._on_suspend is not None:
-            await self._on_suspend(call, request, snapshot, completed)
+            for call, request in announce if announce is not None else parked:
+                await self._on_suspend(call, request, snapshot, completed)
+
+    async def repark_suspension(
+        self,
+        parked: list[tuple[ToolCall, dict[str, Any]]],
+        snapshot: list[BaseMessage],
+        completed: list[dict[str, Any]],
+        *,
+        turn: int,
+        subject: str,
+        answers: dict[str, Any],
+        reissued: tuple[ToolCall, dict[str, Any]],
+    ) -> NoReturn:
+        """Park the round again after a resume-time gate suspended one call anew.
+
+        The batch keeps every answer already decided; only the reissued call waits for a new
+        one, and only it is announced — the others were already asked and answered.
+        """
+        await self.persist_suspension(
+            parked,
+            snapshot,
+            completed,
+            turn=turn,
+            subject=subject,
+            answers=answers,
+            announce=[reissued],
+        )
+        call, request = reissued
+        pending = [(str(request["pending_id"]), call["id"] or "")]
+        if self._on_agent_event is not None:
+            await self._on_agent_event(
+                {
+                    "type": "suspended",
+                    "pending_id": pending[0][0],
+                    "tool_call_id": pending[0][1],
+                    "pending": [list(pair) for pair in pending],
+                }
+            )
+        raise AgentSuspended(pending[0][0], pending[0][1], pending=pending)
 
     async def compact_suspension(
         self, call_id: str, *, conversation_id: str, leaf_uuid: str | None

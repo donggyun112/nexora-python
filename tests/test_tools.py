@@ -119,7 +119,7 @@ def _assistant(*call_ids: str) -> AIMessage:
 def test_the_snapshot_keeps_the_suspended_call_and_the_completed_ones() -> None:
     messages: list[BaseMessage] = [HumanMessage("go"), _assistant("c1", "c2", "c3")]
 
-    snapshot = suspend_history_snapshot(messages, "c2", ["c1"])
+    snapshot = suspend_history_snapshot(messages, ["c2"], ["c1"])
 
     kept = snapshot[1]
     assert isinstance(kept, AIMessage)
@@ -130,7 +130,7 @@ def test_the_snapshot_does_not_mutate_the_live_history() -> None:
     original = _assistant("c1", "c2")
     messages: list[BaseMessage] = [original]
 
-    suspend_history_snapshot(messages, "c1", [])
+    suspend_history_snapshot(messages, ["c1"], [])
 
     assert [c["id"] for c in original.tool_calls] == ["c1", "c2"]
 
@@ -139,7 +139,7 @@ def test_earlier_turns_are_left_alone() -> None:
     """Only the message that issued the suspended call is pruned."""
     messages: list[BaseMessage] = [_assistant("old1", "old2"), _assistant("c1", "c2")]
 
-    snapshot = suspend_history_snapshot(messages, "c1", [])
+    snapshot = suspend_history_snapshot(messages, ["c1"], [])
 
     earlier = snapshot[0]
     assert isinstance(earlier, AIMessage)

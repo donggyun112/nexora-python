@@ -105,24 +105,24 @@ def decode_pending_input(payload: dict[str, Any]) -> PendingInput:
 
 def suspend_history_snapshot(
     messages: list[BaseMessage],
-    suspended_call_id: str,
+    suspended_call_ids: list[str],
     completed_call_ids: list[str],
 ) -> list[BaseMessage]:
     """Build model history for a suspended tool round.
 
-    Unexecuted calls are removed from the suspending assistant message. The suspended call and
+    Unexecuted calls are removed from the suspending assistant message. The suspended calls and
     already-completed calls remain so each can receive a matching tool result.
 
     Args:
         messages: Model history at suspension time.
-        suspended_call_id: Tool call awaiting an external answer.
+        suspended_call_ids: Tool calls awaiting an external answer, in model order.
         completed_call_ids: Calls from the same round that already completed.
 
     Returns:
         A detached history snapshot suitable for resumption.
     """
-    retained = {suspended_call_id, *completed_call_ids}
-    suspending = _index_of_message_calling(messages, suspended_call_id)
+    retained = {*suspended_call_ids, *completed_call_ids}
+    suspending = _index_of_message_calling(messages, next(iter(suspended_call_ids), ""))
     if suspending < 0:
         return list(messages)
 
@@ -141,13 +141,15 @@ class Suspension(NamedTuple):
     """Persisted continuation for a run awaiting an external decision.
 
     Attributes:
-        call: Suspended tool call.
-        request: Complete external approval request.
+        call: First suspended tool call, in model order.
+        request: Its complete external approval request.
         messages: Model history snapshot.
         completed: Results completed before suspension.
         rules_version: Effective policy identity at suspension time.
         turn: Original planner turn number.
         subject: Audit subject associated with the run.
+        parked: Every suspended ``(call, request)`` pair of the round, in model order.
+            ``call``/``request`` above are its first entry.
     """
 
     call: ToolCall
@@ -157,6 +159,7 @@ class Suspension(NamedTuple):
     rules_version: str
     turn: int
     subject: str = ""
+    parked: tuple[tuple[ToolCall, dict[str, Any]], ...] = ()
 
 
 class TranscriptCursor(NamedTuple):
@@ -175,13 +178,16 @@ def encode_continuation(
     *,
     turn: int = 0,
     subject: str = "",
+    parked: list[tuple[ToolCall, dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Encode a suspension as an opaque ledger payload.
 
     This legacy/self-contained form remains available to orchestrator-only callers. AgentRuntime
     replaces the reconstructible fields with a transcript cursor after the transcript is durable.
+    ``parked`` carries every suspended call of the round; ``call``/``request`` must be its first
+    entry, which is also what a single-call round encodes without it.
     """
-    return {
+    payload = {
         "origin": "pre_tool_use",
         "call": call,
         "request": request,
@@ -191,6 +197,9 @@ def encode_continuation(
         "turn": turn,
         "subject": subject,
     }
+    if parked is not None and len(parked) > 1:
+        payload["calls"] = [{"call": c, "request": r} for c, r in parked]
+    return payload
 
 
 def decode_continuation(payload: dict[str, Any] | None) -> Suspension | None:
@@ -259,14 +268,20 @@ def _decode_continuation(
             "cannot resume an ambiguous or tool-originated legacy suspension; "
             "only pre_tool_use permission continuations are executable"
         )
+    first = cast(ToolCall, payload["call"])
+    parked = tuple(
+        (cast(ToolCall, entry["call"]), entry["request"])
+        for entry in payload.get("calls", [])
+    ) or ((first, payload["request"]),)
     return Suspension(
-        call=cast(ToolCall, payload["call"]),
+        call=first,
         request=payload["request"],
         messages=messages,
         completed=payload.get("completed", []),
         rules_version=payload.get("rules_version", ""),
         turn=int(payload.get("turn", 0)),
         subject=str(payload.get("subject", "")),
+        parked=parked,
     )
 
 

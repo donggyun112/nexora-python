@@ -5,7 +5,7 @@ their ordering and failure behavior are part of the execution contract. Stages m
 during recovery and therefore must be idempotent.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
@@ -44,17 +44,10 @@ class Ctx:
     text: str = ""
     """Assistant text accumulated in the current round."""
     subject: str = ""
-    """Who the run acts for, as the host names them. **Never interpreted here.**
+    """Who the run acts for, as the host names them, carried verbatim and never interpreted.
 
-    A user id, a service account, a tenant-scoped pair, whatever an external directory calls a
-    principal — this runtime cannot know which, so it carries the string and reads nothing out of
-    it. Empty means the host did not say, which is the honest default: a framework that invented a
-    subject would be putting a name it made up into an audit record.
-
-    It reaches the record two ways, and both matter. A stage may decide with it — a gate that asks
-    a directory per call needs to know who is asking. And it is stamped onto every tool event and
-    onto a suspension, so "who was this denied for" and "whose authority was this parked under" have
-    answers that do not depend on correlating by run id afterwards.
+    Stages may decide with it, and it is stamped onto tool events and suspensions. Empty means the
+    host did not say.
     """
 
 
@@ -90,7 +83,7 @@ class ResumeInput:
 class Proceed(NamedTuple):
     """Continue, optionally injecting steering messages first."""
 
-    steers: list[BaseMessage] = []  # noqa: RUF012 — NamedTuple default, not shared mutable state
+    steers: Sequence[BaseMessage] = ()
 
 
 class Halt(NamedTuple):
@@ -99,8 +92,17 @@ class Halt(NamedTuple):
     reason: StopReason
 
 
-ModelAction = Proceed | Halt
 TurnDecision = Proceed | Halt
+
+OnInputs = Callable[[Ctx, list[PendingInput]], Awaitable[list[PendingInput] | Halt]]
+BeforeModel = Callable[[Ctx], Awaitable[TurnDecision]]
+PreToolUse = Callable[[Ctx, ToolCall], Awaitable[ToolDecision]]
+AfterToolCall = Callable[[Ctx, ToolCall, dict[str, Any]], Awaitable[None]]
+BeforeFinish = Callable[[Ctx, StopReason], Awaitable[TurnDecision]]
+OnResume = Callable[[Ctx, ToolCall, ResumeInput], Awaitable[ToolDecision]]
+OnSuspend = Callable[
+    [Ctx, ToolCall, dict[str, Any], list[BaseMessage], list[dict[str, Any]]], Awaitable[None]
+]
 
 
 @runtime_checkable
@@ -111,7 +113,7 @@ class Controls(Protocol):
         """Rewrite, drop, or halt inputs before they enter model context."""
         ...
 
-    async def before_model(self, ctx: Ctx) -> ModelAction:
+    async def before_model(self, ctx: Ctx) -> TurnDecision:
         """Return steering messages or halt before a model call."""
         ...
 
@@ -174,10 +176,7 @@ def writer(
 class Ingress:
     """Chain input screens so each sees the previous screen's output."""
 
-    def __init__(
-        self,
-        *screens: Callable[[Ctx, list[PendingInput]], Awaitable[list[PendingInput] | Halt]],
-    ) -> None:
+    def __init__(self, *screens: OnInputs) -> None:
         """Initialize the ordered input screens."""
         self._screens = screens
 
@@ -195,7 +194,7 @@ class Ingress:
 class Permissions:
     """Compose tool gates so denial wins and allowance does not short-circuit."""
 
-    def __init__(self, *stages: Callable[[Ctx, ToolCall], Awaitable[ToolDecision]]) -> None:
+    def __init__(self, *stages: PreToolUse) -> None:
         """Initialize the ordered permission stages."""
         self._stages = stages
 
@@ -216,9 +215,7 @@ class Permissions:
 class Journal:
     """Run result writers in order and propagate the first failure."""
 
-    def __init__(
-        self, *writers: Callable[[Ctx, ToolCall, dict[str, Any]], Awaitable[None]]
-    ) -> None:
+    def __init__(self, *writers: AfterToolCall) -> None:
         """Initialize the ordered result writers."""
         self._writers = writers
 
@@ -231,9 +228,7 @@ class Journal:
 class FinishPolicy:
     """Compose completion verifiers and accumulate steering from vetoes."""
 
-    def __init__(
-        self, *gates: Callable[[Ctx, StopReason], Awaitable[TurnDecision]]
-    ) -> None:
+    def __init__(self, *gates: BeforeFinish) -> None:
         """Initialize the ordered completion verifiers."""
         self._gates = gates
 
@@ -252,11 +247,11 @@ class FinishPolicy:
 class Steering:
     """Accumulate pre-model steering in order unless a source halts."""
 
-    def __init__(self, *sources: Callable[[Ctx], Awaitable[ModelAction]]) -> None:
+    def __init__(self, *sources: BeforeModel) -> None:
         """Initialize the ordered steering sources."""
         self._sources = sources
 
-    async def __call__(self, ctx: Ctx) -> ModelAction:
+    async def __call__(self, ctx: Ctx) -> TurnDecision:
         """Collect steering messages or return the first halt."""
         steers: list[BaseMessage] = []
         for source in self._sources:
@@ -271,13 +266,7 @@ class Steering:
 class Suspending:
     """Run all suspension persisters before suspension is announced."""
 
-    def __init__(
-        self,
-        *persisters: Callable[
-            [Ctx, ToolCall, dict[str, Any], list[BaseMessage], list[dict[str, Any]]],
-            Awaitable[None],
-        ],
-    ) -> None:
+    def __init__(self, *persisters: OnSuspend) -> None:
         """Initialize the ordered continuation persisters."""
         self._persisters = persisters
 
@@ -300,13 +289,13 @@ class ControlPlane:
     def __init__(
         self,
         *,
-        on_inputs: Any = None,
-        before_model: Any = None,
-        pre_tool_use: Any = None,
-        after_tool_call: Any = None,
-        before_finish: Any = None,
-        on_resume: Any = None,
-        on_suspend: Any = None,
+        on_inputs: OnInputs | None = None,
+        before_model: BeforeModel | None = None,
+        pre_tool_use: PreToolUse | None = None,
+        after_tool_call: AfterToolCall | None = None,
+        before_finish: BeforeFinish | None = None,
+        on_resume: OnResume | None = None,
+        on_suspend: OnSuspend | None = None,
     ) -> None:
         """Initialize the configured control-point implementations."""
         self._on_inputs = on_inputs
@@ -321,22 +310,19 @@ class ControlPlane:
         """Apply input admission or return inputs unchanged."""
         if self._on_inputs is None:
             return inputs
-        admitted: list[PendingInput] | Halt = await self._on_inputs(ctx, inputs)
-        return admitted
+        return await self._on_inputs(ctx, inputs)
 
-    async def before_model(self, ctx: Ctx) -> ModelAction:
+    async def before_model(self, ctx: Ctx) -> TurnDecision:
         """Apply pre-model controls or proceed without steering."""
         if self._before_model is None:
             return Proceed()
-        action: ModelAction = await self._before_model(ctx)
-        return action
+        return await self._before_model(ctx)
 
     async def pre_tool_use(self, ctx: Ctx, call: ToolCall) -> ToolDecision:
         """Apply tool permission controls or allow the call."""
         if self._pre_tool_use is None:
             return Continue()
-        decision: ToolDecision = await self._pre_tool_use(ctx, call)
-        return decision
+        return await self._pre_tool_use(ctx, call)
 
     async def after_tool_call(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         """Apply configured result writers and validators."""
@@ -347,8 +333,7 @@ class ControlPlane:
         """Apply completion controls or preserve the stop reason."""
         if self._before_finish is None:
             return Halt(reason)
-        decision: TurnDecision = await self._before_finish(ctx, reason)
-        return decision
+        return await self._before_finish(ctx, reason)
 
     async def on_resume(self, ctx: Ctx, call: ToolCall, resume: ResumeInput) -> ToolDecision:
         """Apply the human answer and current-policy revalidation."""
@@ -356,8 +341,7 @@ class ControlPlane:
             return Deny(resume.answer)
         if self._on_resume is None:
             return Continue()
-        decision: ToolDecision = await self._on_resume(ctx, call, resume)
-        return decision
+        return await self._on_resume(ctx, call, resume)
 
     async def on_suspend(
         self,

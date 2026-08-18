@@ -283,6 +283,37 @@ async def test_a_denied_answer_in_a_batch_refuses_only_that_call() -> None:
     assert by_id["c2"].status == "success"
 
 
+async def test_compaction_keeps_the_batch_fields_and_compacts_every_parked_key() -> None:
+    """`compact_suspension` is a field-preserving rewrite, not a reset.
+
+    The active record must keep `call_ids`/`answers` (dropping answers loses a person's
+    decision), and every parked call's suspend key holds the same snapshot, so all of them
+    compact — leaving N-1 full snapshots behind defeats the compaction.
+    """
+    log = MemorySteps()
+    await _parked_batch(log, "run-compact")
+    with pytest.raises(AgentSuspended):
+        await AgentRuntime(store=log).resume(
+            "run-compact",
+            "approve-c2",
+            {"type": "text", "text": "approved"},
+            scripted(says("unused")),
+            Tools(names=["read", DEPLOY, "notify"]),
+        )
+
+    async with Orchestrator("run-compact", log) as o:
+        await o.compact_suspension("c2", conversation_id="run-compact", leaf_uuid=None)
+        active = await o.active_continuation()
+        assert active is not None
+        assert active["answers"] == {"c2": {"type": "text", "text": "approved"}}
+        assert active["call_ids"] == ["c2", "c3"]
+        for call_id in ("c2", "c3"):
+            payload = await o.suspension(call_id)
+            assert payload is not None
+            assert "messages" not in payload  # the snapshot became a cursor
+            assert payload["transcript"]["conversation_id"] == "run-compact"
+
+
 async def test_a_resume_time_suspension_reparks_the_batch_without_orphaning_answers() -> None:
     """A gate that suspends anew mid-finalize keeps the whole batch.
 

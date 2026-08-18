@@ -1115,18 +1115,15 @@ class Orchestrator:
             conversation_id=conversation_id,
             leaf_uuid=leaf_uuid,
         )
+        # A rewrite, not a reset: `call_ids`/`answers` carry over (dropping an answer loses a
+        # person's decision), and every parked call's key holds the same snapshot, so all of
+        # them compact together.
+        parked_ids = [cid for _, cid in await self._parked_requests()] or [call_id]
+        controls: dict[str, Any] = {_suspend_key(cid): continuation for cid in parked_ids}
+        controls[_active_suspension_key()] = {**active, "continuation": continuation}
         await self._log.commit_transition(
             self.run_id,
-            ExecutionTransition(
-                controls={
-                    _suspend_key(call_id): continuation,
-                    _active_suspension_key(): {
-                        "state": "waiting",
-                        "call_id": call_id,
-                        "continuation": continuation,
-                    },
-                },
-            ),
+            ExecutionTransition(controls=controls),
             self._token,
         )
 

@@ -20,9 +20,8 @@ from datetime import date
 from typing import Any
 
 from _scripted import Files, Scripted, calling, says, scripted
-from nexora import react_loop
+from nexora import MemorySteps, react_loop
 from nexora.orchestrator import Orchestrator, Suspended, run_agent
-from nexora_store import MemorySteps
 
 SENT: list[str] = []
 """Every external effect this workflow performed. Nothing here may appear twice."""

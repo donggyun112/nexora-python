@@ -29,6 +29,8 @@ __all__ = [
     "Suspending",
     "ToolDecision",
     "TurnDecision",
+    "gate",
+    "writer",
 ]
 
 

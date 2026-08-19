@@ -8,8 +8,6 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from nexora import (
     DeferredTools,
     DirectorySkillSource,
-    Skill,
-    SkillMetadata,
     SkillRegistry,
     SkillTools,
     SystemPrompt,
@@ -17,6 +15,7 @@ from nexora import (
     react_loop,
     volatile_prompt_section,
 )
+from nexora.skills import Skill, SkillMetadata
 
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 

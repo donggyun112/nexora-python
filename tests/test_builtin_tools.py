@@ -11,12 +11,11 @@ from nexora import (
     BuiltinTools,
     ExecToolOptions,
     HostWorkspaceProvider,
-    ToolContext,
-    WebFetchResponse,
-    WebFetchToolOptions,
     builtin_tools,
 )
+from nexora.builtins import WebFetchResponse, WebFetchToolOptions
 from nexora.builtins._types import BuiltinToolState
+from nexora.workspace import ToolContext
 
 from .test_loop import a_call, says, scripted
 

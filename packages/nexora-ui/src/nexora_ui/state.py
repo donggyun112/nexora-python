@@ -4,10 +4,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from nexora import BackgroundTasks
+from nexora import MemorySteps
+from nexora.background import BackgroundTasks
 from nexora.contracts import BaseMessage
 from nexora.controls import Controls
-from nexora.orchestrator import MemorySteps
 from nexora_store import MemoryTranscript
 
 from .tools import DemoTools
@@ -47,9 +47,9 @@ class FaultInjectingMemorySteps(MemorySteps):
         """Disable fault injection for a run."""
         self._crash_after_step.discard(run_id)
 
-    async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+    async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         """Commit a result and raise the armed simulated crash."""
-        await super().finish(run_id, key, value, token)
+        await super().finish_effect(run_id, key, value, token)
         if run_id in self._crash_after_step and not key.startswith(
             ("agent:", "signal:", "suspend:")
         ):

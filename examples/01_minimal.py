@@ -2,15 +2,15 @@
 
     uv run python examples/01_minimal.py
 
-Every tool call crosses the durable boundary even here. `MemorySteps` is a `StepLog` that dies
-with the process — enough to see the shape before paying for a database.
+This is the default `AgentRuntime`: no ledger. The tool still runs once because the process
+lived. Crash recovery and permission parking start at `examples/03_recovery.py` and
+`examples/02_approval.py`.
 """
 
 import asyncio
 
 from _scripted import Files, calling, says, scripted
 from nexora import AgentRuntime
-from nexora.orchestrator import MemorySteps
 
 
 async def main() -> None:
@@ -19,7 +19,7 @@ async def main() -> None:
         says("The file mentions a social security number."),
     )
     files = Files()
-    runtime = AgentRuntime(store=MemorySteps())
+    runtime = AgentRuntime()
 
     outcome = await runtime.run("run-1", model, files, "what is in notes.md?")
 

@@ -31,6 +31,14 @@ dependencies = [
 postgres = ["nexora-store-pg"]
 permissions = ["nexora-permissions"]
 ui = ["nexora-ui"]
+# Chat models stay LangChain's. These extras only install the provider adapter;
+# `from langchain_openai import ChatOpenAI` is still how a caller constructs one.
+openai = ["langchain-openai>=1,<2"]
+anthropic = ["langchain-anthropic>=1,<2"]
+google = ["langchain-google-genai>=4,<5"]
+xai = ["langchain-xai>=1,<2"]
+# OpenRouter speaks the OpenAI wire. Same adapter, different base URL.
+openrouter = ["langchain-openai>=1,<2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nexora"]

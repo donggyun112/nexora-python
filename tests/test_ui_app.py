@@ -68,7 +68,7 @@ async def test_the_ledger_reports_a_committed_step_and_an_unfinished_one() -> No
     """The ledger panel distinguishes committed and unfinished steps."""
     log = FaultInjectingMemorySteps()
     await log.start("r", "committed")
-    await log.finish("r", "committed", {"type": "text", "text": "sent"})
+    await log.finish_effect("r", "committed", {"type": "text", "text": "sent"})
     await log.start("r", "interrupted")
 
     rows = {row["key"]: row for row in log.snapshot("r")}

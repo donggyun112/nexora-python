@@ -1,9 +1,9 @@
 from pathlib import Path
 
 import pytest
-from nexora import (
+from nexora import HostWorkspaceProvider
+from nexora.workspace import (
     ContinuousWorkspaceProvider,
-    HostWorkspaceProvider,
     MemoryWorkspaceStateStore,
     SandboxCommand,
     SandboxSessionState,

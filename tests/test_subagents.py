@@ -12,13 +12,13 @@ from nexora import (
     AgentRuntime,
     Answering,
     Authority,
-    BackgroundResult,
     FactoryAgent,
     HttpAgent,
     RunnerAgent,
     Subagents,
     react_loop,
 )
+from nexora.background import BackgroundResult
 from nexora.subagents import Deliver, Reply
 from nexora_store import MemorySteps
 
@@ -705,7 +705,7 @@ async def test_a_retried_delegate_resumes_the_child_instead_of_repeating_its_eff
             return
         await steps.start(run_id, "write")
         executed.append(run_id)
-        await steps.finish(run_id, "write", {"wrote": "the report"})
+        await steps.finish_effect(run_id, "write", {"wrote": "the report"})
         raise RuntimeError("died between the effect and the answer")
 
     tools = Subagents(Tools(), [RunnerAgent("worker", "writes", run)], run_id="run-42")

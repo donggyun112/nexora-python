@@ -109,6 +109,37 @@ def test_no_distribution_imports_beyond_what_it_declares() -> None:
             )
 
 
+PROVIDER_EXTRAS = {
+    "openai": "langchain-openai",
+    "anthropic": "langchain-anthropic",
+    "google": "langchain-google-genai",
+    "xai": "langchain-xai",
+    "openrouter": "langchain-openai",
+}
+
+
+def test_provider_extras_install_adapters_the_core_does_not_import() -> None:
+    """A provider SDK in the base install would be a model Nexora refused to own."""
+    manifest = tomllib.loads((ROOT / "packages" / "nexora" / "pyproject.toml").read_text())
+    extras = manifest["project"]["optional-dependencies"]
+    for extra, package in PROVIDER_EXTRAS.items():
+        declared = extras[extra]
+        assert len(declared) == 1, extra
+        assert declared[0].startswith(f"{package}>") or declared[0].startswith(f"{package}=")
+
+    imported: set[str] = set()
+    package = ROOT / "packages" / "nexora" / "src" / "nexora"
+    for path in sorted(package.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+            elif isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+
+    forbidden = {name.replace("-", "_") for name in PROVIDER_EXTRAS.values()}
+    assert imported.isdisjoint(forbidden), imported & forbidden
+
+
 def test_every_declared_workspace_dependency_is_actually_imported() -> None:
     """Every declared workspace dependency is imported by its distribution."""
     for dist in distributions():

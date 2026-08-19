@@ -105,7 +105,7 @@ async def test_running_step_retries_with_the_same_idempotency_key_by_default() -
     tools = Tools()
     call = a_call("c1", "read")
     history = [HumanMessage("go"), AIMessage(content="", tool_calls=[call])]
-    await log.finish("run-4", "agent:pending-round", {"calls": [call], "turn": 0})
+    await log.write_control("run-4", "agent:pending-round", {"calls": [call], "turn": 0})
     await log.start("run-4", "c1")
 
     recovered = await Orchestrator("run-4", log).recover_pending(history, tools)

@@ -1,10 +1,9 @@
 # nexora
 
-Durable multi-agent runtime for Python. This is the core: the contracts every layer agrees on, the
-control points, tool execution, the durable orchestrator, the plain `async while` planner, and the
-`AgentRuntime` facade over them.
+Durable agent runtime for Python. This is the core: contracts, control points, tool
+execution, the orchestrator, the plain `async while` planner, and `AgentRuntime`.
 
-By default `AgentRuntime` drives the planner directly, without an orchestrator or step ledger:
+By default `AgentRuntime` drives the planner directly — no orchestrator, no ledger:
 
 ```python
 from nexora import Agent, AgentRuntime
@@ -13,48 +12,36 @@ agent = Agent("reviewer", "Reviews repositories", model, tools, system_prompt)
 outcome = await AgentRuntime().run("attempt-42", agent, "inspect this repository")
 ```
 
-This path cannot suspend or recover a crashed round; a repeated run may execute the same tool call
-again.
+This path cannot suspend or recover a crashed round. Attach a ledger when those
+guarantees are required:
 
 ```python
-from nexora import AgentRuntime
-from nexora_store import MemoryTranscript
+from nexora import AgentRuntime, MemorySteps
 
-runtime = AgentRuntime(store=steps, transcript=MemoryTranscript(), emit=events)
-outcome = await runtime.run(
-    "attempt-42", agent, "inspect this repository",
-    conversation_id="conversation-7",
-)
+runtime = AgentRuntime(store=MemorySteps())
+outcome = await runtime.run("attempt-42", agent, "inspect this repository")
 ```
 
-With `store=` (or an explicit `DurableRuntimeOrchestrator`), every tool effect crosses the durable
-boundary before it runs, keyed by the model's own `call_id`. A run that dies mid-round can then be
-reconstructed without replaying the model turn, and a permission gate can park it without holding a
-worker. Omit `transcript=` to keep transcript persistence caller-owned.
+Policy lives on `Controls` / `ControlPlane` (`on_inputs`, `before_model`, `pre_tool_use`,
+`after_tool_call`, `before_finish`, `on_resume`, `on_suspend`). `before_finish` can refuse
+an ending and send the loop around again.
 
-The core also exports ordered `FallbackChatModel` selection and the
-`WorkspaceProvider`/`WorkspaceSession` boundary. `HostWorkspaceProvider` is a usable path-confined
-local implementation and deliberately identifies itself as non-isolated; use a container or
-remote provider for untrusted execution and enforced network policy. `RemoteSandboxClient`
-implements the Nexora sandbox HTTP wire, while `ContinuousWorkspaceProvider` persists the latest
-session state by conversation. Passing either provider as `AgentRuntime(workspace_provider=...)`
-acquires it per attempt and injects it into `ContextualTools` automatically.
+`builtin_tools()` supplies `read`, `write`, `edit`, `grep`, `glob`, `Bash`, and `web_fetch`.
+`web_search` is not included. `Bash` stays disabled until `ExecToolOptions.allow_list` is
+set. File and process effects use the `WorkspaceProvider` injected by `AgentRuntime`.
 
-`builtin_tools()` supplies the TS core names (`read`, `write`, `edit`, `grep`, `glob`, `Bash`, and
-`web_fetch`) as a context-aware collection. `web_search` is intentionally not included. Command
-execution stays disabled until `ExecToolOptions.allow_list` is configured.
-
-Install what you need beside it:
+Install extras beside it:
 
 | | |
 |---|---|
-| `nexora` | the runtime, with an in-memory `StepLog` |
-| `nexora[postgres]` | a Postgres-backed ledger (`nexora_store_pg`) |
-| `nexora[permissions]` | a Claude-Code-shaped permission rule table (`nexora_permissions`) |
-| `nexora[ui]` | a local console for driving runs (`nexora_ui`) |
+| `nexora` | the runtime, with in-memory `MemorySteps` |
+| `nexora[openai]` | `langchain-openai` |
+| `nexora[anthropic]` | `langchain-anthropic` |
+| `nexora[google]` | `langchain-google-genai` |
+| `nexora[xai]` | `langchain-xai` |
+| `nexora[openrouter]` | OpenAI adapter for OpenRouter |
+| `nexora[postgres]` | Postgres ledger (`nexora_store_pg`) |
+| `nexora[permissions]` | permission rule table (`nexora_permissions`) |
+| `nexora[ui]` | local console (`nexora_ui`) |
 
-`nexora-store` — the ledger/transcript protocols and their in-memory implementations — is a
-separate distribution with no dependencies of its own, so implementing either store needs neither
-a message type nor this package.
-
-See the [repository README](../../README.md) for the architecture map and the runnable examples.
+See the [repository README](../../README.md) for examples.

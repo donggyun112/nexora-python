@@ -7,6 +7,16 @@ documentation corrections belong in the commit log, not here.
 
 ### Added
 
+- **Provider extras.** `nexora[openai]`, `nexora[anthropic]`, `nexora[google]`,
+  `nexora[xai]`, and `nexora[openrouter]` install the matching LangChain chat adapter.
+  The core still depends only on `langchain-core`. Construct the model from that
+  adapter (`from langchain_openai import ChatOpenAI`); Nexora does not re-export it.
+
+- **Control plane on the public package.** `from nexora import Controls, ControlPlane,
+  FinishPolicy, Suspend, gate, MemorySteps, ExecutionContext` is the supported surface.
+  Workspace internals (`ToolContext`, snapshot backends, sandbox HTTP types) stay on
+  `nexora.workspace` and `nexora.sandbox_remote`.
+
 - **Shared agent definitions.** `AgentDefinition` is the common identity contract implemented by
   `Agent`, `FactoryAgent`, `RunnerAgent`, and `HttpAgent`. The executable local `Agent` binds a
   LangChain model, `Tools`, and system prompt independently from run input and orchestration policy.

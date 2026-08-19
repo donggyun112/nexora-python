@@ -6,8 +6,9 @@ execution, the orchestrator, the plain `async while` planner, and `AgentRuntime`
 By default `AgentRuntime` drives the planner directly — no orchestrator, no ledger:
 
 ```python
-from nexora import Agent, AgentRuntime
+from nexora import Agent, AgentRuntime, ChatModel
 
+model = ChatModel(model="gpt-4.1")
 agent = Agent("reviewer", "Reviews repositories", model, tools, system_prompt)
 outcome = await AgentRuntime().run("attempt-42", agent, "inspect this repository")
 ```

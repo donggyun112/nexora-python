@@ -7,6 +7,11 @@ documentation corrections belong in the commit log, not here.
 
 ### Added
 
+- **`ChatModel`.** `nexora-llm` is a workspace distribution the core depends on. It wraps
+  the official `openai` SDK and streams LangChain chunks. OpenAI, OpenRouter, and xAI
+  share that wire; `openrouter()` / `xai()` are presets. Anthropic and Google native
+  APIs stay extras.
+
 - **Provider extras.** `nexora[openai]`, `nexora[anthropic]`, `nexora[google]`,
   `nexora[xai]`, and `nexora[openrouter]` install the matching LangChain chat adapter.
   The core still depends only on `langchain-core`. Construct the model from that

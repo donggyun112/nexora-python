@@ -9,6 +9,7 @@ def test_package_exposes_version() -> None:
 def test_package_exports_the_control_plane() -> None:
     """The decision types are the product. A missing name here is a missing public API."""
     names = (
+        "ChatModel",
         "Controls",
         "ControlPlane",
         "FinishPolicy",

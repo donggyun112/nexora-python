@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
   "langchain-core>=1,<2",
   "loguru>=0.7,<1",
+  "nexora-llm",
   "nexora-store",
 ]
 # The core: contracts, controls, tool execution, the orchestrator, the engine, and the facade over
@@ -44,6 +45,7 @@ openrouter = ["langchain-openai>=1,<2"]
 packages = ["src/nexora"]
 
 [tool.uv.sources]
+nexora-llm = { workspace = true }
 nexora-permissions = { workspace = true }
 nexora-store = { workspace = true }
 nexora-store-pg = { workspace = true }

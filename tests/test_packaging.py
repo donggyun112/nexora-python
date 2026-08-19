@@ -41,7 +41,7 @@ def _internal(names: list[str]) -> frozenset[str]:
 def distributions() -> list[Distribution]:
     """Every workspace member. The root manifest builds nothing and declares no `[project]`."""
     assert "project" not in tomllib.loads((ROOT / "pyproject.toml").read_text()), (
-        "the workspace root is virtual — a `[project]` there would be a sixth distribution"
+        "the workspace root is virtual — a `[project]` there would be another distribution"
     )
     found = []
     for manifest in sorted(ROOT.glob("packages/*/pyproject.toml")):
@@ -52,7 +52,7 @@ def distributions() -> list[Distribution]:
         found.append(
             Distribution(project["name"], module, source, _internal(project["dependencies"]))
         )
-    assert len(found) == 5, f"expected five distributions, found {[d.name for d in found]}"
+    assert len(found) == 6, f"expected six distributions, found {[d.name for d in found]}"
     return found
 
 
@@ -128,8 +128,8 @@ def test_provider_extras_install_adapters_the_core_does_not_import() -> None:
         assert declared[0].startswith(f"{package}>") or declared[0].startswith(f"{package}=")
 
     imported: set[str] = set()
-    package = ROOT / "packages" / "nexora" / "src" / "nexora"
-    for path in sorted(package.rglob("*.py")):
+    core = ROOT / "packages" / "nexora" / "src" / "nexora"
+    for path in sorted(core.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])

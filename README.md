@@ -6,16 +6,15 @@ Messages, tool calls, and chat models are LangChain's. Nexora owns the execution
 call-id idempotency, permission parking, crash recovery, and the control plane that decides
 whether a round may start, a tool may run, or a finish may stand.
 
-**Status:** pre-alpha 0.1.0. This Python runtime is the product. Install a provider extra
-for the LangChain chat model; Nexora does not ship one.
+**Status:** pre-alpha 0.1.0. This Python runtime is the product. The default install
+includes `ChatModel`, an OpenAI-compatible client. Native Anthropic/Google APIs remain extras.
 
 ## Hello
 
 ```python
-from langchain_openai import ChatOpenAI
-from nexora import Agent, AgentRuntime
+from nexora import Agent, AgentRuntime, ChatModel
 
-model = ChatOpenAI(model="gpt-4.1")
+model = ChatModel(model="gpt-4.1")
 agent = Agent(
     name="reviewer",
     description="Reviews a repository with read-only tools",
@@ -28,7 +27,9 @@ outcome = await AgentRuntime().run("run-42", agent, "inspect this repository")
 ```
 
 ```bash
-uv add 'nexora[openai]'
+uv add nexora
+# OpenRouter / xAI: ChatModel(..., base_url="https://openrouter.ai/api/v1")
+# or nexora.openrouter("anthropic/claude-sonnet-4")
 ```
 
 That default records nothing. The whole control plane is there; a crash may run the same

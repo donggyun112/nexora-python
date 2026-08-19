@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from nexora_llm import ChatModel, openrouter, xai
 from nexora_store import ExecutionContext, MemorySteps
 
 from .builtins import BuiltinTools, ExecToolOptions, builtin_tools
@@ -55,6 +56,7 @@ __all__ = [
     "Answering",
     "Authority",
     "BuiltinTools",
+    "ChatModel",
     "Continue",
     "ControlPlane",
     "Controls",
@@ -98,10 +100,12 @@ __all__ = [
     "gate",
     "goal_complete",
     "goal_gate",
+    "openrouter",
     "plan_mode_exit",
     "plan_mode_gate",
     "prompt_section",
     "react_loop",
     "run",
     "volatile_prompt_section",
+    "xai",
 ]

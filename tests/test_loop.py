@@ -1051,6 +1051,28 @@ class UsageLlm(Llm):
         )
 
 
+class RepeatedMetadataLlm(UsageLlm):
+    """Repeat terminal metadata as OpenRouter does on its usage chunk."""
+
+    def _stream(self, messages: Any, *a: Any, **k: Any) -> Any:
+        self.seen.append(list(messages))
+        reply = next(self.messages)
+        assert isinstance(reply, AIMessage)
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content=reply.content,
+                response_metadata=reply.response_metadata,
+            )
+        )
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="",
+                usage_metadata=reply.usage_metadata,
+                response_metadata=reply.response_metadata,
+            )
+        )
+
+
 def _spent(text: str, prompt: int, completion: int, *calls: ToolCall) -> AIMessage:
     return AIMessage(
         content=text,
@@ -1101,6 +1123,16 @@ async def test_usage_is_summed_across_rounds() -> None:
         "completion_tokens": 7,
         "total_tokens": 47,
     }
+
+
+async def test_repeated_stream_metadata_does_not_concatenate_the_model_identity() -> None:
+    """One responding model must remain one identity when terminal chunks repeat its metadata."""
+    llm = RepeatedMetadataLlm(messages=iter([_spent_by("openai/gpt-4o-mini", 10, 2)]))
+    llm.seen = []
+
+    events = await run(llm)
+
+    assert events[-1]["model"] == "openai/gpt-4o-mini"
 
 
 async def test_usage_is_absent_rather_than_zero_when_nothing_reported_it() -> None:

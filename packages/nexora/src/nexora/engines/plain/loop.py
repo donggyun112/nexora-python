@@ -144,6 +144,7 @@ async def react_loop(
 
         # ── Reason ───────────────────────────────────────────────────────────
         reply: AIMessageChunk | None = None
+        turn_model = ""
         failed: _FailedModel | None = None
         async with aclosing(
             _model_stream(
@@ -162,6 +163,9 @@ async def react_loop(
                     failed = item
                     break
                 chunk = item
+                # Read identity before addition: LangChain concatenates repeated string metadata,
+                # so two terminal chunks naming one model otherwise become a fictitious name.
+                turn_model = _model_of(chunk) or turn_model
                 # Chunks add, and the sum reassembles tool arguments that arrive as fragments.
                 reply = chunk if reply is None else reply + chunk
                 for thought in _reasoning_of(chunk):
@@ -181,7 +185,7 @@ async def react_loop(
         last_text = turn_text
         # Kept, not overwritten with a blank: a provider that names the model on some turns and not
         # others should not erase what it already told us.
-        spent.model = _model_of(reply) or spent.model
+        spent.model = turn_model or spent.model
         # Resolved first, then charged, so a turn the provider did not label lands on the model
         # already known rather than on a second, nameless bucket.
         if counts := _usage_of(reply):

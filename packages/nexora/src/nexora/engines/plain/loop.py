@@ -145,6 +145,7 @@ async def react_loop(
         # ── Reason ───────────────────────────────────────────────────────────
         reply: AIMessageChunk | None = None
         turn_model = ""
+        turn_response_metadata: dict[str, Any] = {}
         failed: _FailedModel | None = None
         async with aclosing(
             _model_stream(
@@ -166,6 +167,9 @@ async def react_loop(
                 # Read identity before addition: LangChain concatenates repeated string metadata,
                 # so two terminal chunks naming one model otherwise become a fictitious name.
                 turn_model = _model_of(chunk) or turn_model
+                # Response metadata is provider-owned passthrough data. Last-write-wins keeps every
+                # exposed field without applying LangChain's string-concatenating chunk merge.
+                turn_response_metadata.update(chunk.response_metadata)
                 # Chunks add, and the sum reassembles tool arguments that arrive as fragments.
                 reply = chunk if reply is None else reply + chunk
                 for thought in _reasoning_of(chunk):
@@ -198,7 +202,9 @@ async def react_loop(
         requested_tool_calls = select_for_execution(tools, list(reply.tool_calls) if reply else [])
 
         if not requested_tool_calls:
-            assistant = _assistant_turn(reply, turn_text, [])
+            assistant = _assistant_turn(
+                reply, turn_text, [], response_metadata=turn_response_metadata
+            )
             messages.append(assistant)
             await _record(record_messages, [assistant])
             finish, carried_inputs = await _decide_finish(
@@ -222,7 +228,9 @@ async def react_loop(
                     return
 
         # ── Act ──────────────────────────────────────────────────────────────
-        assistant = _assistant_turn(reply, turn_text, requested_tool_calls)
+        assistant = _assistant_turn(
+            reply, turn_text, requested_tool_calls, response_metadata=turn_response_metadata
+        )
         messages.append(assistant)
         for call in requested_tool_calls:
             calls_made.append({"name": call["name"], "input": call["args"]})
@@ -662,7 +670,13 @@ _CALL_BLOCKS = frozenset({"tool_call", "tool_use", "tool_call_chunk", "invalid_t
 """Content blocks that restate a tool call. `tool_calls` is this loop's single source for those."""
 
 
-def _assistant_turn(reply: AIMessageChunk | None, text: str, calls: list[ToolCall]) -> AIMessage:
+def _assistant_turn(
+    reply: AIMessageChunk | None,
+    text: str,
+    calls: list[ToolCall],
+    *,
+    response_metadata: Mapping[str, Any],
+) -> AIMessage:
     """The turn as the provider streamed it, so its own blocks travel back with it.
 
     Rebuilt from `text` alone it would lose them — reasoning above all, which the next request has
@@ -687,6 +701,9 @@ def _assistant_turn(reply: AIMessageChunk | None, text: str, calls: list[ToolCal
         id=reply.id,
         # Where a provider without content blocks puts its reasoning — same fact, other shelf.
         additional_kwargs=dict(reply.additional_kwargs),
+        # Opaque to the loop and transcript store; provider and storage adapters own these fields.
+        response_metadata=dict(response_metadata),
+        usage_metadata=reply.usage_metadata,
     )
 
 

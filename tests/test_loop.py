@@ -1061,6 +1061,7 @@ class RepeatedMetadataLlm(UsageLlm):
         yield ChatGenerationChunk(
             message=AIMessageChunk(
                 content=reply.content,
+                tool_calls=reply.tool_calls,
                 response_metadata=reply.response_metadata,
             )
         )
@@ -1133,6 +1134,36 @@ async def test_repeated_stream_metadata_does_not_concatenate_the_model_identity(
     events = await run(llm)
 
     assert events[-1]["model"] == "openai/gpt-4o-mini"
+
+
+async def test_provider_metadata_survives_the_assistant_turn() -> None:
+    """Storage adapters must receive provider fields instead of a loop-reduced message."""
+    first = _spent_by("openai/gpt-4o-mini", 10, 2)
+    first.response_metadata["provider_trace"] = {"route": "primary"}
+    llm = RepeatedMetadataLlm(messages=iter([first]))
+    llm.seen = []
+    recorded: list[BaseMessage] = []
+
+    async def record(messages: list[BaseMessage]) -> None:
+        recorded.extend(messages)
+
+    await run(llm, durable=False, record_messages=record)
+
+    replayed = next(message for message in recorded if isinstance(message, AIMessage))
+    assert {
+        "response": replayed.response_metadata,
+        "usage": replayed.usage_metadata,
+    } == {
+        "response": {
+            "model_name": "openai/gpt-4o-mini",
+            "provider_trace": {"route": "primary"},
+        },
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "total_tokens": 12,
+        },
+    }
 
 
 async def test_usage_is_absent_rather_than_zero_when_nothing_reported_it() -> None:

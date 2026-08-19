@@ -19,12 +19,15 @@ from langchain_core.messages import (
 )
 from nexora_store import (
     Contended,
+    EffectCompletion,
+    ExecutionContext,
+    ExecutionStore,
+    ExecutionTransition,
     Fenced,
     Indeterminate,
     InputRecord,
     MemorySteps,
     Step,
-    StepLog,
 )
 
 from .contracts.events import EventType, RuntimeEvents
@@ -69,6 +72,7 @@ __all__ = [
     "AgentFailed",
     "AgentSuspended",
     "Contended",
+    "ExecutionStore",
     "Fenced",
     "Indeterminate",
     "InputRecord",
@@ -81,6 +85,9 @@ __all__ = [
     "Suspended",
     "run_agent",
 ]
+
+StepLog = ExecutionStore
+"""Compatibility name for the execution-store contract."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,8 +234,8 @@ class Orchestrator:
 
     def __init__(
         self,
-        run_id: str,
-        log: StepLog | None = None,
+        run_id: str | ExecutionContext,
+        log: ExecutionStore | None = None,
         *,
         owner: str = "local",
         ttl: float = 60.0,
@@ -238,10 +245,12 @@ class Orchestrator:
         rules_version: str = "",
     ) -> None:
         """Initialize one durable run attempt and its execution controls."""
-        self.run_id = run_id
+        self.context = run_id if isinstance(run_id, ExecutionContext) else ExecutionContext(run_id)
+        self.run_id = self.context.run_id
         self.owner = owner
         self._ttl = ttl
-        self._log = log if log is not None else MemorySteps()
+        store = log if log is not None else MemorySteps()
+        self._log = store.for_execution(self.context)
         self._seen: set[str] = set()
         self._token = 0
         """0 until a lease is taken, which is how a single-process caller runs without one."""
@@ -273,7 +282,8 @@ class Orchestrator:
     async def commit_transition_inputs(
         self,
         items: list[PendingInput],
-        steps: dict[str, Any],
+        controls: dict[str, Any],
+        effects: tuple[EffectCompletion, ...] = (),
     ) -> list[PendingInput]:
         """Atomically order protocol-closing inputs before the user input replacing them."""
         normalized = [self._normalize_input(item) for item in items]
@@ -284,8 +294,13 @@ class Orchestrator:
         ]
         inserted = await self._log.commit_transition(
             self.run_id,
-            steps,
-            [(input_id, value) for input_id, value in encoded if input_id is not None],
+            ExecutionTransition(
+                effects=effects,
+                controls=controls,
+                inputs=tuple(
+                    (input_id, value) for input_id, value in encoded if input_id is not None
+                ),
+            ),
             self._token,
         )
         for item in normalized:
@@ -308,7 +323,7 @@ class Orchestrator:
     ) -> list[PendingInput]:
         """Close an unanswered model request and order the replacing user input after it."""
         call_id = call["id"] or ""
-        steps: dict[str, Any] = {
+        controls: dict[str, Any] = {
             _active_suspension_key(): {
                 "state": "switching",
                 "call_id": call_id,
@@ -318,15 +333,20 @@ class Orchestrator:
         # Every suspension is now a pre-effect permission wait. Finishing it as cancelled prevents
         # a stale approval from executing it later with the same idempotency key.
         effect = await self._log.read(self.run_id, call_id)
+        effects: tuple[EffectCompletion, ...]
         if effect.status == "absent":
-            steps[call_id] = cancellation_result
+            effects = (EffectCompletion(call_id, cancellation_result, "absent"),)
         elif not (
             effect.status == "done"
             and isinstance(effect.value, dict)
             and effect.value.get("code") == "cancelled"
         ):
             raise RuntimeError(f"cannot cancel effect {call_id!r}: ledger says {effect.status!r}")
-        return await self.commit_transition_inputs([*cancellations, replacement], steps)
+        else:
+            effects = ()
+        return await self.commit_transition_inputs(
+            [*cancellations, replacement], controls, effects
+        )
 
     async def continue_with_input(
         self,
@@ -355,7 +375,7 @@ class Orchestrator:
             and active.get("call_id") == call_id
             and active.get("state") in {"switching", "resuming"}
         ):
-            await self._log.finish(
+            await self._log.write_control(
                 self.run_id, _active_suspension_key(), None, self._token
             )
 
@@ -474,7 +494,7 @@ class Orchestrator:
             # here means "nothing happened".
             await self._clear(step)
             raise
-        await self._log.finish(self.run_id, step, result, self._token)
+        await self._log.finish_effect(self.run_id, step, result, self._token)
         return result
 
     async def invoke_model(
@@ -539,7 +559,7 @@ class Orchestrator:
             raise
 
         try:
-            await self._log.finish(
+            await self._log.finish_effect(
                 self.run_id,
                 step,
                 {"type": "model_result", "chunks": chunks},
@@ -719,7 +739,7 @@ class Orchestrator:
         """Commit call order before the first policy check or external effect."""
         # Do not copy the transcript here: the agent's history store already owns it, and copying
         # a growing history every round would turn while-loop persistence quadratic.
-        await self._log.finish(
+        await self._log.write_control(
             self.run_id,
             _pending_round_key(),
             {"calls": list(calls), "turn": turn},
@@ -920,7 +940,7 @@ class Orchestrator:
 
     async def suspend(self, key: str, payload: dict[str, Any]) -> None:
         """Persist an opaque continuation payload under an idempotent key."""
-        await self._log.finish(self.run_id, _suspend_key(key), payload, self._token)
+        await self._log.write_control(self.run_id, _suspend_key(key), payload, self._token)
 
     async def persist_suspension(
         self,
@@ -945,15 +965,16 @@ class Orchestrator:
         )
         await self._log.commit_transition(
             self.run_id,
-            {
-                _suspend_key(call_id): continuation,
-                _active_suspension_key(): {
-                    "state": "waiting",
-                    "call_id": call_id,
-                    "continuation": continuation,
+            ExecutionTransition(
+                controls={
+                    _suspend_key(call_id): continuation,
+                    _active_suspension_key(): {
+                        "state": "waiting",
+                        "call_id": call_id,
+                        "continuation": continuation,
+                    },
                 },
-            },
-            [],
+            ),
             self._token,
         )
         if self._on_suspend is not None:
@@ -978,15 +999,16 @@ class Orchestrator:
         )
         await self._log.commit_transition(
             self.run_id,
-            {
-                _suspend_key(call_id): continuation,
-                _active_suspension_key(): {
-                    "state": "waiting",
-                    "call_id": call_id,
-                    "continuation": continuation,
+            ExecutionTransition(
+                controls={
+                    _suspend_key(call_id): continuation,
+                    _active_suspension_key(): {
+                        "state": "waiting",
+                        "call_id": call_id,
+                        "continuation": continuation,
+                    },
                 },
-            },
-            [],
+            ),
             self._token,
         )
 
@@ -999,7 +1021,7 @@ class Orchestrator:
         """Write a signal's answer. Called from outside the workflow, then replay it."""
         # No token: an answer arrives from outside the run — a webhook, a dialog, an operator — and
         # that caller holds no lease. Fencing a signal would refuse the very writes it is for.
-        await self._log.finish(self.run_id, _signal_key(name), answer)
+        await self._log.write_control(self.run_id, _signal_key(name), answer)
 
     def _claim(self, key: str) -> None:
         """Two steps sharing a name would replay as one another's result.

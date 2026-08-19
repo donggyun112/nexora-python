@@ -27,6 +27,7 @@ from nexora.controls import (
 )
 from nexora.engines.plain import react_loop
 from nexora.orchestrator import AgentSuspended, MemorySteps
+from nexora_store import ExecutionContext
 
 from tests.test_loop import Tools, a_call, says, scripted
 
@@ -42,6 +43,38 @@ class Recorder:
 
     def types(self) -> list[str]:
         return [e.event_type for e in self.seen]
+
+
+async def test_runtime_isolates_observation_sink_failures() -> None:
+    """A broken UI or monitoring destination must not change the agent outcome."""
+
+    async def broken(_event: EventEnvelope) -> None:
+        raise RuntimeError("monitor unavailable")
+
+    outcome = await AgentRuntime(event_sink=broken).run(
+        "run-1", scripted(says("finished")), Tools(), "go"
+    )
+
+    assert outcome["content"] == "finished"
+
+
+async def test_runtime_envelopes_events_with_trusted_execution_scope() -> None:
+    """Observation coordinates come from the host context rather than model-visible data."""
+    recorder = Recorder()
+    context = ExecutionContext(
+        "run-1", session_id="session-1", namespace="company-thread", subject="user-7"
+    )
+
+    await AgentRuntime(event_sink=recorder).run(
+        context, scripted(says("finished")), Tools(), "go"
+    )
+
+    envelope = recorder.seen[0]
+    assert (envelope.run_id, envelope.session_id, envelope.thread_id) == (
+        "run-1",
+        "session-1",
+        "company-thread",
+    )
 
 
 def a_stream(sink: Recorder) -> EventStream:

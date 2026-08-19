@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nexora-store-pg"
 version = "0.1.0"
-description = "Postgres-backed StepLog for Nexora."
+description = "PostgreSQL adapters for Nexora storage-semantic contracts."
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "donggyun112" }]

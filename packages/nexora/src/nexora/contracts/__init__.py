@@ -4,7 +4,15 @@ Nothing here knows how the loop is driven.
 """
 
 from .agent import Agent, AgentDefinition
-from .events import BLOCKING, EventEnvelope, EventStream, EventType, RuntimeEvents, Sink
+from .events import (
+    BLOCKING,
+    EventEnvelope,
+    EventStream,
+    EventType,
+    ObservationEventSink,
+    RuntimeEvents,
+    Sink,
+)
 from .types import (
     Aborted,
     AdmitInputs,
@@ -57,6 +65,7 @@ __all__ = [
     "ModelStreamFactory",
     "OnModelFailure",
     "OnSuspend",
+    "ObservationEventSink",
     "PendingInput",
     "PreToolUse",
     "RecordMessages",

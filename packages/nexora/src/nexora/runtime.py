@@ -7,16 +7,22 @@ from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage, messages_to_dict
-from nexora_store import Transcript
+from nexora_store import (
+    ExecutionContext,
+    ExecutionStore,
+    Transcript,
+)
 
 from .background import BackgroundResult
 from .contracts import (
     Agent,
     BaseMessage,
     CompactContext,
+    EventStream,
     EventType,
     InvokeModel,
     ModelStreamFactory,
+    ObservationEventSink,
     OnModelFailure,
     PendingInput,
     RuntimeEvents,
@@ -77,9 +83,15 @@ class _RuntimeTranscript:
 
     @classmethod
     async def open(
-        cls, store: Transcript, conversation_id: str, run_id: str
+        cls,
+        store: Transcript,
+        conversation_id: str,
+        run_id: str,
+        *,
+        context: ExecutionContext,
     ) -> "_RuntimeTranscript":
         """Restore a run's active branch and continue writing from its tip."""
+        store = store.for_execution(context)
         entries = await store.read(conversation_id)
         branch = active_branch(entries)
         message_entries = [entry for entry in branch if isinstance(entry.get("message"), dict)]
@@ -121,9 +133,11 @@ class AgentRuntime:
     def __init__(
         self,
         *,
+        execution_store: ExecutionStore | None = None,
         store: StepLog | None = None,
         orchestrator: RuntimeOrchestrator | None = None,
         emit: Emit | None = None,
+        event_sink: ObservationEventSink | None = None,
         owner: str = "local",
         lease_ttl: float = 60.0,
         transcript: Transcript | None = None,
@@ -134,18 +148,26 @@ class AgentRuntime:
         compact_context: CompactContext | None = None,
     ) -> None:
         """Initialize runtime collaborators and optional durable compatibility wiring."""
-        if store is not None and orchestrator is not None:
-            raise TypeError("pass either store or orchestrator, not both")
+        if execution_store is not None and store is not None:
+            raise TypeError("pass either execution_store or the compatibility store argument")
+        configured_execution_store = execution_store if execution_store is not None else store
+        if configured_execution_store is not None and orchestrator is not None:
+            raise TypeError("pass either execution_store or orchestrator, not both")
+        if emit is not None and event_sink is not None:
+            raise TypeError("pass either emit or event_sink, not both")
         self._runtime_orchestrator = (
             orchestrator
             if orchestrator is not None
             else (
-                DurableRuntimeOrchestrator(store, owner=owner, lease_ttl=lease_ttl)
-                if store is not None
+                DurableRuntimeOrchestrator(
+                    configured_execution_store, owner=owner, lease_ttl=lease_ttl
+                )
+                if configured_execution_store is not None
                 else None
             )
         )
         self._emit = emit
+        self._event_sink = event_sink
         self._transcript = transcript
         self._workspace_provider = workspace_provider
         self._workspace_manifest = workspace_manifest
@@ -154,7 +176,9 @@ class AgentRuntime:
         self._compact_context = compact_context
         self.events = RuntimeEvents(emit)
 
-    def background_sink(self, run_id: str, *, conversation_id: str | None = None) -> Deliver:
+    def background_sink(
+        self, run_id: str | ExecutionContext, *, conversation_id: str | None = None
+    ) -> Deliver:
         """Return a callback that submits background results to a run's input queue."""
 
         async def deliver(result: BackgroundResult) -> None:
@@ -167,7 +191,7 @@ class AgentRuntime:
 
     async def run(
         self,
-        run_id: str,
+        run_id: str | ExecutionContext,
         model: BaseChatModel | Agent,
         tools: Tools | str | None = None,
         prompt: str = "",
@@ -184,12 +208,22 @@ class AgentRuntime:
     ) -> dict[str, Any]:
         """Run one turn directly, or attach the configured orchestration session."""
         model, tools, prompt = _resolve_agent(model, tools, prompt, engine_options)
+        execution = _execution_context(run_id)
+        if execution.subject is not None:
+            supplied_subject = engine_options.get("subject")
+            if supplied_subject not in {None, "", execution.subject}:
+                raise ValueError("subject cannot differ from the trusted execution context")
+            engine_options["subject"] = execution.subject
         context = self._orchestration_context(
-            run_id, on_suspend=on_suspend, rules_version=rules_version, on_event=on_event
+            execution,
+            conversation_id=conversation_id,
+            on_suspend=on_suspend,
+            rules_version=rules_version,
+            on_event=on_event,
         )
         if self._runtime_orchestrator is None:
             return await self._run_direct(
-                run_id,
+                execution.run_id,
                 model,
                 tools,
                 prompt,
@@ -199,12 +233,14 @@ class AgentRuntime:
                 model_identity=model_identity,
                 conversation_id=conversation_id,
                 session=None,
+                emit=context.emit,
+                execution=execution,
                 **engine_options,
             )
         async with self._runtime_orchestrator.open(context) as session:
             if not isinstance(session, _DurableRuntimeSession):
                 return await self._run_direct(
-                    run_id,
+                    execution.run_id,
                     model,
                     tools,
                     prompt,
@@ -214,6 +250,8 @@ class AgentRuntime:
                     model_identity=model_identity,
                     conversation_id=conversation_id,
                     session=session,
+                    emit=context.emit,
+                    execution=execution,
                     **engine_options,
                 )
             return await self._run_durable(
@@ -256,7 +294,7 @@ class AgentRuntime:
         # and three copies of "decode, then check for None" was three chances to disagree
         # about what a corrupt record means.
         active = await orchestrator.active_continuation()
-        waiting = await self._decode_waiting(active, conversation)
+        waiting = await self._decode_waiting(active, conversation, orchestrator.context)
 
         # A run is parked in one of three states, and a new prompt means something different
         # in each. `waiting` is the only one a prompt can change: interactively it cancels the
@@ -306,7 +344,7 @@ class AgentRuntime:
 
     async def _run_direct(
         self,
-        run_id: str,
+        run_id: str | ExecutionContext,
         model: Any,
         tools: Tools,
         prompt: str,
@@ -317,9 +355,12 @@ class AgentRuntime:
         model_identity: str | None,
         conversation_id: str | None,
         session: RuntimeOrchestrationSession | None,
+        emit: Emit | None,
+        execution: ExecutionContext,
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Drive the shared planner without durable continuation or step state."""
+        run_id = _execution_context(run_id).run_id
         owned = {
             "drain_inputs",
             "discard_inputs",
@@ -335,7 +376,12 @@ class AgentRuntime:
         history = engine_options.pop("history", None)
         conversation = conversation_id or run_id
         transcript = (
-            await _RuntimeTranscript.open(self._transcript, conversation, run_id)
+            await _RuntimeTranscript.open(
+                self._transcript,
+                conversation,
+                run_id,
+                context=execution,
+            )
             if self._transcript is not None
             else None
         )
@@ -375,7 +421,7 @@ class AgentRuntime:
                 active_tools,
                 history=history,
                 controls=controls,
-                emit=self._emit,
+                emit=emit,
                 drain_inputs=drain_inputs,
                 discard_inputs=input_session.discard if input_session is not None else None,
                 admit_inputs=input_session.admit if input_session is not None else None,
@@ -392,14 +438,15 @@ class AgentRuntime:
 
     async def submit(
         self,
-        run_id: str,
+        run_id: str | ExecutionContext,
         item: PendingInput,
         *,
         input_mode: InputMode = "interactive",
         conversation_id: str | None = None,
     ) -> PendingInput:
         """Durably route input; user input cancels a parked request in interactive mode."""
-        orchestrator = self._orchestrator(run_id)
+        execution = _execution_context(run_id)
+        orchestrator = self._orchestrator(execution)
         active = await orchestrator.active_continuation()
         if (
             active is not None
@@ -407,7 +454,9 @@ class AgentRuntime:
             and item.kind in {"user_prompt", "user_steer"}
             and input_mode == "interactive"
         ):
-            waiting = await self._decode_waiting(active, conversation_id or run_id)
+            waiting = await self._decode_waiting(
+                active, conversation_id or execution.run_id, execution
+            )
             if waiting is None:
                 raise RuntimeError("active suspension has no continuation")
             # Only this branch rewrites the transcript, and only a parked run can reach it — the
@@ -422,7 +471,7 @@ class AgentRuntime:
 
     async def resume(
         self,
-        run_id: str,
+        run_id: str | ExecutionContext,
         pending_id: str,
         answer: dict[str, Any],
         model: Any,
@@ -437,10 +486,13 @@ class AgentRuntime:
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Route an answer by the suspension's external `pending_id` and resume its call."""
-        conversation = conversation_id or run_id
-        async with self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator:
+        execution = _execution_context(run_id)
+        conversation = conversation_id or execution.run_id
+        async with self._orchestrator(
+            execution, on_suspend, rules_version, on_event
+        ) as orchestrator:
             active = await orchestrator.active_continuation()
-            waiting = await self._decode_waiting(active, conversation)
+            waiting = await self._decode_waiting(active, conversation, execution)
             if (
                 waiting is None
                 or active is None
@@ -449,7 +501,18 @@ class AgentRuntime:
             ):
                 raise LookupError(f"no active suspension for pending id {pending_id!r}")
             tool_call_id = waiting.call["id"] or ""
-            async with self._workspace_tools(run_id, tools) as active_tools:
+            if execution.subject is not None and waiting.subject not in {"", execution.subject}:
+                raise ValueError("subject cannot differ from the suspended execution context")
+            supplied_subject = engine_options.get("subject")
+            if execution.subject is not None and supplied_subject not in {
+                None,
+                "",
+                execution.subject,
+            }:
+                raise ValueError("subject cannot differ from the trusted execution context")
+            subject = execution.subject or str(supplied_subject or waiting.subject)
+            engine_options["subject"] = subject
+            async with self._workspace_tools(execution.run_id, tools) as active_tools:
                 result = await orchestrator.resume_effect(
                     active_tools,
                     waiting.call,
@@ -465,7 +528,7 @@ class AgentRuntime:
                     ctx=Ctx(
                         turn=waiting.turn,
                         messages=list(waiting.messages),
-                        subject=str(engine_options.get("subject") or waiting.subject),
+                        subject=subject,
                     ),
                 )
                 answer_message = suspension_result_message(
@@ -495,7 +558,7 @@ class AgentRuntime:
 
     async def recover(
         self,
-        run_id: str,
+        run_id: str | ExecutionContext,
         history: list[BaseMessage],
         model: Any,
         tools: Tools,
@@ -511,9 +574,15 @@ class AgentRuntime:
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Recover an interrupted tool round and continue without replaying its model turn."""
+        execution = _execution_context(run_id)
+        if execution.subject is not None:
+            supplied_subject = engine_options.get("subject")
+            if supplied_subject not in {None, "", execution.subject}:
+                raise ValueError("subject cannot differ from the trusted execution context")
+            engine_options["subject"] = execution.subject
         async with (
-            self._orchestrator(run_id, on_suspend, rules_version, on_event) as orchestrator,
-            self._workspace_tools(run_id, tools) as active_tools,
+            self._orchestrator(execution, on_suspend, rules_version, on_event) as orchestrator,
+            self._workspace_tools(execution.run_id, tools) as active_tools,
         ):
             recovered = await orchestrator.recover_pending(
                 history,
@@ -539,7 +608,7 @@ class AgentRuntime:
                 controls=controls,
                 on_event=on_event,
                 recover_pending=False,
-                conversation_id=conversation_id or run_id,
+                conversation_id=conversation_id or execution.run_id,
                 aborted=aborted,
                 model_identity=model_identity,
                 **engine_options,
@@ -604,7 +673,10 @@ class AgentRuntime:
 
         transcript = (
             await _RuntimeTranscript.open(
-                self._transcript, conversation_id, orchestrator.run_id
+                self._transcript,
+                conversation_id,
+                orchestrator.run_id,
+                context=orchestrator.context,
             )
             if self._transcript is not None
             else None
@@ -717,7 +789,10 @@ class AgentRuntime:
             await workspace.cleanup()
 
     async def _decode_waiting(
-        self, active: dict[str, Any] | None, conversation_id: str
+        self,
+        active: dict[str, Any] | None,
+        conversation_id: str,
+        context: ExecutionContext,
     ) -> Any:
         """Hydrate either a legacy snapshot or a compact transcript continuation."""
         if active is None:
@@ -735,7 +810,8 @@ class AgentRuntime:
                 "conversation_id does not match the suspension transcript cursor: "
                 f"{conversation_id!r} != {cursor.conversation_id!r}"
             )
-        entries = await self._transcript.read(cursor.conversation_id)
+        transcript = self._transcript.for_execution(context)
+        entries = await transcript.read(cursor.conversation_id)
         return decode_cursor_continuation(payload, messages_at(entries, cursor.leaf_uuid))
 
     async def _recover_pending_inputs(
@@ -766,7 +842,7 @@ class AgentRuntime:
 
     def _orchestrator(
         self,
-        run_id: str,
+        run_id: str | ExecutionContext,
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
         on_event: OnAgentEvent | None = None,
@@ -786,16 +862,26 @@ class AgentRuntime:
 
     def _orchestration_context(
         self,
-        run_id: str,
+        run_id: str | ExecutionContext,
         *,
+        conversation_id: str | None = None,
         on_suspend: OnSuspend | None = None,
         rules_version: str = "",
         on_event: OnAgentEvent | None = None,
     ) -> RuntimeOrchestrationContext:
         """Build the stable context passed to an attached orchestrator."""
+        execution = _execution_context(run_id)
+        publisher = self._emit
+        if self._event_sink is not None:
+            publisher = EventStream(
+                self._event_sink,
+                session_id=execution.session_id or execution.run_id,
+                thread_id=execution.namespace or conversation_id or execution.run_id,
+                run_id=execution.run_id,
+            )
         return RuntimeOrchestrationContext(
-            run_id=run_id,
-            emit=self._emit,
+            execution=execution,
+            emit=publisher,
             on_suspend=on_suspend,
             on_agent_event=on_event,
             rules_version=rules_version,
@@ -865,3 +951,8 @@ def _resolve_agent(
     if tools is None or isinstance(tools, str):
         raise TypeError("model execution requires a Tools instance")
     return model, tools, prompt
+
+
+def _execution_context(value: str | ExecutionContext) -> ExecutionContext:
+    """Normalize the compatibility run-id form at the host boundary."""
+    return value if isinstance(value, ExecutionContext) else ExecutionContext(value)

@@ -4,9 +4,9 @@ Entries are persisted verbatim as JSONB. Generated columns provide indexed trans
 while run and model-usage tables store operational accounting data.
 """
 
-from typing import Any
+from typing import Any, Self
 
-from nexora_store import MODEL_USAGE_FIELDS, RUN_FIELDS, check_fields
+from nexora_store import MODEL_USAGE_FIELDS, RUN_FIELDS, ExecutionContext, check_fields
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -71,6 +71,11 @@ class PostgresTranscript:
     def __init__(self, pool: AsyncConnectionPool[AsyncConnection[Any]]) -> None:
         """Initialize the store with a caller-owned connection pool."""
         self._pool = pool
+
+    def for_execution(self, context: ExecutionContext) -> Self:
+        """Return this adapter because its default schema is scope-neutral."""
+        del context
+        return self
 
     async def append(self, entry: dict[str, Any]) -> bool:
         """Append an entry verbatim and report whether it was new."""

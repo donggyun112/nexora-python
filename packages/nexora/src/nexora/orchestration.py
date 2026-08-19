@@ -5,8 +5,10 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from nexora_store import ExecutionContext, ExecutionStore
+
 from .contracts import Emit, InvokeModel, OnSuspend, PendingInput
-from .orchestrator import Orchestrator, StepLog
+from .orchestrator import Orchestrator
 from .tools import ExecuteRound, execute_calls
 
 __all__ = [
@@ -25,11 +27,16 @@ _execute_direct: ExecuteRound = execute_calls
 class RuntimeOrchestrationContext:
     """Describe one runtime attempt to a detachable orchestrator."""
 
-    run_id: str
+    execution: ExecutionContext
     emit: Emit | None = None
     on_suspend: OnSuspend | None = None
     on_agent_event: AgentEventSink | None = None
     rules_version: str = ""
+
+    @property
+    def run_id(self) -> str:
+        """Return the framework-owned execution coordinate."""
+        return self.execution.run_id
 
 
 class RuntimeInputSession(Protocol):
@@ -122,20 +129,20 @@ class DurableRuntimeOrchestrator:
 
     def __init__(
         self,
-        store: StepLog,
+        execution_store: ExecutionStore,
         *,
         owner: str = "local",
         lease_ttl: float = 60.0,
     ) -> None:
         """Configure the durable resources shared by runtime attempts."""
-        self._store = store
+        self._store = execution_store
         self._owner = owner
         self._lease_ttl = lease_ttl
 
     def session(self, context: RuntimeOrchestrationContext) -> Orchestrator:
         """Build the durable session used by recovery-specific runtime operations."""
         return Orchestrator(
-            context.run_id,
+            context.execution,
             self._store,
             owner=self._owner,
             ttl=self._lease_ttl,

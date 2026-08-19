@@ -1,11 +1,14 @@
-"""Append-only transcript and per-model run-usage store contracts.
+"""Claude-style transcript storage without prescribing a physical schema.
 
-Transcript entries are opaque observation records and do not participate in effect execution or
-recovery decisions.
+One adapter owns the ordered conversation, branch markers, run lifecycle, and usage records. Entry
+mappings are opaque to the adapter boundary, so implementations may remap them to any tables,
+documents, or existing API as long as reads reconstruct the same transcript semantics.
 """
 
 import json
-from typing import Any, NamedTuple, Protocol, runtime_checkable
+from typing import Any, NamedTuple, Protocol, Self, runtime_checkable
+
+from .context import ExecutionContext, ScopedStore
 
 __all__ = [
     "MODEL_USAGE_FIELDS",
@@ -47,8 +50,8 @@ class _Row(NamedTuple):
 
 
 @runtime_checkable
-class Transcript(Protocol):
-    """Persist conversation entries and per-model run cost."""
+class Transcript(ScopedStore, Protocol):
+    """Persist one ordered transcript while leaving its physical representation to the adapter."""
 
     async def append(self, entry: dict[str, Any]) -> bool:
         """Append an entry idempotently.
@@ -66,23 +69,23 @@ class Transcript(Protocol):
         ...
 
     async def record_run(self, run_id: str, fields: dict[str, Any]) -> None:
-        """Merge validated fields into a run record.
+        """Merge validated lifecycle fields into this transcript's run record.
 
         Raises:
             ValueError: If ``fields`` contains a name outside ``RUN_FIELDS``.
         """
         ...
 
+    async def read_run(self, run_id: str) -> dict[str, Any] | None:
+        """The run record, or `None` if this run was never opened."""
+        ...
+
     async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
-        """Merge validated usage fields for one model in a run.
+        """Merge validated usage fields for one model in this transcript run.
 
         Raises:
             ValueError: If ``counts`` contains a name outside ``MODEL_USAGE_FIELDS``.
         """
-        ...
-
-    async def read_run(self, run_id: str) -> dict[str, Any] | None:
-        """The run record, or `None` if this run was never opened."""
         ...
 
     async def read_model_usage(self, run_id: str) -> dict[str, dict[str, Any]]:
@@ -98,15 +101,20 @@ def check_fields(table: str, fields: dict[str, Any], allowed: frozenset[str]) ->
 
 
 class MemoryTranscript:
-    """Implement ``Transcript`` with process-local collections."""
+    """Implement the complete transcript contract with process-local collections."""
 
     def __init__(self) -> None:
-        """Initialize empty transcript, run, and per-model stores."""
+        """Initialize empty history collections."""
         self._rows: dict[str, list[_Row]] = {}
         self._seen: set[tuple[str, str]] = set()
         self._runs: dict[str, dict[str, Any]] = {}
         self._model_usage: dict[tuple[str, str], dict[str, Any]] = {}
         self._sequence = 0
+
+    def for_execution(self, context: ExecutionContext) -> Self:
+        """Ignore routing metadata in this process-local adapter."""
+        del context
+        return self
 
     async def append(self, entry: dict[str, Any]) -> bool:
         """Append an entry unless its conversation already holds that `uuid`."""
@@ -130,15 +138,15 @@ class MemoryTranscript:
         check_fields("run", fields, RUN_FIELDS)
         self._runs.setdefault(run_id, {}).update(fields)
 
-    async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
-        """Merge validated token counts for one model of one run."""
-        check_fields("model usage", counts, MODEL_USAGE_FIELDS)
-        self._model_usage.setdefault((run_id, model), {}).update(counts)
-
     async def read_run(self, run_id: str) -> dict[str, Any] | None:
         """Return a copied run record."""
         row = self._runs.get(run_id)
         return dict(row) if row is not None else None
+
+    async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
+        """Merge validated token counts for one model of one run."""
+        check_fields("model usage", counts, MODEL_USAGE_FIELDS)
+        self._model_usage.setdefault((run_id, model), {}).update(counts)
 
     async def read_model_usage(self, run_id: str) -> dict[str, dict[str, Any]]:
         """Return this run's token counts per model."""

@@ -31,7 +31,12 @@ def a_conversation() -> list[Any]:
 
 
 async def write(store: Transcript, messages: list[Any], **kwargs: Any) -> TranscriptWriter:
-    writer = TranscriptWriter(store, conversation_id="conv-1", run_id="run-1", **kwargs)
+    writer = TranscriptWriter(
+        store,
+        conversation_id="conv-1",
+        run_id="run-1",
+        **kwargs,
+    )
     await writer.opened()
     for message in messages:
         await writer.record(message)

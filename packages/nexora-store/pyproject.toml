@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nexora-store"
 version = "0.1.0"
-description = "Nexora's step ledger: durable intent, ambiguity detection, exclusive execution."
+description = "Storage-semantic contracts for Nexora execution and append-only transcripts."
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "donggyun112" }]
@@ -17,9 +17,9 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = []
-# Deliberately empty, and the reason this is its own distribution. A `StepLog` stores opaque
-# values under opaque keys, so an implementation needs no message type, no control point and
-# nothing from `nexora`. Anything appearing here means the boundary moved.
+# Deliberately empty, and the reason this is its own distribution. Storage adapters implement
+# behavior contracts over opaque values, so they need no message type, control point, or physical
+# schema from `nexora`. Anything appearing here means the boundary moved.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nexora_store"]

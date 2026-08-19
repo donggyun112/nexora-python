@@ -4,11 +4,19 @@ The ledger records opaque step values and distinguishes absent, running, and com
 It surfaces ambiguous interrupted effects instead of claiming exactly-once execution.
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from time import monotonic
-from typing import Any, Literal, NamedTuple, Protocol, runtime_checkable
+from typing import Any, Literal, NamedTuple, Protocol, Self, runtime_checkable
+
+from .context import ExecutionContext, ScopedStore
 
 __all__ = [
     "Contended",
+    "EffectCompletion",
+    "EffectConflict",
+    "ExecutionStore",
+    "ExecutionTransition",
     "Fenced",
     "Indeterminate",
     "InputRecord",
@@ -47,6 +55,17 @@ class Indeterminate(Exception):
         self.run_id = run_id
         self.step = step
 
+
+class EffectConflict(Exception):
+    """Report an effect completion that contradicts its durable state."""
+
+    def __init__(self, run_id: str, key: str, reason: str) -> None:
+        """Initialize the conflict with its durable coordinates."""
+        super().__init__(f"effect {key!r} of run {run_id!r} cannot complete: {reason}")
+        self.run_id = run_id
+        self.key = key
+        self.reason = reason
+
 class Step(NamedTuple):
     """Represent the persisted state and value of one step."""
 
@@ -61,12 +80,31 @@ class InputRecord(NamedTuple):
     value: dict[str, Any]
     sequence: int
 
-@runtime_checkable
-class StepLog(Protocol):
-    """Persist step intent, results, run leases, and queued inputs.
 
-    Implementations must commit ``start`` before an effect executes and ``finish`` afterward.
-    Lease-protected writes use the fencing token returned by ``acquire``.
+class EffectCompletion(NamedTuple):
+    """Complete one immutable effect from the state that authorized the transition."""
+
+    key: str
+    value: Any
+    expected: Literal["absent", "running"] = "running"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionTransition:
+    """Atomically commit effect results, mutable control state, and queued inputs."""
+
+    effects: tuple[EffectCompletion, ...] = ()
+    controls: Mapping[str, Any] = field(default_factory=dict)
+    inputs: tuple[tuple[str, dict[str, Any]], ...] = ()
+
+@runtime_checkable
+class ExecutionStore(ScopedStore, Protocol):
+    """Persist effect intent, control transitions, run leases, and queued inputs.
+
+    Implementations commit ``start`` before an effect executes and ``finish_effect`` afterward.
+    Completed effect results are immutable. Mutable continuation and protocol state uses
+    ``write_control`` or ``commit_transition`` instead. Lease-protected writes use the fencing
+    token returned by ``acquire``.
     """
 
     async def read(self, run_id: str, key: str) -> Step:
@@ -77,8 +115,12 @@ class StepLog(Protocol):
         """Atomically record new step intent and report whether this caller inserted it."""
         ...
 
-    async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
-        """Record a completed step result."""
+    async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Complete a running effect idempotently without replacing a committed result."""
+        ...
+
+    async def write_control(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Upsert mutable framework control state."""
         ...
 
     async def acquire(self, run_id: str, owner: str, ttl_seconds: float) -> int:
@@ -112,11 +154,10 @@ class StepLog(Protocol):
     async def commit_transition(
         self,
         run_id: str,
-        steps: dict[str, Any],
-        inputs: list[tuple[str, dict[str, Any]]],
+        transition: ExecutionTransition,
         token: int = 0,
     ) -> set[str]:
-        """Atomically finish metadata steps and append idempotent inbox inputs."""
+        """Atomically apply typed effect, control, and input changes."""
         ...
 
     async def forget(self, run_id: str, key: str, token: int = 0) -> None:
@@ -135,8 +176,12 @@ class StepLog(Protocol):
         ...
 
 
+StepLog = ExecutionStore
+"""Compatibility name for the execution-store contract."""
+
+
 class MemorySteps:
-    """Implement ``StepLog`` with process-local dictionaries."""
+    """Implement ``ExecutionStore`` with process-local dictionaries."""
 
     def __init__(self) -> None:
         """Initialize empty step, lease, and input stores."""
@@ -145,6 +190,11 @@ class MemorySteps:
         self._tokens: dict[str, int] = {}
         self._inputs: dict[tuple[str, str], InputRecord] = {}
         self._input_sequence: dict[str, int] = {}
+
+    def for_execution(self, context: ExecutionContext) -> Self:
+        """Return this scope-neutral in-memory store."""
+        del context
+        return self
 
     async def read(self, run_id: str, key: str) -> Step:
         """Return the stored step or an absent state."""
@@ -158,10 +208,26 @@ class MemorySteps:
         self._entries[run_id, key] = Step("running")
         return True
 
-    async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
-        """Record a completed step after validating the fencing token."""
+    async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Complete a running effect while preserving an existing result."""
+        self._fence(run_id, token)
+        record = self._entries.get((run_id, key), Step("absent"))
+        if record.status == "done":
+            if record.value == value:
+                return
+            raise EffectConflict(run_id, key, "a different result is already committed")
+        if record.status != "running":
+            raise EffectConflict(run_id, key, f"expected 'running', found {record.status!r}")
+        self._entries[run_id, key] = Step("done", value)
+
+    async def write_control(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Upsert mutable process-local control state."""
         self._fence(run_id, token)
         self._entries[run_id, key] = Step("done", value)
+
+    async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Compatibility alias for ``write_control``."""
+        await self.write_control(run_id, key, value, token)
 
     async def forget(self, run_id: str, key: str, token: int = 0) -> None:
         """Remove unfinished step intent while preserving completed results."""
@@ -246,16 +312,43 @@ class MemorySteps:
     async def commit_transition(
         self,
         run_id: str,
-        steps: dict[str, Any],
-        inputs: list[tuple[str, dict[str, Any]]],
+        transition: ExecutionTransition,
         token: int = 0,
     ) -> set[str]:
         """Atomically apply a process-local control transition."""
         self._fence(run_id, token)
+        completed: list[tuple[str, Any]] = []
+        seen: set[str] = set()
+        for effect in transition.effects:
+            if effect.key in seen:
+                raise ValueError(f"effect {effect.key!r} appears twice in one transition")
+            seen.add(effect.key)
+            record = self._entries.get((run_id, effect.key), Step("absent"))
+            if record.status == "done":
+                if record.value != effect.value:
+                    raise EffectConflict(
+                        run_id, effect.key, "a different result is already committed"
+                    )
+                continue
+            if record.status != effect.expected:
+                raise EffectConflict(
+                    run_id,
+                    effect.key,
+                    f"expected {effect.expected!r}, found {record.status!r}",
+                )
+            completed.append((effect.key, effect.value))
+        overlap = seen.intersection(transition.controls)
+        if overlap:
+            raise ValueError(
+                f"transition classifies keys as both effect and control: {sorted(overlap)}"
+            )
+
         inserted: set[str] = set()
-        for key, value in steps.items():
+        for key, value in completed:
             self._entries[run_id, key] = Step("done", value)
-        for input_id, value in inputs:
+        for key, value in transition.controls.items():
+            self._entries[run_id, key] = Step("done", value)
+        for input_id, value in transition.inputs:
             input_key = (run_id, input_id)
             if input_key in self._inputs:
                 continue

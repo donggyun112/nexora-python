@@ -111,6 +111,9 @@ class EventEnvelope:
 Sink = Callable[[EventEnvelope], Awaitable[None]]
 """Observe an event without changing runtime control flow."""
 
+ObservationEventSink = Sink
+"""Public name for a best-effort UI, logging, or monitoring destination."""
+
 Publisher = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 

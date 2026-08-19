@@ -18,14 +18,12 @@ from nexora import (
     AgentRuntime,
     HostWorkspaceProvider,
     ModelFailurePolicy,
-    RuntimeOrchestrationContext,
-    RuntimeOrchestrationSession,
     ToolCall,
-    ToolContext,
     run,
 )
 from nexora.contracts import EventType, PendingInput
 from nexora.controls import ControlPlane, Ctx, Ingress, Permissions, gate
+from nexora.orchestration import RuntimeOrchestrationContext, RuntimeOrchestrationSession
 from nexora.orchestrator import (
     AgentFailed,
     AgentSuspended,
@@ -35,13 +33,66 @@ from nexora.orchestrator import (
 )
 from nexora.tools import InvalidToolResult, RoundSuspended
 from nexora.transcript import messages_of
-from nexora_store import MemoryTranscript
+from nexora.workspace import ToolContext
+from nexora_store import ExecutionContext, MemoryTranscript
 
 from .test_loop import Llm, Tools, a_call, says, scripted
 
 
 class _ServerError(RuntimeError):
     status_code = 503
+
+
+async def test_transcript_adapter_owns_the_physical_entry_shape() -> None:
+    """A transcript may route and remap entries while preserving their replay semantics."""
+
+    class CompanyTranscript(MemoryTranscript):
+        def __init__(self) -> None:
+            super().__init__()
+            self.context: ExecutionContext | None = None
+            self.physical_rows: list[dict[str, Any]] = []
+
+        def for_execution(self, context: ExecutionContext) -> "CompanyTranscript":
+            self.context = context
+            return self
+
+        async def append(self, entry: dict[str, Any]) -> bool:
+            assert self.context is not None
+            self.physical_rows.append(
+                {"tenant": self.context.attributes["org_id"], "payload": entry}
+            )
+            return await super().append(entry)
+
+    transcript = CompanyTranscript()
+    context = ExecutionContext("custom-transcript", attributes={"org_id": "acme"})
+
+    await AgentRuntime(transcript=transcript).run(
+        context, scripted(says("finished")), Tools(), "go"
+    )
+
+    assert transcript.physical_rows[0]["tenant"] == "acme"
+    assert messages_of(await transcript.read("custom-transcript"))[-1].content == "finished"
+
+
+async def test_execution_store_receives_trusted_opaque_scope() -> None:
+    """Tenant routing metadata reaches the adapter without entering model or tool input."""
+
+    class ScopedStore(MemorySteps):
+        bound: ExecutionContext | None = None
+
+        def for_execution(self, context: ExecutionContext) -> "ScopedStore":
+            self.bound = context
+            return self
+
+    store = ScopedStore()
+    context = ExecutionContext("scoped-run", attributes={"org_id": "acme"})
+
+    await AgentRuntime(execution_store=store).run(
+        context, scripted(says("finished")), Tools(), "go"
+    )
+
+    assert store.bound is not None
+    assert store.bound.attributes == {"org_id": "acme"}
 
 
 class _FlakyModel(Llm):
@@ -483,13 +534,13 @@ async def test_a_committed_model_reply_is_replayed_without_calling_the_provider_
     class CrashesBeforePendingRound(MemorySteps):
         failed = False
 
-        async def finish(
+        async def write_control(
             self, run_id: str, key: str, value: Any, token: int = 0
         ) -> None:
             if key == "agent:pending-round" and not self.failed:
                 self.failed = True
                 raise RuntimeError("worker stopped after the model step")
-            await super().finish(run_id, key, value, token)
+            await super().write_control(run_id, key, value, token)
 
     store = CrashesBeforePendingRound()
     runtime = AgentRuntime(store=store)
@@ -527,13 +578,13 @@ async def test_an_uncommitted_completed_model_call_is_indeterminate_on_retry() -
     class CrashesOnModelCommit(MemorySteps):
         failed_key = ""
 
-        async def finish(
+        async def finish_effect(
             self, run_id: str, key: str, value: Any, token: int = 0
         ) -> None:
             if key.startswith("agent:model:") and not self.failed_key:
                 self.failed_key = key
                 raise RuntimeError("model result commit failed")
-            await super().finish(run_id, key, value, token)
+            await super().finish_effect(run_id, key, value, token)
 
     store = CrashesOnModelCommit()
     runtime = AgentRuntime(store=store)

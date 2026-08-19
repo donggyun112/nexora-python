@@ -1,8 +1,15 @@
 """Implement the durable step ledger with PostgreSQL."""
 
-from typing import Any
+from typing import Any, Self
 
-from nexora_store import Fenced, InputRecord, Step
+from nexora_store import (
+    EffectConflict,
+    ExecutionContext,
+    ExecutionTransition,
+    Fenced,
+    InputRecord,
+    Step,
+)
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -61,6 +68,11 @@ class PostgresSteps:
         """Initialize the ledger with a caller-owned connection pool."""
         self._pool = pool
 
+    def for_execution(self, context: ExecutionContext) -> Self:
+        """Return this adapter because its default schema is scope-neutral."""
+        del context
+        return self
+
     async def read(self, run_id: str, key: str) -> Step:
         """Return the persisted state of a step."""
         async with (
@@ -94,8 +106,58 @@ class PostgresSteps:
                 )
                 return await cursor.fetchone() is not None
 
-    async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
-        """Record a completed step after validating the fencing token."""
+    async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Complete a running effect without replacing a committed result."""
+        async with self._pool.connection() as connection:
+            await self._fence(connection, run_id, token)
+            await self._complete_effect(connection, run_id, key, value, "running")
+
+    async def _complete_effect(
+        self,
+        connection: AsyncConnection[Any],
+        run_id: str,
+        key: str,
+        value: Any,
+        expected: str,
+    ) -> None:
+        """Apply one conditional effect completion inside the caller's transaction."""
+        async with connection.cursor(row_factory=dict_row) as cursor:
+            if expected == "absent":
+                await cursor.execute(
+                    """
+                    insert into nexora_step (run_id, key, status, value, finished_at)
+                    values (%s, %s, 'done', %s, now())
+                    on conflict (run_id, key) do nothing
+                    returning 1
+                    """,
+                    (run_id, key, Jsonb(value)),
+                )
+            else:
+                await cursor.execute(
+                    """
+                    update nexora_step
+                    set status = 'done', value = %s, finished_at = now()
+                    where run_id = %s and key = %s and status = 'running'
+                    returning 1
+                    """,
+                    (Jsonb(value), run_id, key),
+                )
+            if await cursor.fetchone() is not None:
+                return
+            await cursor.execute(
+                "select status, value from nexora_step where run_id = %s and key = %s",
+                (run_id, key),
+            )
+            row = await cursor.fetchone()
+        if row is not None and row["status"] == "done":
+            if row["value"] == value:
+                return
+            raise EffectConflict(run_id, key, "a different result is already committed")
+        status = "absent" if row is None else str(row["status"])
+        raise EffectConflict(run_id, key, f"expected {expected!r}, found {status!r}")
+
+    async def write_control(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Upsert mutable framework control state."""
         async with self._pool.connection() as connection:
             await self._fence(connection, run_id, token)
             async with connection.cursor() as cursor:
@@ -108,6 +170,10 @@ class PostgresSteps:
                 """,
                     (run_id, key, Jsonb(value)),
                 )
+
+    async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+        """Compatibility alias for ``write_control``."""
+        await self.write_control(run_id, key, value, token)
 
     async def _fence(self, connection: AsyncConnection[Any], run_id: str, token: int) -> None:
         """Reject stale lease holders within the caller's transaction."""
@@ -256,16 +322,29 @@ class PostgresSteps:
     async def commit_transition(
         self,
         run_id: str,
-        steps: dict[str, Any],
-        inputs: list[tuple[str, dict[str, Any]]],
+        transition: ExecutionTransition,
         token: int = 0,
     ) -> set[str]:
-        """Atomically finish metadata steps and append idempotent inbox inputs."""
+        """Atomically apply typed effect, control, and input changes."""
         inserted: set[str] = set()
         async with self._pool.connection() as connection:
             await self._fence(connection, run_id, token)
+            seen: set[str] = set()
+            for effect in transition.effects:
+                if effect.key in seen:
+                    raise ValueError(f"effect {effect.key!r} appears twice in one transition")
+                seen.add(effect.key)
+            overlap = seen.intersection(transition.controls)
+            if overlap:
+                raise ValueError(
+                    f"transition classifies keys as both effect and control: {sorted(overlap)}"
+                )
+            for effect in transition.effects:
+                await self._complete_effect(
+                    connection, run_id, effect.key, effect.value, effect.expected
+                )
             async with connection.cursor() as cursor:
-                for key, value in steps.items():
+                for key, value in transition.controls.items():
                     await cursor.execute(
                         """
                         insert into nexora_step (run_id, key, status, value, finished_at)
@@ -275,7 +354,7 @@ class PostgresSteps:
                         """,
                         (run_id, key, Jsonb(value)),
                     )
-                for input_id, value in inputs:
+                for input_id, value in transition.inputs:
                     await cursor.execute(
                         """
                         insert into nexora_input (run_id, input_id, status, value)

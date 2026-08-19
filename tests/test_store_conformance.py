@@ -35,7 +35,17 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from nexora_store import Fenced, MemorySteps, MemoryTranscript, StepLog, Transcript
+from nexora_store import (
+    EffectCompletion,
+    EffectConflict,
+    ExecutionStore,
+    ExecutionTransition,
+    Fenced,
+    MemorySteps,
+    MemoryTranscript,
+    StepLog,
+    Transcript,
+)
 from nexora_store_pg import SCHEMA, TRANSCRIPT_SCHEMA, PostgresSteps, PostgresTranscript
 from psycopg_pool import AsyncConnectionPool
 
@@ -106,7 +116,10 @@ def _api(cls: Any) -> set[str]:
 
 @pytest.mark.parametrize(
     ("protocol", "memory", "postgres"),
-    [(StepLog, MemorySteps, PostgresSteps), (Transcript, MemoryTranscript, PostgresTranscript)],
+    [
+        (ExecutionStore, MemorySteps, PostgresSteps),
+        (Transcript, MemoryTranscript, PostgresTranscript),
+    ],
 )
 def test_both_implementations_expose_the_same_surface(
     protocol: Any, memory: Any, postgres: Any
@@ -147,11 +160,52 @@ async def test_only_the_first_caller_records_step_intent(steps: StepLog) -> None
 async def test_a_finished_step_reports_its_value(steps: StepLog) -> None:
     await steps.start("run-1", "meds")
 
-    await steps.finish("run-1", "meds", {"dispensed": True})
+    await steps.finish_effect("run-1", "meds", {"dispensed": True})
 
     record = await steps.read("run-1", "meds")
     assert record.status == "done"
     assert record.value == {"dispensed": True}
+
+
+async def test_a_completed_effect_cannot_be_replaced(steps: StepLog) -> None:
+    """A reused call ID must replay one committed fact, never accept a second result."""
+    await steps.start("run-1", "meds")
+    await steps.finish_effect("run-1", "meds", {"dispensed": True})
+
+    with pytest.raises(EffectConflict):
+        await steps.finish_effect("run-1", "meds", {"dispensed": False})
+
+    assert (await steps.read("run-1", "meds")).value == {"dispensed": True}
+
+
+async def test_repeating_the_same_completion_is_idempotent(steps: StepLog) -> None:
+    """A lost acknowledgement may repeat the commit without changing its durable result."""
+    result = {"dispensed": True}
+    await steps.start("run-1", "meds")
+    await steps.finish_effect("run-1", "meds", result)
+
+    await steps.finish_effect("run-1", "meds", result)
+
+    assert (await steps.read("run-1", "meds")).value == result
+
+
+async def test_an_effect_cannot_finish_without_recorded_intent(steps: StepLog) -> None:
+    """Only a successful atomic start grants the right to execute and complete an effect."""
+    with pytest.raises(EffectConflict):
+        await steps.finish_effect("run-1", "meds", {"dispensed": True})
+
+
+async def test_a_transition_cannot_reclassify_an_effect_as_control(steps: StepLog) -> None:
+    """Mutable control updates must not provide a path around immutable effect completion."""
+    transition = ExecutionTransition(
+        effects=(EffectCompletion("call-1", {"ok": True}, "absent"),),
+        controls={"call-1": {"ok": False}},
+    )
+
+    with pytest.raises(ValueError, match="both effect and control"):
+        await steps.commit_transition("run-1", transition)
+
+    assert (await steps.read("run-1", "call-1")).status == "absent"
 
 
 async def test_a_second_worker_is_refused_the_lease(steps: StepLog) -> None:
@@ -176,7 +230,7 @@ async def test_a_write_from_a_replaced_worker_is_fenced(steps: StepLog) -> None:
     assert current > stale
 
     with pytest.raises(Fenced):
-        await steps.finish("run-1", "meds", {"late": True}, stale)
+        await steps.finish_effect("run-1", "meds", {"late": True}, stale)
 
 
 async def test_a_released_lease_does_not_hand_out_an_earlier_token(steps: StepLog) -> None:
@@ -213,7 +267,7 @@ async def test_a_step_that_already_finished_is_not_reopened(steps: StepLog) -> N
     prevent, broken only in the store used to check the ledger.
     """
     await steps.start("run-1", "meds")
-    await steps.finish("run-1", "meds", {"dispensed": True})
+    await steps.finish_effect("run-1", "meds", {"dispensed": True})
 
     inserted = await steps.start("run-1", "meds")
 
@@ -234,7 +288,7 @@ async def test_an_unleased_write_is_not_fenced(steps: StepLog) -> None:
     """Token zero means "I hold no lease" — a webhook answering a signal is not a stale worker."""
     await steps.acquire("run-1", "worker-a", 60.0)
 
-    await steps.finish("run-1", "meds", {"ok": True}, 0)
+    await steps.write_control("run-1", "meds", {"ok": True}, 0)
 
     assert (await steps.read("run-1", "meds")).status == "done"
 
@@ -272,7 +326,10 @@ async def test_a_discarded_input_is_terminal(steps: StepLog) -> None:
 async def test_a_transition_commits_steps_and_inputs_together(steps: StepLog) -> None:
     """The atomicity that keeps a cancellation ahead of its replacement across a crash."""
     inserted = await steps.commit_transition(
-        "run-1", {"turn": {"n": 1}}, [("in-1", {"text": "one"})]
+        "run-1",
+        ExecutionTransition(
+            controls={"turn": {"n": 1}}, inputs=(("in-1", {"text": "one"}),)
+        ),
     )
 
     assert inserted == {"in-1"}
@@ -283,7 +340,9 @@ async def test_a_transition_commits_steps_and_inputs_together(steps: StepLog) ->
 async def test_a_transition_does_not_re_insert_an_input_it_already_holds(steps: StepLog) -> None:
     await steps.enqueue_input("run-1", "in-1", {"text": "one"})
 
-    inserted = await steps.commit_transition("run-1", {}, [("in-1", {"text": "one"})])
+    inserted = await steps.commit_transition(
+        "run-1", ExecutionTransition(inputs=(("in-1", {"text": "one"}),))
+    )
 
     assert inserted == set()
 
@@ -312,7 +371,7 @@ async def test_forgetting_a_finished_step_leaves_its_result_alone(steps: StepLog
     what says they must agree.
     """
     await steps.start("run-1", "meds")
-    await steps.finish("run-1", "meds", {"dispensed": True})
+    await steps.finish_effect("run-1", "meds", {"dispensed": True})
 
     await steps.forget("run-1", "meds")
 

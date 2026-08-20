@@ -601,7 +601,11 @@ class AgentRuntime:
                         waiting.completed,
                         turn=waiting.turn,
                         subject=subject,
-                        answers={key: value for key, value in answers.items() if key != call["id"]},
+                        answers={
+                            key: value
+                            for key, value in answers.items()
+                            if key != (call["id"] or "")
+                        },
                         reissued=(call, result),
                     )
                 items.append(

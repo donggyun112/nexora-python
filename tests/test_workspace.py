@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,7 @@ async def test_host_workspace_fails_closed_for_untrusted_execution(tmp_path: Pat
     session = await HostWorkspaceProvider(root=tmp_path / "workspace").acquire(run_id="run-1")
 
     with pytest.raises(WorkspaceViolation, match="not an OS sandbox"):
-        await session.run(SandboxCommand(["python", "-c", "print('unsafe')"]))
+        await session.run(SandboxCommand([sys.executable, "-c", "print('unsafe')"]))
 
 
 async def test_trusted_host_command_uses_workspace_cwd(tmp_path: Path) -> None:
@@ -41,7 +42,7 @@ async def test_trusted_host_command_uses_workspace_cwd(tmp_path: Path) -> None:
 
     result = await session.run(
         SandboxCommand(
-            ["python", "-c", "import pathlib; print(pathlib.Path.cwd().name)"],
+            [sys.executable, "-c", "import pathlib; print(pathlib.Path.cwd().name)"],
             require_isolation=False,
             allowed_domains=None,
         )
@@ -78,7 +79,7 @@ async def test_host_workspace_never_claims_to_enforce_egress_policy(tmp_path: Pa
 
     with pytest.raises(WorkspaceViolation, match="egress"):
         await session.run(
-            SandboxCommand(["python", "-V"], require_isolation=False, allowed_domains=[])
+            SandboxCommand([sys.executable, "-V"], require_isolation=False, allowed_domains=[])
         )
 
 

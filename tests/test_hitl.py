@@ -642,8 +642,19 @@ async def test_after_tool_call_crosses_its_durable_boundary_once_per_call() -> N
             Tools(names=["read"]),
             controls=controls,
         )
+    assert seen == ["c1"]  # the recovery replay skipped the hook
 
-    assert seen == ["c1"]  # the replay skipped the hook
+    async with Orchestrator("hook-once", log) as owner:
+        await owner.resume_effect(
+            Tools(names=["read"]),
+            calls[0],
+            {"type": "text", "text": "approved"},
+            {"type": "suspend", "pending_id": "p1"},
+            "",
+            controls=controls,
+            park=False,
+        )
+    assert seen == ["c1"]  # and so did the resume-time done-replay
 
 
 async def test_a_suspension_survives_the_process_and_the_run_continues() -> None:

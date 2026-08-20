@@ -1019,8 +1019,8 @@ class AgentRuntime:
                     "input": call["args"],
                     "reason": dict(_CANCELLED),
                     "replacement_input_id": normalized[-1].origin_id,
-                    "event_id": (
-                        f"{EventType.TOOL_REQUEST_CANCELLED}:{waiting.turn}:{call['id']}"
+                    "event_id": "\x1f".join(
+                        [str(EventType.TOOL_REQUEST_CANCELLED), str(waiting.turn), str(call["id"])]
                     ),
                 },
             )

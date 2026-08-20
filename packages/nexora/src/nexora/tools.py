@@ -456,7 +456,9 @@ def tool_payload(ctx: Ctx, call: ToolCall, event: str = "", **extra: Any) -> dic
         request = extra.get("request")
         if isinstance(request, dict) and request.get("pending_id"):
             identity.append(str(request["pending_id"]))
-        payload["event_id"] = ":".join(identity)
+        # The unit separator keeps the key canonical: a ":" inside a host-authored pending id
+        # must not collide two different identities.
+        payload["event_id"] = "\x1f".join(identity)
     return payload
 
 

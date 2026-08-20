@@ -129,6 +129,81 @@ async def test_a_pruned_continue_after_suspension_emits_no_orphan_gate_event() -
     ]
 
 
+async def test_envelope_identity_survives_replay_across_streams() -> None:
+    """Consumers dedup on EventEnvelope.event_id, not the raw payload.
+
+    A replayed event must keep its envelope identity across a fresh stream (new sequence
+    counter), and identical payloads from different runs must never collide.
+    """
+    log = MemorySteps()
+    seen: list[EventEnvelope] = []
+
+    async def sink(envelope: EventEnvelope) -> None:
+        seen.append(envelope)
+
+    calls = [a_call("c1", "read")]
+    live = EventStream(sink, session_id="s", thread_id="t", run_id="run-env")
+    async with Orchestrator("run-env", log, emit=live) as owner:
+        await owner.execute_round(Tools(names=["read"]), calls, lambda: False)
+    replay = EventStream(sink, session_id="s", thread_id="t", run_id="run-env")
+    async with Orchestrator("run-env", log, emit=replay) as owner:
+        await owner.recover_pending(
+            [AIMessage(content="", tool_calls=calls)], Tools(names=["read"])
+        )
+
+    posts = [e for e in seen if e.event_type == EventType.POST_TOOL_USE]
+    assert len(posts) == 2
+    assert posts[0].event_id == posts[1].event_id  # replay keeps the envelope identity
+    pres = [e for e in seen if e.event_type == EventType.PRE_TOOL_USE]
+    assert pres and pres[0].event_id != posts[0].event_id
+    other_run = EventEnvelope(
+        event_type=EventType.POST_TOOL_USE,
+        session_id="s",
+        thread_id="t",
+        run_id="run-other",
+        sequence=0,
+        payload=posts[0].payload,
+    )
+    assert other_run.event_id != posts[0].event_id  # identity is scoped to the run
+
+
+async def test_a_resume_gate_event_is_distinct_from_the_original_gate_event() -> None:
+    """PRE_TOOL_USE at resume time is its own lifecycle moment.
+
+    Its identity must differ from the initial gate's, or a deduplicating consumer swallows
+    the revalidation announcement as a replay of the original ask.
+    """
+    log = MemorySteps()
+    pre_ids: list[str] = []
+
+    async def sink(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type == EventType.PRE_TOOL_USE:
+            pre_ids.append(str(payload["event_id"]))
+
+    async def park_deploy(ctx: Any, call: ToolCall) -> ToolDecision:
+        return Suspend({"type": "suspend", "pending_id": "approve-c1"})
+
+    runtime = AgentRuntime(store=log, emit=sink)
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "resume-gate-id",
+            scripted(says("", a_call("c1", "deploy"))),
+            Tools(names=["deploy"]),
+            "ship",
+            controls=ControlPlane(pre_tool_use=Permissions(park_deploy)),
+        )
+    await runtime.resume(
+        "resume-gate-id",
+        "approve-c1",
+        {"type": "text", "text": "approved"},
+        scripted(says("done")),
+        Tools(names=["deploy"]),
+    )
+
+    assert len(pre_ids) == 2
+    assert pre_ids[0] != pre_ids[1]  # the resume gate is not a replay of the first ask
+
+
 async def test_a_replayed_tool_result_reuses_its_original_event_id() -> None:
     """Recovery re-emission must be deduplicable: the same logical event carries the same id."""
     log = MemorySteps()

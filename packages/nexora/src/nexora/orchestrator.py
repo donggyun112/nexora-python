@@ -804,7 +804,12 @@ class Orchestrator:
             if publisher is not None:
                 await publisher(
                     EventType.PRE_TOOL_USE,
-                    tool_payload(context, call, event=EventType.PRE_TOOL_USE),
+                    tool_payload(
+                        context,
+                        call,
+                        event=EventType.PRE_TOOL_USE,
+                        source="on_resume",
+                    ),
                 )
 
             resume = ResumeInput(
@@ -929,11 +934,12 @@ class Orchestrator:
     async def after_tool_call_once(
         self, controls: Controls, ctx: Ctx, call: ToolCall, result: dict[str, Any]
     ) -> None:
-        """Run ``after_tool_call`` exactly once per call across replays.
+        """Run ``after_tool_call`` at least once, suppressing replays after its marker commits.
 
         The ``after:{call_id}`` marker is the hook's durable boundary: a replayed result skips
-        a hook that already crossed it. A crash between the hook and its marker re-runs the
-        hook once — at-least-once, bounded to that window instead of every replay.
+        a hook that already crossed it. Every crash between the hook and its marker re-runs
+        the hook, so exactly-once still requires the hook itself to be idempotent per call id —
+        the marker only stops the unbounded per-replay repetition.
         """
         key = _after_key(call["id"] or "")
         record = await self._log.read(self.run_id, key)

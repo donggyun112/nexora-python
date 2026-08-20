@@ -97,13 +97,25 @@ class EventEnvelope:
             object.__setattr__(self, "event_id", self._derive_id())
 
     def _derive_id(self) -> str:
-        """Derive a stable identifier from coordinates within this event stream."""
+        """Derive identity from the event's logical key when it carries one.
+
+        A payload ``event_id`` names the logical event, so a recovery re-emission keeps the
+        same envelope identity and consumers can deduplicate; the run id scopes it so equal
+        payloads from different runs never collide. ``sequence`` stays out of a logical
+        identity — it expresses delivery order, not what the event is — and anchors the
+        fallback for events that carry no logical key.
+        """
+        logical = self.payload.get("event_id")
         parts = (
-            self.run_id,
-            self.turn_id or "",
-            str(self.sequence),
-            str(self.event_type),
-            str(self.payload.get("call_id", "")),
+            (self.run_id, str(logical))
+            if isinstance(logical, str) and logical
+            else (
+                self.run_id,
+                self.turn_id or "",
+                str(self.sequence),
+                str(self.event_type),
+                str(self.payload.get("call_id", "")),
+            )
         )
         return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:32]
 
@@ -199,7 +211,12 @@ class RuntimeEvents:
 
 
 class EventStream:
-    """Number a run's events and deliver them to an observation sink."""
+    """Number a run's events and deliver them to an observation sink.
+
+    Delivery is best-effort: a sink failure is logged and never retried. A consumer that
+    needs guaranteed delivery must add its own outbox; ``event_id`` gives it the stable
+    identity to deduplicate on.
+    """
 
     def __init__(self, sink: Sink, *, session_id: str, thread_id: str, run_id: str) -> None:
         """Initialize stream identity and its sequence counter."""

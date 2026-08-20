@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from nexora import BuiltinTools, ExecToolOptions, RemoteSandboxClient
-from nexora.sandbox_remote import HTTPResponse, RemoteSandboxError
+from nexora.builtins import BuiltinTools, ExecToolOptions
+from nexora.sandbox_remote import HTTPResponse, RemoteSandboxClient, RemoteSandboxError
 from nexora.workspace import (
     ContinuousWorkspaceProvider,
     MemoryWorkspaceStateStore,

@@ -29,7 +29,7 @@ outcome = await AgentRuntime().run("run-42", agent, "inspect this repository")
 ```bash
 uv add nexora
 # OpenRouter / xAI: ChatModel(..., base_url="https://openrouter.ai/api/v1")
-# or nexora.openrouter("anthropic/claude-sonnet-4")
+# or from nexora_llm import openrouter; openrouter("anthropic/claude-sonnet-4")
 ```
 
 That default records nothing. The whole control plane is there; a crash may run the same
@@ -42,8 +42,8 @@ runtime = AgentRuntime(store=MemorySteps())
 outcome = await runtime.run("run-42", agent, "inspect this repository")
 ```
 
-`store=` is shorthand for `orchestrator=DurableRuntimeOrchestrator(steps)`. The agent does
-not change.
+`store=` is shorthand for `orchestrator=DurableRuntimeOrchestrator(steps)` from
+`nexora.orchestration`. The agent does not change.
 
 ## Control plane
 
@@ -113,7 +113,9 @@ uv run pytest
 keys, so implementing one needs neither a message type nor `nexora`.
 
 Workspace internals (`ToolContext`, snapshot backends, sandbox HTTP types) live on
-`nexora.workspace` and `nexora.sandbox_remote`, not the top-level package.
+`nexora.workspace` and `nexora.sandbox_remote`, not the top-level package. Feature packs
+(skills, subagents, builtins, plan mode) and power-user seams (`react_loop`,
+`DurableRuntimeOrchestrator`) stay on the submodule that owns them.
 
 ## License
 

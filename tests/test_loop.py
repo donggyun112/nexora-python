@@ -9,7 +9,7 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGenerationChunk
-from nexora import AgentRuntime, react_loop
+from nexora import AgentRuntime
 from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
 from nexora.controls import (
     ControlPlane,
@@ -22,6 +22,7 @@ from nexora.controls import (
     gate,
     writer,
 )
+from nexora.engines.plain import react_loop
 from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended, MemorySteps
 from nexora.tools import InvalidToolResult
 

@@ -8,10 +8,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from loguru import logger
-from nexora import Subagents
 from nexora.contracts import EventType, Tools
 from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended
 from nexora.runtime import AgentRuntime
+from nexora.subagents import Subagents
 
 from .children import subagents
 from .config import SETTINGS

@@ -20,7 +20,8 @@ from datetime import date
 from typing import Any
 
 from _scripted import Files, Scripted, calling, says, scripted
-from nexora import MemorySteps, react_loop
+from nexora import MemorySteps
+from nexora.engines.plain import react_loop
 from nexora.orchestrator import Orchestrator, Suspended, run_agent
 
 SENT: list[str] = []

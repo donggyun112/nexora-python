@@ -2,9 +2,9 @@
 
 from typing import Any
 
-from nexora import Goal, goal_complete, goal_gate
 from nexora.contracts import StopReason
 from nexora.controls import Ctx, FinishPolicy, Halt, Journal, Proceed, TurnDecision
+from nexora.goal import Goal, goal_complete, goal_gate
 
 from tests.test_loop import a_call
 

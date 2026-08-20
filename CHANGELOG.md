@@ -17,10 +17,11 @@ documentation corrections belong in the commit log, not here.
   The core still depends only on `langchain-core`. Construct the model from that
   adapter (`from langchain_openai import ChatOpenAI`); Nexora does not re-export it.
 
-- **Control plane on the public package.** `from nexora import Controls, ControlPlane,
-  FinishPolicy, Suspend, gate, MemorySteps, ExecutionContext` is the supported surface.
-  Workspace internals (`ToolContext`, snapshot backends, sandbox HTTP types) stay on
-  `nexora.workspace` and `nexora.sandbox_remote`.
+- **Control plane on the public package.** The top-level `nexora` export is the every-run
+  vocabulary: `AgentRuntime`, `ChatModel`, the control-plane types, `MemorySteps`,
+  `ExecutionContext`, `HostWorkspaceProvider`. Feature packs and power-user seams live on
+  their submodules; see Breaking. Workspace internals (`ToolContext`, snapshot backends,
+  sandbox HTTP types) stay on `nexora.workspace` and `nexora.sandbox_remote`.
 
 - **Shared agent definitions.** `AgentDefinition` is the common identity contract implemented by
   `Agent`, `FactoryAgent`, `RunnerAgent`, and `HttpAgent`. The executable local `Agent` binds a
@@ -118,6 +119,28 @@ declares, and each layer inside `nexora` against what it is allowed to reach.
   continues; it cannot relabel an ending it did not object to.
 
 ### Breaking
+
+- **The top-level package is the every-run vocabulary.** `nexora.__all__` is a closed
+  contract, not an accumulating re-export of every feature pack. Names that moved stay
+  public on the submodule that already owned them; there is no deprecation shim.
+
+  | name | now |
+  |---|---|
+  | `Answering`, `Authority`, `FactoryAgent`, `HttpAgent`, `RunnerAgent`, `Subagent`, `Subagents` | `nexora.subagents` |
+  | `DirectorySkillSource`, `SkillRegistry`, `SkillTools` | `nexora.skills` |
+  | `SystemPrompt`, `prompt_section`, `volatile_prompt_section` | `nexora.prompts` |
+  | `DeferredTools` | `nexora.tool_search` |
+  | `Goal`, `goal_complete`, `goal_gate` | `nexora.goal` |
+  | `PlanMode`, `plan_mode_exit`, `plan_mode_gate` | `nexora.plan_mode` |
+  | `BuiltinTools`, `builtin_tools`, `ExecToolOptions` | `nexora.builtins` |
+  | `RemoteSandboxClient` | `nexora.sandbox_remote` |
+  | `FallbackChatModel`, `ModelProvider` | `nexora.providers` |
+  | `openrouter`, `xai` | `nexora_llm` |
+  | `react_loop` | `nexora.engines.plain` |
+  | `DurableRuntimeOrchestrator` | `nexora.orchestration` |
+  | `ModelFailurePolicy` | `nexora.orchestrator` |
+  | `ObservationEventSink` | `nexora.contracts` |
+  | `WorkspaceProvider` | `nexora.workspace` |
 
 - **`StepLog` declares `forget`, and `nexora_store.ClearableSteps` is gone.** Clearing was modelled
   as an optional capability the orchestrator checked for, but three core paths depend on it — a step

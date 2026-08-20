@@ -6,8 +6,9 @@ from typing import Any
 
 import nexora
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from nexora import ChatModel, react_loop
+from nexora import ChatModel
 from nexora.contracts import PendingInput
+from nexora.engines.plain import react_loop
 from nexora.tools import as_model_tools
 
 from tests.test_loop import Tools, a_call, cap

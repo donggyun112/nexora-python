@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import ToolMessage
-from nexora import RunnerAgent
 from nexora.runtime import AgentRuntime
+from nexora.subagents import RunnerAgent
 from nexora_store import MemoryTranscript
 from nexora_ui.execution import AgentEvent, stream_attempt
 from nexora_ui.recording import Recorder, history_of

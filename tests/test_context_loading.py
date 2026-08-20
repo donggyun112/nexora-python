@@ -5,17 +5,16 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import HumanMessage, ToolMessage
-from nexora import (
-    DeferredTools,
+from nexora.engines.plain import react_loop
+from nexora.prompts import SystemPrompt, prompt_section, volatile_prompt_section
+from nexora.skills import (
     DirectorySkillSource,
+    Skill,
+    SkillMetadata,
     SkillRegistry,
     SkillTools,
-    SystemPrompt,
-    prompt_section,
-    react_loop,
-    volatile_prompt_section,
 )
-from nexora.skills import Skill, SkillMetadata
+from nexora.tool_search import DeferredTools
 
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 

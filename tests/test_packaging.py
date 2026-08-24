@@ -169,7 +169,8 @@ LAYERS: dict[str, frozenset[str]] = {
     "goal": frozenset({"contracts", "controls"}),
     "tools": frozenset({"contracts", "controls"}),
     # Above both: a permission policy reads a tool's flag and answers with a control decision.
-    "plan_mode": frozenset({"contracts", "controls", "tools"}),
+    # `prompts` because the mode announces itself: the reminder section renders off the same flag.
+    "plan_mode": frozenset({"contracts", "controls", "prompts", "tools"}),
     # Beside `tools`, not above it: a subagent wrapper composes a `Tools` the way a host does, and
     # reaching the execution boundary would make a child's launch a second kind of tool round.
     "subagents": frozenset({"background", "contracts"}),

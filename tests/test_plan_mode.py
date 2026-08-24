@@ -4,11 +4,19 @@ from typing import Any
 
 from nexora.builtins._exec import exec_is_read_only
 from nexora.controls import Continue, Ctx, Deny, Journal, Permissions
-from nexora.plan_mode import PlanMode, plan_mode_exit, plan_mode_gate
+from nexora.plan_mode import (
+    PlanMode,
+    plan_mode_enter,
+    plan_mode_exit,
+    plan_mode_gate,
+    plan_mode_prompt,
+)
+from nexora.prompts import SystemPrompt
 
 from tests.test_loop import Tools, a_call
 
 CTX = Ctx(turn=0)
+ENTER = "start_planning"
 EXIT = "submit_plan"
 OK: dict[str, Any] = {"type": "text", "text": "plan recorded"}
 FAILED: dict[str, Any] = {"type": "error", "message": "plan rejected"}
@@ -118,6 +126,89 @@ async def test_re_entering_plan_mode_denies_again() -> None:
     mode.active = True
 
     assert isinstance(await gate(CTX, a_call("c3", "write")), Deny)
+
+
+async def test_the_enter_tool_turns_planning_on() -> None:
+    """EnterPlanModeTool sets the mode by succeeding, so the writer must flip the same flag."""
+    mode = PlanMode()
+    gate = plan_mode_gate(planning_tools(), mode, exit_tool=EXIT)
+
+    await plan_mode_enter(mode, enter_tool=ENTER)(CTX, a_call("c1", ENTER), OK)
+
+    assert mode.active
+    assert isinstance(await gate(CTX, a_call("c2", "write")), Deny)
+
+
+async def test_a_failed_enter_does_not_start_planning() -> None:
+    """Only on success, like the exit: an errored enter announced no mode change to the user."""
+    mode = PlanMode()
+
+    await plan_mode_enter(mode, enter_tool=ENTER)(CTX, a_call("c1", ENTER), FAILED)
+
+    assert not mode.active
+
+
+async def test_entering_clears_the_approvals_of_the_last_plan() -> None:
+    """A new plan starts from zero: approvals submitted with the old plan must not survive it."""
+    mode = PlanMode(approved=[{"tool": "exec", "prompt": "pytest"}])
+
+    await plan_mode_enter(mode, enter_tool=ENTER)(CTX, a_call("c1", ENTER), OK)
+
+    assert mode.approved == []
+
+
+async def test_a_successful_exit_carries_the_approved_prompts() -> None:
+    """Plan approval doubles as pre-approval (allowedPrompts), so the list must survive the exit.
+
+    Carried verbatim: what an entry covers is the host gate's judgment, not this module's.
+    """
+    mode = PlanMode(active=True)
+    approvals = [{"tool": "exec", "prompt": "pytest"}]
+
+    await plan_mode_exit(mode, exit_tool=EXIT)(
+        CTX, a_call("c1", EXIT, {"allowed_prompts": approvals}), OK
+    )
+
+    assert not mode.active
+    assert mode.approved == approvals
+
+
+async def test_a_failed_exit_carries_no_approvals() -> None:
+    """A rejected plan approved nothing; keeping its list would pre-approve unapproved calls."""
+    mode = PlanMode(active=True)
+
+    await plan_mode_exit(mode, exit_tool=EXIT)(
+        CTX, a_call("c1", EXIT, {"allowed_prompts": [{"tool": "exec", "prompt": "rm"}]}), FAILED
+    )
+
+    assert mode.approved == []
+
+
+async def test_an_allowed_call_passes_while_planning() -> None:
+    """The plan-file exception: the one write the reminder promises must clear the gate too."""
+    is_plan_file = lambda call: call["args"].get("path") == "PLAN.md"  # noqa: E731
+    gate = plan_mode_gate(
+        planning_tools(), PlanMode(active=True), exit_tool=EXIT, allow=is_plan_file
+    )
+
+    allowed = await gate(CTX, a_call("c1", "write", {"path": "PLAN.md"}))
+    denied = await gate(CTX, a_call("c2", "write", {"path": "src/app.py"}))
+
+    assert allowed == Continue()
+    assert isinstance(denied, Deny)
+
+
+async def test_the_prompt_section_tracks_the_mode_each_round() -> None:
+    """The reminder is injected while planning and gone after: a cached section would lie."""
+    mode = PlanMode(active=True)
+    prompt = SystemPrompt([plan_mode_prompt(mode, exit_tool=EXIT)])
+
+    while_planning = await prompt.render()
+    mode.active = False
+    after_exit = await prompt.render()
+
+    assert EXIT in while_planning
+    assert after_exit == ""
 
 
 async def test_the_composers_carry_the_gate_and_the_exit() -> None:

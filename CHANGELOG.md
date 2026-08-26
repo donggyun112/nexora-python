@@ -7,6 +7,29 @@ documentation corrections belong in the commit log, not here.
 
 ### Added
 
+- **Composable command routing.** `nexora.dispatch` grew from the command vocabulary into the
+  assembly layer: `CommandRouter` is an ordered transition table over the runtime's public
+  primitives, and `default_router()` — `StartRun`, `QueueSteer`, `ResumeApproval`,
+  `RecoverInterrupted`, `ReplayJournal` — is the preset behind `AgentRuntime.dispatch`, which
+  now just delegates to it. Each row matches on `(command, observed state)`; `Contended` from a
+  row is a hand-off to the next matching row, which is how a busy run's `Prompt` becomes a
+  durable enqueue. Drop a row and exactly its behavior disappears — without `QueueSteer`,
+  contention propagates for the host to handle; without the recover rows, `Recover` is refused
+  with the observed state. Host-written transitions slot into the order without subclassing.
+
+- **`AgentRuntime.state` and `AgentRuntime.committed_history`.** The two reads dispatch routed
+  by were private; transitions written outside the package need the same primitives, so they
+  are public. `state()` names the run from one observation: a parked continuation
+  (`waiting`/`switching`/`resuming`), or the run record's verdict — `fresh`, `completed`, or
+  `interrupted` (an open round; a crash and a live worker look the same until a lease attempt
+  tells them apart).
+
+### Changed
+
+- **`InvalidTransition.state` names the precise state.** An `Answer` refused on an unparked
+  run used to say `idle`; it now carries the run record's vocabulary (`fresh`/`completed`),
+  the same names `Recover` refusals already used.
+
 - **`ChatModel`.** `nexora-llm` is a workspace distribution the core depends on. It wraps
   the official `openai` SDK and streams LangChain chunks. OpenAI, OpenRouter, and xAI
   share that wire; `openrouter()` / `xai()` are presets. Anthropic and Google native

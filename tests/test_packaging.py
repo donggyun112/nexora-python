@@ -164,6 +164,10 @@ LAYERS: dict[str, frozenset[str]] = {
     "workspace": frozenset({"contracts"}),
     "sandbox_remote": frozenset({"workspace"}),
     "controls": frozenset({"contracts"}),
+    # Host command vocabulary and the transition table that routes it. Assembly over the
+    # runtime's public primitives — it reaches only the contracts it routes for, and the
+    # runtime is handed in as a value so the assembly layer never imports the core it assembles.
+    "dispatch": frozenset({"contracts"}),
     # Peer of `tools`, not above it: a finish gate decides with a flag and a tool's name, and
     # reaching the execution boundary would let a goal run one.
     "goal": frozenset({"contracts", "controls"}),
@@ -187,6 +191,7 @@ LAYERS: dict[str, frozenset[str]] = {
             "background",
             "contracts",
             "controls",
+            "dispatch",
             "subagents",
             "driver",
             "engines",

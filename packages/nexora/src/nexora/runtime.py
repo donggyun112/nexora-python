@@ -30,6 +30,7 @@ from .contracts import (
 )
 from .contracts.types import Aborted, Emit, OnSuspend
 from .controls import Controls, Ctx
+from .dispatch import Command, default_router
 from .driver import drive
 from .engines.plain import react_loop
 from .history import (
@@ -473,6 +474,64 @@ class AgentRuntime:
         # dropping it on the way out) moved the token out from under the attempt still writing
         # with it. A background child settling mid-run fenced its own parent.
         return await orchestrator.enqueue_input(item)
+
+    async def dispatch(
+        self,
+        run_id: str | ExecutionContext,
+        agent: Agent,
+        command: Command,
+        *,
+        controls: Controls | None = None,
+        **options: Any,
+    ) -> dict[str, Any]:
+        """Route a host command to the transition the run's durable state allows.
+
+        One state-aware entry point over ``run``/``resume``/``recover``/``submit`` so every
+        adapter (HTTP, CLI, queue worker, webhook) shares a single transition table. It needs
+        both durable collaborators: state comes from the execution store, history from the
+        transcript.
+
+        A ``Prompt`` sent while another live worker holds the run's lease is durably enqueued
+        for that worker's loop instead, and ``{"type": "enqueued", "input_id": ...}`` is
+        returned. ``Contended`` still propagates from ``Answer``/``Recover`` — those transitions
+        need the lease themselves, and the host may retry. A command the current state cannot
+        accept raises :class:`~nexora.dispatch.InvalidTransition`.
+        """
+        if self._runtime_orchestrator is None or self._transcript is None:
+            raise TypeError("dispatch requires AgentRuntime(store=..., transcript=...)")
+        return await default_router().dispatch(
+            self, run_id, agent, command, controls=controls, **options
+        )
+
+    async def state(self, run_id: str | ExecutionContext) -> str:
+        """Name the run's durable state from one observation.
+
+        A parked run reports its continuation state (``waiting``/``switching``/``resuming``).
+        Otherwise the transcript's run record names it: ``fresh`` (never ran), ``completed``
+        (ended), or ``interrupted`` (an open round — a crash, or a run another worker is still
+        driving; only a lease attempt can tell those apart). Without a transcript an unparked
+        run is just ``idle``.
+        """
+        execution = _execution_context(run_id)
+        active = await self._orchestrator(execution).active_continuation()
+        if active:
+            return str(active.get("state"))
+        if self._transcript is None:
+            return "idle"
+        record = await self._transcript.for_execution(execution).read_run(execution.run_id)
+        if record is None:
+            return "fresh"
+        return "completed" if record.get("ended_at") is not None else "interrupted"
+
+    async def committed_history(
+        self, run_id: str | ExecutionContext, conversation_id: str | None = None
+    ) -> list[BaseMessage]:
+        """Read the run's committed model history from the configured transcript."""
+        if self._transcript is None:
+            raise TypeError("committed_history requires AgentRuntime(transcript=...)")
+        execution = _execution_context(run_id)
+        transcript = self._transcript.for_execution(execution)
+        return messages_of(await transcript.read(conversation_id or execution.run_id))
 
     async def resume(
         self,

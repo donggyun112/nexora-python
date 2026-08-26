@@ -9,9 +9,11 @@ from typing import Any
 
 from loguru import logger
 from nexora.contracts import EventType, Tools
+from nexora.dispatch import InvalidTransition
 from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended
 from nexora.runtime import AgentRuntime
 from nexora.subagents import Subagents
+from nexora_store import Contended
 
 from .children import subagents
 from .config import SETTINGS
@@ -117,6 +119,11 @@ async def stream_attempt(
         except (AgentAborted, AgentFailed) as failure:
             logger.warning("run {} ended without an outcome: {}", run_id, failure)
             await queue.put({"kind": "error", "message": str(failure)})
+        except (Contended, InvalidTransition) as refused:
+            # Part of the dispatch vocabulary, not a bug: Recover on a fresh run, or a command
+            # racing a live worker's lease. A warning frame, never the catch-all's stack trace.
+            logger.warning("run {} refused the command: {}", run_id, refused)
+            await queue.put({"kind": "error", "message": str(refused)})
         except Exception as failure:
             # With a stack, because this branch catches what nobody anticipated. Turning an
             # unknown failure into a one-line frame and dropping the traceback is how a bug here

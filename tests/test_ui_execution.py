@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
 from nexora.contracts.types import ToolCall, Tools
 from nexora.controls import Ctx
+from nexora.dispatch import InvalidTransition, Recover
 from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
 from nexora.runtime import AgentRuntime
 from nexora_ui.execution import AgentEvent, stream_attempt
@@ -119,6 +120,33 @@ async def test_no_failure_branch_reaches_the_browser_without_reaching_the_log(
     assert any("logged-crash" in line and "committed step" in line for line in logged), logged
     assert any("logged-break" in line for line in logged), logged
     assert any("Traceback" in line for line in logged), "an unexpected failure must keep its stack"
+
+
+async def test_a_refused_command_is_a_warning_frame_not_a_stack_trace(
+    logged: list[str],
+) -> None:
+    """A dispatch refusal is vocabulary, not a bug, so no traceback may reach the log.
+
+    The catch-all below the refusal branch logs `exception`; if a refusal ever falls through to
+    it, an operator pressing Recover on a fresh run starts producing phantom bug reports.
+    """
+
+    async def refused(
+        _runtime: AgentRuntime, _tools: Tools, _on_event: AgentEvent
+    ) -> dict[str, Any]:
+        raise InvalidTransition("fresh", Recover())
+
+    frames = [
+        json.loads(line)
+        async for line in stream_attempt("refused-cmd", refused, RuntimeState())
+    ]
+
+    assert frames[-1] == {
+        "kind": "error",
+        "message": "Recover is invalid while the run is 'fresh'",
+    }
+    assert any("refused-cmd" in line and line.startswith("WARNING") for line in logged), logged
+    assert all("Traceback" not in line for line in logged), "a refusal is not a stack trace"
 
 
 async def test_agent_stream_marks_a_post_commit_worker_crash_as_recoverable() -> None:

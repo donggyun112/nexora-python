@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, cast
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from langchain_core.messages import AIMessage, HumanMessage
-from nexora.contracts import ToolCall, Tools
+from nexora import Agent
+from nexora.contracts import Tools
+from nexora.dispatch import Answer, Prompt, Recover
 from nexora.runtime import AgentRuntime
 
 from .config import SETTINGS, SYSTEM_PROMPT
@@ -20,6 +21,17 @@ from .schemas import AttachRequest, CancelRequest, RecoverRequest, ResumeRequest
 from .state import STATE
 
 router = APIRouter(prefix="/api")
+
+
+def _console_agent(model_name: str, tools: Tools) -> Agent:
+    """Bind the console's model selection and toolbox into one agent definition."""
+    return Agent(
+        name="console",
+        description="Nexora test console agent",
+        model=openrouter_model(model_name),
+        tools=tools,
+        system_prompt=SYSTEM_PROMPT,
+    )
 
 
 @router.get("/health")
@@ -47,50 +59,20 @@ async def run_agent(request: RunRequest) -> StreamingResponse:
     session.controls = permission_controls() if request.permission_gate else None
     prompt_id = f"{run_id}:prompt:{uuid.uuid4()}"
     if request.fault_after_step_commit:
-        session.recovery_history = None
         STATE.step_store.arm(run_id)
 
     async def attempt(
         runtime: AgentRuntime, tools: Tools, on_event: AgentEvent
     ) -> dict[str, Any]:
-        """Execute the requested run through the shared runtime."""
-        text: list[str] = []
-        calls: list[ToolCall] = []
-
-        async def capture(event: dict[str, Any]) -> None:
-            await on_event(event)
-            if not request.fault_after_step_commit:
-                return
-            if event.get("type") == "text":
-                text.append(str(event.get("text", "")))
-            if event.get("type") == "tool_call":
-                calls.append(
-                    cast(
-                        ToolCall,
-                        {
-                            "id": event.get("id"),
-                            "name": event.get("name"),
-                            "args": event.get("input", {}),
-                            "type": "tool_call",
-                        },
-                    )
-                )
-                session.recovery_history = [
-                    HumanMessage(request.prompt, id=prompt_id),
-                    AIMessage(content="".join(text), tool_calls=list(calls)),
-                ]
-
+        """Dispatch the prompt through the shared runtime."""
         try:
-            return await runtime.run(
+            return await runtime.dispatch(
                 run_id,
-                openrouter_model(request.model),
-                tools,
-                request.prompt,
+                _console_agent(request.model, tools),
+                Prompt(request.prompt, prompt_id=prompt_id),
                 controls=session.controls,
-                on_event=capture,
-                system_prompt=SYSTEM_PROMPT,
+                on_event=on_event,
                 should_stop_after_turn=capped,
-                prompt_id=prompt_id,
             )
         finally:
             STATE.step_store.disarm(run_id)
@@ -104,30 +86,27 @@ async def run_agent(request: RunRequest) -> StreamingResponse:
 
 @router.post("/recover")
 async def recover_agent(request: RecoverRequest) -> StreamingResponse:
-    """Recover a run after a simulated post-commit worker crash."""
+    """Recover a run after a simulated post-commit worker crash.
+
+    The crashed round's model turn replays from the step journal, so nothing is captured
+    host-side; a run with nothing to recover streams an ``InvalidTransition`` error frame.
+    """
     if request.run_id not in STATE.sessions:
         raise HTTPException(status_code=404, detail="unknown run_id")
     session = STATE.sessions[request.run_id]
-    if session.recovery_history is None:
-        raise HTTPException(status_code=409, detail="run has no recoverable step crash")
 
     async def attempt(
         runtime: AgentRuntime, tools: Tools, on_event: AgentEvent
     ) -> dict[str, Any]:
-        """Recover the requested run through the shared runtime."""
-        outcome = await runtime.recover(
+        """Dispatch the recovery through the shared runtime."""
+        return await runtime.dispatch(
             request.run_id,
-            session.recovery_history or [],
-            openrouter_model(request.model),
-            tools,
+            _console_agent(request.model, tools),
+            Recover(),
             controls=session.controls,
             on_event=on_event,
-            retry_running=False,
-            system_prompt=SYSTEM_PROMPT,
             should_stop_after_turn=capped,
         )
-        session.recovery_history = None
-        return outcome
 
     return StreamingResponse(
         stream_attempt(request.run_id, attempt, model=request.model),
@@ -151,16 +130,13 @@ async def resume_agent(request: ResumeRequest) -> StreamingResponse:
     async def attempt(
         runtime: AgentRuntime, tools: Tools, on_event: AgentEvent
     ) -> dict[str, Any]:
-        """Resume the requested run through the shared runtime."""
-        return await runtime.resume(
+        """Dispatch the operator's answer through the shared runtime."""
+        return await runtime.dispatch(
             request.run_id,
-            request.pending_id,
-            answer,
-            openrouter_model(request.model),
-            tools,
+            _console_agent(request.model, tools),
+            Answer(request.pending_id, answer),
             controls=session.controls,
             on_event=on_event,
-            system_prompt=SYSTEM_PROMPT,
             should_stop_after_turn=capped,
         )
 

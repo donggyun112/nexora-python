@@ -74,7 +74,12 @@ async def stream_attempt(
 
     async def run_attempt() -> None:
         """Execute the attempt and translate its terminal state into a frame."""
-        runtime = AgentRuntime(store=state.step_store, emit=publish)
+        # `runtime_transcripts`, not the recorder's store: dispatch reads run state and history
+        # from the runtime transcript, and sharing one conversation with the console recorder
+        # would interleave two writers' entries.
+        runtime = AgentRuntime(
+            store=state.step_store, transcript=state.runtime_transcripts, emit=publish
+        )
         toolbox = Subagents(
             session.tools,
             subagents(model or SETTINGS.default_model, state.step_store, state.transcripts),

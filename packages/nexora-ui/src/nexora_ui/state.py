@@ -6,7 +6,6 @@ from typing import Any
 
 from nexora import MemorySteps
 from nexora.background import BackgroundTasks
-from nexora.contracts import BaseMessage
 from nexora.controls import Controls
 from nexora_store import MemoryTranscript
 
@@ -67,29 +66,33 @@ class FaultInjectingMemorySteps(MemorySteps):
 
 @dataclass(slots=True)
 class Session:
-    """Process-local dependencies and recovery state for one run.
+    """Process-local dependencies for one run.
 
     Attributes:
         tools: Demo tool executor.
         controls: Optional runtime control plane.
-        recovery_history: Message snapshot for simulated crash recovery.
         tasks: Managed background tasks retained across attempts.
         opened: Addresses of independent child runs.
     """
 
     tools: DemoTools = field(default_factory=DemoTools)
     controls: Controls | None = None
-    recovery_history: list[BaseMessage] | None = None
     tasks: BackgroundTasks = field(default_factory=BackgroundTasks)
     opened: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class RuntimeState:
-    """Process-local sessions, step ledger, and transcript store."""
+    """Process-local sessions, step ledger, and transcript stores.
+
+    ``transcripts`` is the console recorder's store (attach continuity and the transcript
+    panel); ``runtime_transcripts`` is the runtime's own durable history, kept separate so the
+    two writers never interleave entries in one conversation.
+    """
 
     step_store: FaultInjectingMemorySteps = field(default_factory=FaultInjectingMemorySteps)
     transcripts: MemoryTranscript = field(default_factory=MemoryTranscript)
+    runtime_transcripts: MemoryTranscript = field(default_factory=MemoryTranscript)
     sessions: dict[str, Session] = field(default_factory=dict)
 
     def session(self, run_id: str) -> Session:

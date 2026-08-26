@@ -308,6 +308,10 @@ class CommandRouter:
         **options: Any,
     ) -> dict[str, Any]:
         """Route one command through the table. ``runtime`` is an ``AgentRuntime``."""
+        # Commands are closed on purpose while routing stays open: the vocabulary mirrors the
+        # runtime's primitives one-to-one, so a new command type is a core change, not assembly.
+        # If host-defined commands are ever wanted, this guard is the one extension point —
+        # consult the table first and reserve TypeError for a command no row claimed.
         if not isinstance(command, Prompt | Answer | Recover):
             raise TypeError(f"not a dispatch command: {command!r}")
         state = await runtime.state(run_id)

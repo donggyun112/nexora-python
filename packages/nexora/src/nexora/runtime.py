@@ -479,8 +479,8 @@ class AgentRuntime:
         run_id: str | ExecutionContext,
         pending_id: str,
         answer: dict[str, Any],
-        model: Any,
-        tools: Tools,
+        model: BaseChatModel | Agent,
+        tools: Tools | None = None,
         *,
         controls: Controls | None = None,
         on_event: OnAgentEvent | None = None,
@@ -497,6 +497,7 @@ class AgentRuntime:
         still-undecided requests. The final answer revalidates and finishes every parked call
         in model order, and only then does the run continue.
         """
+        model, tools = _resolve_continuation(model, tools, engine_options)
         execution = _execution_context(run_id)
         conversation = conversation_id or execution.run_id
         async with self._orchestrator(
@@ -639,8 +640,8 @@ class AgentRuntime:
         self,
         run_id: str | ExecutionContext,
         history: list[BaseMessage],
-        model: Any,
-        tools: Tools,
+        model: BaseChatModel | Agent,
+        tools: Tools | None = None,
         *,
         controls: Controls | None = None,
         aborted: Aborted = lambda: False,
@@ -653,6 +654,7 @@ class AgentRuntime:
         **engine_options: Any,
     ) -> dict[str, Any]:
         """Recover an interrupted tool round and continue without replaying its model turn."""
+        model, tools = _resolve_continuation(model, tools, engine_options)
         execution = _execution_context(run_id)
         if execution.subject is not None:
             supplied_subject = engine_options.get("subject")
@@ -1066,6 +1068,18 @@ def _resolve_agent(
     if tools is None or isinstance(tools, str):
         raise TypeError("model execution requires a Tools instance")
     return model, tools, prompt
+
+
+def _resolve_continuation(
+    model: BaseChatModel | Agent,
+    tools: Tools | None,
+    engine_options: dict[str, Any],
+) -> tuple[BaseChatModel, Tools]:
+    """Expand an agent definition for a continuation, which carries no new prompt."""
+    model, tools, prompt = _resolve_agent(model, tools, "", engine_options)
+    if prompt:
+        raise TypeError("a continuation takes no prompt")
+    return model, tools
 
 
 def _execution_context(value: str | ExecutionContext) -> ExecutionContext:

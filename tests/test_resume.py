@@ -3,8 +3,8 @@
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
-from nexora import AgentRuntime
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from nexora import Agent, AgentRuntime
 from nexora.contracts import ToolCall
 from nexora.controls import ControlPlane, Permissions, gate
 from nexora.engines.plain import react_loop
@@ -117,6 +117,56 @@ async def test_repeating_resume_reuses_the_committed_effect_result() -> None:
     assert isinstance(answer, ToolMessage)
     assert answer.content == "deployment-id-7"
     assert outcome["content"] == "recovered"
+
+
+async def test_resume_accepts_the_agent_that_started_the_run() -> None:
+    """resume() expands an Agent like run() does, and the snapshot keeps one system message.
+
+    Without the expansion a host that ran an Agent must unpack model/tools by hand; without the
+    adoption, re-supplying the agent's system_prompt stacked a second SystemMessage above the
+    one restored from the suspension snapshot.
+    """
+
+    async def hold(call: ToolCall) -> dict[str, Any] | None:
+        if call["name"] == "deploy":
+            return {"type": "suspend", "pending_id": "approval-1"}
+        return None
+
+    runtime = AgentRuntime(store=MemorySteps())
+    first = Agent(
+        name="deployer",
+        description="Deploys",
+        model=scripted(says("", a_call("c1", "deploy"))),
+        tools=Tools(names=["deploy"]),
+        system_prompt="Deploy carefully.",
+    )
+    with pytest.raises(AgentSuspended):
+        await runtime.run(
+            "resume-agent",
+            first,
+            "ship it",
+            controls=ControlPlane(pre_tool_use=Permissions(gate(hold))),
+        )
+
+    resumed_tools = Tools(
+        results={"deploy": {"type": "text", "text": "deployment-id-7"}}, names=["deploy"]
+    )
+    model = scripted(says("deployed"))
+    resumed = Agent(
+        name="deployer",
+        description="Deploys",
+        model=model,
+        tools=resumed_tools,
+        system_prompt="Deploy carefully.",
+    )
+    outcome = await runtime.resume(
+        "resume-agent", "approval-1", {"type": "text", "text": "approved"}, resumed
+    )
+
+    assert resumed_tools.ran == ["deploy"]
+    systems = [m for m in model.seen[0] if isinstance(m, SystemMessage)]
+    assert [m.content for m in systems] == ["Deploy carefully."]
+    assert outcome["content"] == "deployed"
 
 
 async def test_the_resumed_history_answers_the_call_that_stopped() -> None:

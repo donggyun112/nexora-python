@@ -7,7 +7,13 @@ from typing import Any, cast
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+)
 from langchain_core.outputs import ChatGenerationChunk
 from nexora import AgentRuntime
 from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
@@ -273,6 +279,27 @@ async def test_the_system_prompt_reaches_the_provider() -> None:
         pass
 
     assert llm.seen[0][0].content == "너는 도우미다"
+
+
+async def test_a_prompt_that_renders_nothing_leaves_a_restored_system_message_alone() -> None:
+    """The loop may take over the leading system slot, but only to put something in it.
+
+    A resumed run arrives with the system message it parked with. Claiming that slot for a source
+    that renders empty deletes a message this loop never wrote, and the turn reaches the provider
+    with its instructions gone.
+    """
+
+    class RendersNothing:
+        async def render(self) -> str:
+            return ""
+
+    llm = scripted(says("ok"))
+    history: list[BaseMessage] = [SystemMessage("restored"), HumanMessage("hi")]
+
+    async for _ in react_loop(llm, Tools(), history=history, system_prompt=RendersNothing()):
+        pass
+
+    assert [m.content for m in llm.seen[0] if isinstance(m, SystemMessage)] == ["restored"]
 
 
 # ── Stop conditions ──────────────────────────────────────────────────────────

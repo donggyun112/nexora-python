@@ -328,10 +328,22 @@ async def _refresh_system_message(
     system_prompt: str | SystemPromptSource | None,
     managed: bool,
 ) -> bool:
-    """Refresh the loop-owned system message while preserving caller history."""
+    """Refresh the loop-owned system message, taking over a leading one already in history.
+
+    A restored snapshot carries the system message this loop managed before it parked, so the
+    first turn adopts that slot rather than stacking a second system message above it. Provenance
+    is not checked and cannot be — a caller's own leading system message is adopted the same way,
+    and a supplied ``system_prompt`` therefore replaces it. That is the `Agent` contract, which
+    owns its system prompt, applied to the continuation entry points.
+
+    Adoption waits until there is something to put in the slot. Claiming it for a prompt that
+    renders empty would delete a message this loop never wrote.
+    """
     if system_prompt is None:
         return managed
     rendered = system_prompt if isinstance(system_prompt, str) else await system_prompt.render()
+    if not managed and rendered and messages and isinstance(messages[0], SystemMessage):
+        managed = True
     if rendered:
         message = SystemMessage(rendered)
         if managed:

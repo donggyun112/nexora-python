@@ -190,6 +190,32 @@ async def test_agent_definition_rejects_a_system_prompt_override() -> None:
         )
 
 
+async def test_a_continuation_refuses_a_prompt() -> None:
+    """`run` takes a prompt in the tools slot; a continuation must not silently swallow one.
+
+    `resume` and `recover` carry no new user input — the parked history is the input. Accepting a
+    string there would look like it was delivered to the model and it never would be.
+    """
+    agent = Agent("reviewer", "Reviews code", scripted(says("done")), Tools())
+
+    with pytest.raises(TypeError, match="continuation takes no prompt"):
+        await AgentRuntime(store=MemorySteps()).resume(
+            "continuation-prompt",
+            "approval-1",
+            {"type": "text", "text": "approved"},
+            agent,
+            "extra prompt",  # type: ignore[arg-type]
+        )
+
+
+async def test_a_continuation_still_requires_tools_beside_a_bare_model() -> None:
+    """The `Agent` overload gave `tools` a default; a bare model must not inherit it."""
+    with pytest.raises(TypeError, match="requires a Tools instance"):
+        await AgentRuntime(store=MemorySteps()).recover(
+            "continuation-toolless", [HumanMessage("go")], scripted(says("done"))
+        )
+
+
 async def test_default_runtime_admits_the_prompt_without_orchestration() -> None:
     """Direct execution must not bypass the loop's input screening boundary."""
     model = scripted(says("done"))
@@ -1138,6 +1164,24 @@ async def test_runtime_recovers_a_tool_round_without_replaying_the_model() -> No
 
     assert tools.ran == ["second"]
     assert len(model.seen) == 1
+    assert outcome["content"] == "finished"
+
+
+async def test_recover_accepts_an_agent_definition() -> None:
+    """recover() expands an Agent, carrying its system prompt into the recovered turn."""
+    store = MemorySteps()
+    calls = [a_call("c1", "first")]
+    history = [HumanMessage("go"), AIMessage(content="", tool_calls=calls)]
+    tools = Tools(results={"first": {"type": "text", "text": "one"}}, names=["first"])
+    model = scripted(says("finished"))
+    agent = Agent("fixer", "Recovers", model, tools, system_prompt="Fix carefully.")
+
+    outcome = await AgentRuntime(store=store).recover("recover-agent", history, agent)
+
+    assert tools.ran == ["first"]
+    system = model.seen[0][0]
+    assert isinstance(system, SystemMessage)
+    assert system.content == "Fix carefully."
     assert outcome["content"] == "finished"
 
 

@@ -52,7 +52,7 @@ def distributions() -> list[Distribution]:
         found.append(
             Distribution(project["name"], module, source, _internal(project["dependencies"]))
         )
-    assert len(found) == 6, f"expected six distributions, found {[d.name for d in found]}"
+    assert len(found) == 7, f"expected seven distributions, found {[d.name for d in found]}"
     return found
 
 

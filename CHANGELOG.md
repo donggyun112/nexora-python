@@ -11,9 +11,12 @@ documentation corrections belong in the commit log, not here.
   assembly layer: `CommandRouter` is an ordered transition table over the runtime's public
   primitives, and `default_router()` — `StartRun`, `QueueSteer`, `ResumeApproval`,
   `RecoverInterrupted`, `ReplayJournal` — is the preset behind `AgentRuntime.dispatch`, which
-  now just delegates to it. Each row matches on `(command, observed state)`; `Contended` from a
-  row is a hand-off to the next matching row, which is how a busy run's `Prompt` becomes a
-  durable enqueue. Drop a row and exactly its behavior disappears — without `QueueSteer`,
+  now just delegates to it. A row matches on two axes split on purpose: `applies(command)` is a
+  pure predicate, and `states` declares — as data — which observed states the row accepts, so
+  the router reads the run's state only when a candidate row declared one or a refusal must
+  name it; a `Prompt` or `Answer` routes with no state reads at all. `Contended` from a row is
+  a hand-off to the next matching row, which is how a busy run's `Prompt` becomes a durable
+  enqueue. Drop a row and exactly its behavior disappears — without `QueueSteer`,
   contention propagates for the host to handle; without the recover rows, `Recover` is refused
   with the observed state. Host-written transitions slot into the order without subclassing.
 

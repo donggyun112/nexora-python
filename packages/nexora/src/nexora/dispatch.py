@@ -2,8 +2,9 @@
 
 Adapters (HTTP, CLI, queue worker, webhook) translate their wire format into one of these
 commands and hand it to a :class:`CommandRouter` — usually the :func:`default_router` preset
-behind ``AgentRuntime.dispatch``. The router observes the run's durable state once and applies
-the first transition whose ``(command, state)`` row matches; the transitions themselves call
+behind ``AgentRuntime.dispatch``. The router matches on the command first and observes the
+run's durable state at most once — only when a candidate row declares ``states`` or a refusal
+must name the state precisely; the transitions themselves call
 only the runtime's public primitives (``run``/``resume``/``recover``/``submit``), so taking a
 row out removes exactly its behavior and nothing else.
 
@@ -14,7 +15,7 @@ it assembles.
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 from langchain_core.messages import HumanMessage
 from nexora_store import Contended
@@ -90,14 +91,21 @@ class InvalidTransition(Exception):
 class Transition(Protocol):
     """One row of a router's transition table.
 
-    ``applies`` is a pure predicate over the observed state and the command; ``apply`` executes
-    through the runtime's public primitives. Raising :class:`~nexora_store.Contended` from
-    ``apply`` is a hand-off, not a failure: the router offers the command to the next matching
-    row, and re-raises only when no row is left.
+    A row matches on two axes, deliberately split: ``applies`` is a pure predicate over the
+    command alone, and ``states`` declares — as data, not code — which observed states the row
+    accepts (``None`` accepts every state). The split is what lets the router skip the state
+    read entirely when no candidate row declared one, and it leaves nothing to forget: a
+    predicate never sees an unobserved state, so it cannot silently mis-compare one.
+
+    Raising :class:`~nexora_store.Contended` from ``apply`` is a hand-off, not a failure: the
+    router offers the command to the next matching row, and re-raises only when no row is left.
     """
 
-    def applies(self, state: str, command: "Command") -> bool:
-        """Whether this transition accepts ``command`` in the observed ``state``."""
+    states: ClassVar[frozenset[str] | None]
+    """Observed states this row accepts; ``None`` accepts all without forcing an observation."""
+
+    def applies(self, command: "Command") -> bool:
+        """Whether this transition accepts ``command``, before any state is observed."""
         ...
 
     async def apply(
@@ -106,15 +114,17 @@ class Transition(Protocol):
         run_id: Any,
         agent: Agent,
         command: "Command",
-        state: str,
+        state: str | None,
         *,
         controls: Any = None,
         **options: Any,
     ) -> dict[str, Any]:
         """Execute the transition through the runtime's public primitives.
 
-        ``runtime`` is an ``AgentRuntime``, typed loosely because the assembly layer must not
-        import the core it assembles.
+        ``state`` is the router's observation, or ``None`` when no candidate row required one —
+        a row that needs it then reads fresh, which is the better observation for an error
+        anyway. ``runtime`` is an ``AgentRuntime``, typed loosely because the assembly layer
+        must not import the core it assembles.
         """
         ...
 
@@ -127,7 +137,9 @@ _PARKED = frozenset({"waiting", "switching", "resuming"})
 class StartRun:
     """``Prompt`` → ``run``: deliver the text as this attempt's user input."""
 
-    def applies(self, state: str, command: "Command") -> bool:
+    states: ClassVar[frozenset[str] | None] = None
+
+    def applies(self, command: "Command") -> bool:
         """A prompt always may try to start; ``run`` itself owns the parked-run admission."""
         return isinstance(command, Prompt)
 
@@ -137,7 +149,7 @@ class StartRun:
         run_id: Any,
         agent: Agent,
         command: "Command",
-        state: str,
+        state: str | None,
         *,
         controls: Any = None,
         **options: Any,
@@ -164,7 +176,9 @@ class QueueSteer:
     row, contention is the host's problem again and ``Contended`` propagates.
     """
 
-    def applies(self, state: str, command: "Command") -> bool:
+    states: ClassVar[frozenset[str] | None] = None
+
+    def applies(self, command: "Command") -> bool:
         """Any prompt can queue; only the hand-off order decides when this row is reached."""
         return isinstance(command, Prompt)
 
@@ -174,7 +188,7 @@ class QueueSteer:
         run_id: Any,
         agent: Agent,
         command: "Command",
-        state: str,
+        state: str | None,
         *,
         controls: Any = None,
         **options: Any,
@@ -194,7 +208,9 @@ class QueueSteer:
 class ResumeApproval:
     """``Answer`` → ``resume``: revalidate and finish the call a permission gate parked."""
 
-    def applies(self, state: str, command: "Command") -> bool:
+    states: ClassVar[frozenset[str] | None] = None
+
+    def applies(self, command: "Command") -> bool:
         """An answer is offered in any state; resume validates the pending id durably."""
         return isinstance(command, Answer)
 
@@ -204,7 +220,7 @@ class ResumeApproval:
         run_id: Any,
         agent: Agent,
         command: "Command",
-        state: str,
+        state: str | None,
         *,
         controls: Any = None,
         **options: Any,
@@ -218,7 +234,10 @@ class ResumeApproval:
         except LookupError as undecided:
             if isinstance(undecided, KeyError):
                 raise
-            raise InvalidTransition(state, command) from undecided
+            # Unobserved until now, so read fresh — an error should name the state at failure
+            # time, not a snapshot from before the attempt.
+            named = state if state is not None else await runtime.state(run_id)
+            raise InvalidTransition(named, command) from undecided
         return outcome
 
 
@@ -226,9 +245,11 @@ class ResumeApproval:
 class RecoverInterrupted:
     """``Recover`` on a parked run → ``recover`` from the committed transcript."""
 
-    def applies(self, state: str, command: "Command") -> bool:
+    states: ClassVar[frozenset[str] | None] = _PARKED
+
+    def applies(self, command: "Command") -> bool:
         """Only a parked continuation has a transcript round to finish."""
-        return isinstance(command, Recover) and state in _PARKED
+        return isinstance(command, Recover)
 
     async def apply(
         self,
@@ -236,7 +257,7 @@ class RecoverInterrupted:
         run_id: Any,
         agent: Agent,
         command: "Command",
-        state: str,
+        state: str | None,
         *,
         controls: Any = None,
         **options: Any,
@@ -260,9 +281,11 @@ class ReplayJournal:
     live one.
     """
 
-    def applies(self, state: str, command: "Command") -> bool:
+    states: ClassVar[frozenset[str] | None] = frozenset({"interrupted"})
+
+    def applies(self, command: "Command") -> bool:
         """An open run record with nothing parked is the journal-replay case."""
-        return isinstance(command, Recover) and state == "interrupted"
+        return isinstance(command, Recover)
 
     async def apply(
         self,
@@ -270,7 +293,7 @@ class ReplayJournal:
         run_id: Any,
         agent: Agent,
         command: "Command",
-        state: str,
+        state: str | None,
         *,
         controls: Any = None,
         **options: Any,
@@ -283,7 +306,8 @@ class ReplayJournal:
 class CommandRouter:
     """An ordered transition table over the runtime's execution primitives.
 
-    The router observes the run's durable state exactly once and offers the command to each
+    The router filters rows by command, observes the run's durable state at most once — and
+    not at all when no candidate row declared ``states`` — then offers the command to each
     matching row in order. ``Contended`` from a row is a hand-off to the next matching row —
     that is how :class:`StartRun` falls back to :class:`QueueSteer` — and propagates when no
     row remains, so the host can retry. A command no row accepts raises
@@ -314,20 +338,29 @@ class CommandRouter:
         # consult the table first and reserve TypeError for a command no row claimed.
         if not isinstance(command, Prompt | Answer | Recover):
             raise TypeError(f"not a dispatch command: {command!r}")
-        state = await runtime.state(run_id)
+        candidates = [row for row in self._transitions if row.applies(command)]
+        # Observed lazily, because this is a framework and the host's call frequency is not
+        # ours to assume: the state is read only when a candidate row declared `states` or a
+        # refusal needs its precise name. A Prompt or Answer routed by command alone costs no
+        # reads here at all.
+        state: str | None = None
+        if any(row.states is not None for row in candidates):
+            state = await runtime.state(run_id)
         contended: Contended | None = None
-        for transition in self._transitions:
-            if not transition.applies(state, command):
+        for row in candidates:
+            if row.states is not None and state not in row.states:
                 continue
             try:
-                return await transition.apply(
+                return await row.apply(
                     runtime, run_id, agent, command, state, controls=controls, **options
                 )
             except Contended as busy:
                 contended = busy
         if contended is not None:
             raise contended
-        raise InvalidTransition(state, command)
+        raise InvalidTransition(
+            state if state is not None else await runtime.state(run_id), command
+        )
 
 
 def default_router() -> CommandRouter:

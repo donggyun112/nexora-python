@@ -1,6 +1,6 @@
 """One state-aware entry point — dispatch routes commands by what the ledger allows."""
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -234,6 +234,34 @@ async def test_a_repeated_prompt_id_is_delivered_once() -> None:
     assert len(delivered) == 1
 
 
+async def test_a_prompt_routes_without_observing_the_run_state() -> None:
+    """A framework must not charge every host for a read only some rows need.
+
+    ``read_run`` is called from exactly one place — ``AgentRuntime.state`` — so counting it is
+    counting observations. A Prompt matches on the command alone; if this ever reads, the
+    router went back to observing eagerly and every dispatch pays for the Recover rows' needs.
+    """
+
+    class CountingTranscript(MemoryTranscript):
+        def __init__(self) -> None:
+            super().__init__()
+            self.run_reads = 0
+
+        async def read_run(self, run_id: str) -> dict[str, Any] | None:
+            self.run_reads += 1
+            return await super().read_run(run_id)
+
+    transcript = CountingTranscript()
+    runtime = AgentRuntime(store=MemorySteps(), transcript=transcript)
+
+    outcome = await runtime.dispatch(
+        "d-blind", _agent(scripted(says("done"))), Prompt("hello")
+    )
+
+    assert outcome["stop_reason"] == "completed"
+    assert transcript.run_reads == 0  # routed by command alone; no state was observed
+
+
 async def test_removing_queue_steer_makes_contention_the_hosts_problem() -> None:
     """The enqueue fallback is one removable row, not dispatch policy.
 
@@ -286,8 +314,10 @@ async def test_a_host_transition_slots_into_the_table() -> None:
     class Reject:
         """Refuse prompts while anything is parked, instead of run()'s cancel-and-switch."""
 
-        def applies(self, state: str, command: Any) -> bool:
-            return isinstance(command, Prompt) and state == "waiting"
+        states: ClassVar[frozenset[str] | None] = frozenset({"waiting"})
+
+        def applies(self, command: Any) -> bool:
+            return isinstance(command, Prompt)
 
         async def apply(
             self,
@@ -295,7 +325,7 @@ async def test_a_host_transition_slots_into_the_table() -> None:
             run_id: Any,
             agent: Any,
             command: Any,
-            state: str,
+            state: str | None,
             *,
             controls: Any = None,
             **options: Any,

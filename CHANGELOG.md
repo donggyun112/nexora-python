@@ -5,6 +5,16 @@ documentation corrections belong in the commit log, not here.
 
 ## Unreleased
 
+### Fixed
+
+- **A replayed message now moves the branch every reader sees.** `TranscriptWriter.record`
+  advances its own chain position when an entry turns out to be a duplicate, but nothing was
+  appended, so `active_branch` — which reads the tip off the entries — still reported the leaf
+  the replay had started from. A run that resumed an unanswered tool round therefore left its
+  before-tool and after-tool coordinates on one leaf: forking "after the result" resumed before
+  it and ran the whole tool boundary again. A duplicate record now publishes a `leaf` marker at
+  the entry it landed on, so the writer and every reader agree on where the conversation is.
+
 ### Changed
 
 - **`after_tool_call` is now `post_tool_use`.** The hook fires the `post_tool_use` event and

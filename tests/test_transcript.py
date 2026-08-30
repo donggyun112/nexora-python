@@ -10,7 +10,13 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from semora.transcript import SCHEMA_VERSION, TranscriptWriter, message_entry, messages_of
+from semora.transcript import (
+    SCHEMA_VERSION,
+    TranscriptWriter,
+    active_branch,
+    message_entry,
+    messages_of,
+)
 from semora_store import MemoryTranscript, Transcript
 
 pytestmark = pytest.mark.anyio
@@ -82,15 +88,47 @@ async def test_unknown_entry_kinds_are_skipped_rather_than_raising() -> None:
 # ── Idempotency ──────────────────────────────────────────────────────────────
 
 
-async def test_replaying_a_conversation_appends_nothing_new() -> None:
-    """Replaying an identical conversation appends no duplicate entries."""
+async def test_replaying_a_conversation_adds_no_message_and_no_branch() -> None:
+    """Replaying an identical conversation stores no duplicate message and grows no branch."""
     store = MemoryTranscript()
     await write(store, a_conversation())
 
+    def messages(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [entry for entry in entries if "parent_uuid" in entry]
+
     before = await store.read("conv-1")
     await write(store, a_conversation())
+    after = await store.read("conv-1")
 
-    assert await store.read("conv-1") == before
+    assert messages(after) == messages(before)
+    assert active_branch(after) == active_branch(before)
+
+
+async def test_a_replayed_message_moves_the_branch_readers_see() -> None:
+    """The writer advances on a duplicate, and readers have to end up in the same place.
+
+    A fork resumes an unanswered tool round and re-records its result, which the conversation
+    already holds — nothing is appended. `active_branch` reads the tip off the entries, so
+    without a marker it would still report the leaf the fork started from, and the next branch
+    taken "after the result" would land before it.
+    """
+    store = MemoryTranscript()
+    conversation = a_conversation()
+    await write(store, conversation)
+    entries = await store.read("conv-1")
+    chain = [entry["uuid"] for entry in entries if "parent_uuid" in entry]
+
+    replay = TranscriptWriter(
+        store, conversation_id="conv-1", run_id="run-2", parent_uuid=chain[-3]
+    )
+    await replay.rewind(chain[-3])
+    assert active_branch(await store.read("conv-1"))[-1]["uuid"] == chain[-3]
+
+    await replay.record(conversation[-2])
+
+    tip = active_branch(await store.read("conv-1"))[-1]
+    assert tip["uuid"] == chain[-2], "the branch is where the replay left it, not where it began"
+    assert replay.parent_uuid == tip["uuid"], "and the writer agrees with the reader"
 
 
 async def test_append_reports_a_duplicate_rather_than_hiding_it() -> None:

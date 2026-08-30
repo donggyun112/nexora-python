@@ -192,6 +192,13 @@ class TranscriptWriter:
         # Advanced even when the entry was a duplicate: the chain position is the same either way,
         # and stopping would re-parent the next entry onto an older link and fork the conversation.
         self._parent_uuid = entry["uuid"]
+        if not appended:
+            # Say it out loud, too. A replayed round re-records messages the conversation already
+            # holds, so nothing is appended, and `active_branch` — which reads the tip off the
+            # entries — would still report the leaf the replay started from. The writer has moved
+            # and every reader has to see the same position, or a fork taken after a replayed
+            # tool round resumes from before the result it is named after.
+            await self._append_marker("leaf", leaf_uuid=entry["uuid"])
         return appended
 
     async def rewind(self, leaf_uuid: str | None) -> None:

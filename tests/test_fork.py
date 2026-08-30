@@ -1,19 +1,19 @@
-"""`nexora_fork.fork_run` — re-running from before one injected input, under new controls."""
+"""`semora_fork.fork_run` — re-running from before one injected input, under new controls."""
 
 from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage
-from nexora import AgentRuntime, PendingInput
-from nexora.controls import ControlPlane, Ingress
-from nexora_fork import (
+from semora import AgentRuntime, PendingInput
+from semora.controls import ControlPlane, Ingress
+from semora_fork import (
     EventCheckpoint,
     ForkCoordinate,
     fork_event,
     fork_run,
     record_event_checkpoint,
 )
-from nexora_store import MemorySteps, MemoryTranscript
+from semora_store import MemorySteps, MemoryTranscript
 
 from tests.test_loop import Tools, says, scripted
 

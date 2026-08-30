@@ -3,8 +3,8 @@
 from typing import Any
 
 import pytest
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import (
+from semora.engines.plain import react_loop
+from semora.orchestrator import (
     AgentFailed,
     AgentSuspended,
     MemorySteps,

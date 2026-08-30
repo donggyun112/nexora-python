@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages import AIMessageChunk as Chunk
-from nexora_ui.provider import OpenRouterChat
 from pydantic import SecretStr
+from semora_ui.provider import OpenRouterChat
 
 DETAILS: list[dict[str, Any]] = [
     {

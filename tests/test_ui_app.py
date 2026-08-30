@@ -12,9 +12,9 @@ import pytest
 
 fastapi = pytest.importorskip("fastapi", reason="the console is the `ui` extra")
 from fastapi.testclient import TestClient  # noqa: E402
-from nexora_ui.app import app  # noqa: E402
-from nexora_ui.config import ENV_FILE, UI_ROOT  # noqa: E402
-from nexora_ui.state import FaultInjectingMemorySteps  # noqa: E402
+from semora_ui.app import app  # noqa: E402
+from semora_ui.config import ENV_FILE, UI_ROOT  # noqa: E402
+from semora_ui.state import FaultInjectingMemorySteps  # noqa: E402
 
 
 def test_the_static_directory_ships_inside_the_package() -> None:

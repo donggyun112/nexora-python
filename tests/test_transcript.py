@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from nexora.transcript import SCHEMA_VERSION, TranscriptWriter, message_entry, messages_of
-from nexora_store import MemoryTranscript, Transcript
+from semora.transcript import SCHEMA_VERSION, TranscriptWriter, message_entry, messages_of
+from semora_store import MemoryTranscript, Transcript
 
 pytestmark = pytest.mark.anyio
 

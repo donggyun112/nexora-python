@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "semora-ui"
+version = "0.1.0"
+description = "A local console for driving Semora runs: chat, tool effects, suspension and resume."
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "donggyun112" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+urls = { Homepage = "https://github.com/donggyun112/semora", Source = "https://github.com/donggyun112/semora", Changelog = "https://github.com/donggyun112/semora/blob/main/CHANGELOG.md" }
+dependencies = [
+  "semora==0.1.0",
+  "semora-store==0.1.0",
+  "fastapi>=0.116,<1",
+  "loguru>=0.7,<1",
+  "langchain-openai>=0.3,<2",
+  "python-dotenv>=1.1,<2",
+  "uvicorn[standard]>=0.35,<1",
+]
+# A demo application, not a library. It is the one package allowed to depend on everything.
+# `semora-store` is declared rather than taken transitively through `semora`: the console names
+# `Transcript` itself, and an import that only works because something else pulled it in is the
+# breakage `tests/test_packaging.py` exists to catch.
+
+[tool.uv.sources]
+semora = { workspace = true }
+semora-store = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/semora_ui"]

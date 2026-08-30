@@ -12,7 +12,7 @@ and resuming runs it again from the top. The first customer is charged twice. Th
 message history is intact the whole time; what is missing is any record that money
 moved.
 
-Nexora keys the ledger by tool call id and writes the intent before the call, so a
+Semora keys the ledger by tool call id and writes the intent before the call, so a
 resumed round can tell `done` from `absent` from a call that started and never
 reported. The committed charge is restored, the two missing ones run, and the model is
 never asked again.
@@ -33,8 +33,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 from langchain_core.outputs import ChatGenerationChunk
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
-from nexora import AgentRuntime, MemorySteps
-from nexora.orchestrator import Orchestrator
+from semora import AgentRuntime, MemorySteps
+from semora.orchestrator import Orchestrator
 
 CALLS = [
     {"id": "c1", "name": "charge_card", "args": {"customer": "c-001"}, "type": "tool_call"},
@@ -88,7 +88,7 @@ def langgraph_run() -> list[str]:
     return charged
 
 
-async def nexora_run() -> list[str]:
+async def semora_run() -> list[str]:
     """The same batch, the same crash point, against the durable step ledger."""
     charged: list[str] = []
 
@@ -120,7 +120,7 @@ async def nexora_run() -> list[str]:
     await Orchestrator("billing", store).execute_round(
         billing, CALLS, lambda: len(charged) == 1
     )
-    print(f"  nexora     crashed holding {charged}")
+    print(f"  semora     crashed holding {charged}")
 
     # Recovery does not ask the model anything; this one would answer differently.
     never_asked = Scripted(messages=iter([AIMessage(content="no idea what happened")]))
@@ -133,15 +133,15 @@ async def nexora_run() -> list[str]:
 def main() -> None:
     print("three charges in one model turn, worker dies after the first\n")
     graph_charges = langgraph_run()
-    nexora_charges = asyncio.run(nexora_run())
+    semora_charges = asyncio.run(semora_run())
 
     print(f"\n  langgraph  finished with {graph_charges}")
-    print(f"  nexora     finished with {nexora_charges}")
+    print(f"  semora     finished with {semora_charges}")
     print(f"\n  c-001 was charged {graph_charges.count('c-001')} times by the graph, "
-          f"{nexora_charges.count('c-001')} time by the runtime")
+          f"{semora_charges.count('c-001')} time by the runtime")
 
     assert graph_charges.count("c-001") == 2, graph_charges
-    assert nexora_charges == ["c-001", "c-002", "c-003"], nexora_charges
+    assert semora_charges == ["c-001", "c-002", "c-003"], semora_charges
 
 
 if __name__ == "__main__":

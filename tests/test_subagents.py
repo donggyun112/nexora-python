@@ -7,10 +7,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from typing import Any
 
-from nexora import AgentDefinition, AgentRuntime
-from nexora.background import BackgroundResult
-from nexora.engines.plain import react_loop
-from nexora.subagents import (
+from semora import AgentDefinition, AgentRuntime
+from semora.background import BackgroundResult
+from semora.engines.plain import react_loop
+from semora.subagents import (
     Answering,
     Authority,
     Deliver,
@@ -20,7 +20,7 @@ from nexora.subagents import (
     RunnerAgent,
     Subagents,
 )
-from nexora_store import MemorySteps
+from semora_store import MemorySteps
 
 from tests.test_loop import Tools, a_call, says, scripted
 

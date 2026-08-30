@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
-from nexora import AgentRuntime
-from nexora.contracts import BaseMessage, EventType, ToolCall
-from nexora.controls import (
+from semora import AgentRuntime
+from semora.contracts import BaseMessage, EventType, ToolCall
+from semora.controls import (
     Continue,
     ControlPlane,
     Ctx,
@@ -20,9 +20,9 @@ from nexora.controls import (
     Suspend,
     gate,
 )
-from nexora.history import decode_continuation, encode_continuation
-from nexora.orchestrator import AgentSuspended, InvalidSuspension, MemorySteps, Orchestrator
-from nexora_permissions import PolicyContext, Rule, resolve_rules
+from semora.history import decode_continuation, encode_continuation
+from semora.orchestrator import AgentSuspended, InvalidSuspension, MemorySteps, Orchestrator
+from semora_permissions import PolicyContext, Rule, resolve_rules
 
 from tests.test_loop import Tools, a_call, says, scripted
 

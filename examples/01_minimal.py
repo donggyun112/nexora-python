@@ -10,7 +10,7 @@ lived. Crash recovery and permission parking start at `examples/03_recovery.py` 
 import asyncio
 
 from _scripted import Files, calling, says, scripted
-from nexora import AgentRuntime
+from semora import AgentRuntime
 
 
 async def main() -> None:

@@ -4,10 +4,10 @@ from typing import Any, ClassVar
 
 import pytest
 from langchain_core.messages import HumanMessage
-from nexora import Agent, AgentRuntime
-from nexora.contracts import ToolCall
-from nexora.controls import ControlPlane, Permissions, gate
-from nexora.dispatch import (
+from semora import Agent, AgentRuntime
+from semora.contracts import ToolCall
+from semora.controls import ControlPlane, Permissions, gate
+from semora.dispatch import (
     Answer,
     CommandRouter,
     InvalidTransition,
@@ -19,8 +19,8 @@ from nexora.dispatch import (
     ResumeApproval,
     StartRun,
 )
-from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
-from nexora_store import Contended, MemoryTranscript
+from semora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
+from semora_store import Contended, MemoryTranscript
 
 from tests.test_loop import Tools, a_call, says, scripted
 

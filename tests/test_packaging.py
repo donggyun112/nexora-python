@@ -1,4 +1,4 @@
-"""Two boundaries: between distributions, and between the layers inside `nexora`.
+"""Two boundaries: between distributions, and between the layers inside `semora`.
 
 The first exists because every other check here runs in one virtualenv where all five
 distributions are installed, so a module reaching across a boundary it never declared passes ruff,
@@ -34,7 +34,7 @@ def _internal(names: list[str]) -> frozenset[str]:
     return frozenset(
         requirement.split(">")[0].split("[")[0].split("=")[0].strip().replace("-", "_")
         for requirement in names
-        if requirement.startswith("nexora")
+        if requirement.startswith("semora")
     )
 
 
@@ -66,12 +66,12 @@ def _imported_modules(source: Path) -> dict[str, str]:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
-                    if root.startswith("nexora"):
+                    if root.startswith("semora"):
                         reached.setdefault(root, str(path.relative_to(ROOT)))
                 continue
             else:
                 continue
-            if root.startswith("nexora"):
+            if root.startswith("semora"):
                 reached.setdefault(root, str(path.relative_to(ROOT)))
     return reached
 
@@ -95,8 +95,8 @@ def test_all_python_imports_are_eager() -> None:
 def test_no_distribution_imports_beyond_what_it_declares() -> None:
     """An import the manifest does not cover works here and fails on a standalone install.
 
-    `nexora-store` is the one this matters most for: its dependency list is empty on purpose, and
-    an accidental `nexora.contracts` import would make a store implementation drag in a model SDK
+    `semora-store` is the one this matters most for: its dependency list is empty on purpose, and
+    an accidental `semora.contracts` import would make a store implementation drag in a model SDK
     without anything in the normal check loop noticing.
     """
     for dist in distributions():
@@ -119,8 +119,8 @@ PROVIDER_EXTRAS = {
 
 
 def test_provider_extras_install_adapters_the_core_does_not_import() -> None:
-    """A provider SDK in the base install would be a model Nexora refused to own."""
-    manifest = tomllib.loads((ROOT / "packages" / "nexora" / "pyproject.toml").read_text())
+    """A provider SDK in the base install would be a model Semora refused to own."""
+    manifest = tomllib.loads((ROOT / "packages" / "semora" / "pyproject.toml").read_text())
     extras = manifest["project"]["optional-dependencies"]
     for extra, package in PROVIDER_EXTRAS.items():
         declared = extras[extra]
@@ -128,7 +128,7 @@ def test_provider_extras_install_adapters_the_core_does_not_import() -> None:
         assert declared[0].startswith(f"{package}>") or declared[0].startswith(f"{package}=")
 
     imported: set[str] = set()
-    core = ROOT / "packages" / "nexora" / "src" / "nexora"
+    core = ROOT / "packages" / "semora" / "src" / "semora"
     for path in sorted(core.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom) and node.module:
@@ -150,7 +150,7 @@ def test_every_declared_workspace_dependency_is_actually_imported() -> None:
 
 LAYERS: dict[str, frozenset[str]] = {
     "contracts": frozenset(),
-    # Pure host-boundary identifier generation; reaches no other Nexora layer.
+    # Pure host-boundary identifier generation; reaches no other Semora layer.
     "ids": frozenset(),
     # Reaches nothing, like `contracts`, and for the same kind of reason: a registry of detached
     # jobs is `asyncio.Task` bookkeeping. Knowing what a subagent is would make it one.
@@ -205,7 +205,7 @@ LAYERS: dict[str, frozenset[str]] = {
         }
     ),
 }
-"""What each subpackage of `nexora` may reach. Absent from a value means absent from the layer.
+"""What each subpackage of `semora` may reach. Absent from a value means absent from the layer.
 
 `contracts` reaching nothing is the load-bearing entry — it is the hub every other layer imports,
 and a single import out of it would invert the whole thing.
@@ -213,36 +213,36 @@ and a single import out of it would invert the whole thing.
 
 
 def _layer_of(path: Path, package: Path) -> str:
-    """The top-level name under `src/nexora` that owns this file."""
+    """The top-level name under `src/semora` that owns this file."""
     return path.relative_to(package).parts[0].removesuffix(".py")
 
 
-def test_no_layer_of_nexora_imports_above_itself() -> None:
+def test_no_layer_of_semora_imports_above_itself() -> None:
     """The rule the manifests used to enforce, now that these layers share one distribution.
 
     Without it the merge would have quietly given up the one thing the split bought: `contracts`
     could import `orchestrator`, and nothing — not ruff, not mypy, not any other test — would say
     so, because they all live in the same package now.
     """
-    package = ROOT / "packages" / "nexora" / "src" / "nexora"
+    package = ROOT / "packages" / "semora" / "src" / "semora"
     for path in sorted(package.rglob("*.py")):
         layer = _layer_of(path, package)
-        if layer == "__init__":  # `nexora/__init__.py` is the facade and reaches by definition
+        if layer == "__init__":  # `semora/__init__.py` is the facade and reaches by definition
             continue
         allowed = LAYERS[layer]
-        # 0 means this file sits directly in `nexora/`; 1 means one package down, and so on.
+        # 0 means this file sits directly in `semora/`; 1 means one package down, and so on.
         depth = len(path.relative_to(package).parts) - 1
         for node in ast.walk(ast.parse(path.read_text())):
             if not isinstance(node, ast.ImportFrom) or not node.module:
                 continue
             if node.level:
                 # `from .x` resolves against the containing package; each extra dot climbs one.
-                # Anchored above `nexora` itself means the first name is a layer; anchored inside
+                # Anchored above `semora` itself means the first name is a layer; anchored inside
                 # a layer means the import never left it.
                 if depth - (node.level - 1) != 0:
                     continue
                 reached = node.module.split(".")[0]
-            elif node.module.startswith("nexora."):
+            elif node.module.startswith("semora."):
                 reached = node.module.split(".")[1]
             else:
                 continue

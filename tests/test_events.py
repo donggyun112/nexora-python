@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from nexora import AgentRuntime
-from nexora.contracts import (
+from semora import AgentRuntime
+from semora.contracts import (
     BLOCKING,
     EventEnvelope,
     EventStream,
@@ -13,8 +13,8 @@ from nexora.contracts import (
     PendingInput,
     RuntimeEvents,
 )
-from nexora.contracts.types import ToolCall
-from nexora.controls import (
+from semora.contracts.types import ToolCall
+from semora.controls import (
     Continue,
     ControlPlane,
     Controls,
@@ -26,9 +26,9 @@ from nexora.controls import (
     ToolDecision,
     gate,
 )
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
-from nexora_store import ExecutionContext
+from semora.engines.plain import react_loop
+from semora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
+from semora_store import ExecutionContext
 
 from tests.test_loop import Tools, a_call, says, scripted
 

@@ -6,16 +6,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from nexora import AgentRuntime, HostWorkspaceProvider
-from nexora.builtins import (
+from semora import AgentRuntime, HostWorkspaceProvider
+from semora.builtins import (
     BuiltinTools,
     ExecToolOptions,
     WebFetchResponse,
     WebFetchToolOptions,
     builtin_tools,
 )
-from nexora.builtins._types import BuiltinToolState
-from nexora.workspace import ToolContext
+from semora.builtins._types import BuiltinToolState
+from semora.workspace import ToolContext
 
 from .test_loop import a_call, says, scripted
 

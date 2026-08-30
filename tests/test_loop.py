@@ -15,9 +15,9 @@ from langchain_core.messages import (
     SystemMessage,
 )
 from langchain_core.outputs import ChatGenerationChunk
-from nexora import AgentRuntime
-from nexora.contracts import BatchTools, EventType, PendingInput, ToolCall
-from nexora.controls import (
+from semora import AgentRuntime
+from semora.contracts import BatchTools, EventType, PendingInput, ToolCall
+from semora.controls import (
     ControlPlane,
     FinishPolicy,
     Halt,
@@ -28,9 +28,9 @@ from nexora.controls import (
     gate,
     writer,
 )
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import AgentAborted, AgentFailed, AgentSuspended, MemorySteps
-from nexora.tools import InvalidToolResult
+from semora.engines.plain import react_loop
+from semora.orchestrator import AgentAborted, AgentFailed, AgentSuspended, MemorySteps
+from semora.tools import InvalidToolResult
 
 
 def a_call(cid: str, name: str, args: dict[str, Any] | None = None) -> ToolCall:

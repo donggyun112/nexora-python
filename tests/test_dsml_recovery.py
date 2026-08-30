@@ -118,3 +118,10 @@ def test_the_openrouter_preset_repairs_and_keeps_it_through_bind_tools() -> None
     routed = openrouter("deepseek/deepseek-v4-flash-latest", api_key="k")
     assert routed.recover_dsml is True
     assert routed.bind_tools([]).recover_dsml is True
+
+
+def test_a_request_deadline_survives_bind_tools() -> None:
+    """bind_tools copies a frozen dataclass; a field it forgets is silently lost."""
+    model = openrouter("m", api_key="k", timeout=60)
+    assert model.timeout == 60
+    assert model.bind_tools([]).timeout == 60

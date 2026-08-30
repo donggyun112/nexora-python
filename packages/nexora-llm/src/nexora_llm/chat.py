@@ -46,6 +46,9 @@ class ChatModel:
     extra_body: Mapping[str, Any] | None = None
     tools: tuple[dict[str, Any], ...] = ()
     client: Any = None
+    timeout: float | None = None
+    """Seconds before a request is abandoned. None leaves the SDK's own default, which
+    is generous: a hung provider holds a worker for ten minutes without one."""
     recover_dsml: bool = False
     """Repair tool markup a gateway left in assistant content. A no-op for a provider
     that does not leak it, so presets turn it on per gateway rather than per model."""
@@ -61,6 +64,7 @@ class ChatModel:
             extra_body=self.extra_body,
             tools=encoded,
             client=self.client,
+            timeout=self.timeout,
             recover_dsml=self.recover_dsml,
         )
 
@@ -100,11 +104,17 @@ class ChatModel:
         """Return the injected client or construct the official async SDK client."""
         if self.client is not None:
             return self.client
+        options: dict[str, Any] = {}
+        if self.timeout is not None:
+            options["timeout"] = self.timeout
         return AsyncOpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
             default_headers=dict(self.default_headers) if self.default_headers else None,
+            # Retries stay off here. A retried model call is a second turn the ledger
+            # never saw, and deciding whether that is safe is the caller's, not ours.
             max_retries=0,
+            **options,
         )
 
     def _create_options(self) -> dict[str, Any]:

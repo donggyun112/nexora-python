@@ -6,6 +6,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # PyPI rate-limits *new project* creation, so a first release of several distributions can
+  # stop half-done. Re-running the tag's workflow would rebuild the same commit; this lets the
+  # rest go up without moving the tag.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,3 +45,6 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+          # A PyPI filename is immutable, so re-uploading one is an error rather than a no-op.
+          # Without this, a run that finished half the distributions can never finish the rest.
+          skip-existing: true

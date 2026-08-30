@@ -618,8 +618,8 @@ async def test_repeated_final_answer_can_reenter_a_committed_resuming_transition
     assert outcome["content"] == "done"
 
 
-async def test_after_tool_call_crosses_its_durable_boundary_once_per_call() -> None:
-    """A replayed result must not re-run `after_tool_call`.
+async def test_post_tool_use_crosses_its_durable_boundary_once_per_call() -> None:
+    """A replayed result must not re-run `post_tool_use`.
 
     The hook may write to external stores; its `after:` marker is the durable boundary, so a
     recovery replay of a done step skips a hook that already crossed it.
@@ -630,7 +630,7 @@ async def test_after_tool_call_crosses_its_durable_boundary_once_per_call() -> N
     async def audit(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         seen.append(str(call["id"]))
 
-    controls = ControlPlane(after_tool_call=audit)
+    controls = ControlPlane(post_tool_use=audit)
     calls = [a_call("c1", "read")]
     async with Orchestrator("hook-once", log) as owner:
         await owner.execute_round(Tools(names=["read"]), calls, lambda: False, controls=controls)

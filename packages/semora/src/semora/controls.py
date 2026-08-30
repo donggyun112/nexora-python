@@ -97,7 +97,7 @@ TurnDecision = Proceed | Halt
 OnInputs = Callable[[Ctx, list[PendingInput]], Awaitable[list[PendingInput] | Halt]]
 BeforeModel = Callable[[Ctx], Awaitable[TurnDecision]]
 PreToolUse = Callable[[Ctx, ToolCall], Awaitable[ToolDecision]]
-AfterToolCall = Callable[[Ctx, ToolCall, dict[str, Any]], Awaitable[None]]
+PostToolUse = Callable[[Ctx, ToolCall, dict[str, Any]], Awaitable[None]]
 BeforeFinish = Callable[[Ctx, StopReason], Awaitable[TurnDecision]]
 OnResume = Callable[[Ctx, ToolCall, ResumeInput], Awaitable[ToolDecision]]
 OnSuspend = Callable[
@@ -121,7 +121,7 @@ class Controls(Protocol):
         """Allow, deny, or suspend a requested tool call."""
         ...
 
-    async def after_tool_call(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    async def post_tool_use(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         """Record and validate a tool result, propagating failures."""
         ...
 
@@ -162,7 +162,7 @@ def gate(
 def writer(
     record: Callable[[ToolCall, dict[str, Any]], Awaitable[None]],
 ) -> Callable[[Ctx, ToolCall, dict[str, Any]], Awaitable[None]]:
-    """Adapt a simple result writer to an ``after_tool_call`` control stage."""
+    """Adapt a simple result writer to a ``post_tool_use`` control stage."""
 
     async def stage(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         await record(call, result)
@@ -215,7 +215,7 @@ class Permissions:
 class Journal:
     """Run result writers in order and propagate the first failure."""
 
-    def __init__(self, *writers: AfterToolCall) -> None:
+    def __init__(self, *writers: PostToolUse) -> None:
         """Initialize the ordered result writers."""
         self._writers = writers
 
@@ -292,7 +292,7 @@ class ControlPlane:
         on_inputs: OnInputs | None = None,
         before_model: BeforeModel | None = None,
         pre_tool_use: PreToolUse | None = None,
-        after_tool_call: AfterToolCall | None = None,
+        post_tool_use: PostToolUse | None = None,
         before_finish: BeforeFinish | None = None,
         on_resume: OnResume | None = None,
         on_suspend: OnSuspend | None = None,
@@ -301,7 +301,7 @@ class ControlPlane:
         self._on_inputs = on_inputs
         self._before_model = before_model
         self._pre_tool_use = pre_tool_use
-        self._after_tool_call = after_tool_call
+        self._post_tool_use = post_tool_use
         self._before_finish = before_finish
         self._on_resume = on_resume
         self._on_suspend = on_suspend
@@ -324,10 +324,10 @@ class ControlPlane:
             return Continue()
         return await self._pre_tool_use(ctx, call)
 
-    async def after_tool_call(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    async def post_tool_use(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         """Apply configured result writers and validators."""
-        if self._after_tool_call is not None:
-            await self._after_tool_call(ctx, call, result)
+        if self._post_tool_use is not None:
+            await self._post_tool_use(ctx, call, result)
 
     async def before_finish(self, ctx: Ctx, reason: StopReason) -> TurnDecision:
         """Apply completion controls or preserve the stop reason."""

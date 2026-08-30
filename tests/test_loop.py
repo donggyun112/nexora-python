@@ -112,17 +112,17 @@ async def run(
     tools: Tools | None = None,
     *,
     pre_tool_use: Any = None,
-    after_tool_call: Any = None,
+    post_tool_use: Any = None,
     durable: bool = True,
     **kw: Any,
 ) -> list[dict[str, Any]]:
     """Exercise loop semantics through the runtime-owned effect boundary."""
     kw.setdefault("should_stop_after_turn", cap(10))
-    if pre_tool_use or after_tool_call:
+    if pre_tool_use or post_tool_use:
         stages = [pre_tool_use] if pre_tool_use else []
         kw["controls"] = ControlPlane(
             pre_tool_use=Permissions(*(gate(s) for s in stages)),
-            after_tool_call=Journal(writer(after_tool_call)) if after_tool_call else None,
+            post_tool_use=Journal(writer(post_tool_use)) if post_tool_use else None,
         )
     events: list[dict[str, Any]] = []
 
@@ -914,7 +914,7 @@ async def test_a_record_that_cannot_be_written_stops_the_run() -> None:
     llm = scripted(says("", a_call("c1", "read")), says("never"))
 
     with pytest.raises(RuntimeError, match="disk full"):
-        await run(llm, Tools(), after_tool_call=broken)
+        await run(llm, Tools(), post_tool_use=broken)
 
 
 # ── The gate ─────────────────────────────────────────────────────────────────
@@ -1053,7 +1053,7 @@ async def test_a_batch_is_journalled_in_call_order() -> None:
         written.append(call["id"])
 
     llm = scripted(says("", a_call("c1", "read"), a_call("c2", "read")), says("x"))
-    await run(llm, Batched(), after_tool_call=journal, durable=False)
+    await run(llm, Batched(), post_tool_use=journal, durable=False)
 
     assert written == ["c1", "c2"]
 

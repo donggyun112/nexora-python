@@ -6,7 +6,7 @@ The default `AgentRuntime` drives `react_loop` with its direct `execute_calls`, 
 boundary is optional rather than something the loop depends on. Nothing in
 `semora.orchestrator` participates.
 
-You keep the whole control plane: `on_inputs`, `before_model`, `pre_tool_use`, `after_tool_call`,
+You keep the whole control plane: `on_inputs`, `before_model`, `pre_tool_use`, `post_tool_use`,
 `before_finish`, the event stream, steers, and the stop hook. What you give up is the three things
 the ledger is for — call-id idempotency, crash recovery, and parking a call for a person.
 

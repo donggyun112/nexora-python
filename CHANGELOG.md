@@ -3,6 +3,18 @@
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and
 documentation corrections belong in the commit log, not here.
 
+## Unreleased
+
+### Changed
+
+- **`after_tool_call` is now `post_tool_use`.** The hook fires the `post_tool_use` event and
+  pairs with `pre_tool_use`, so it carried two names for one seam and a control plane read as
+  though the two sides of a tool call belonged to different vocabularies. Renamed everywhere it
+  is a name: the `Controls` method, the `ControlPlane(post_tool_use=...)` keyword, the
+  `PostToolUse` stage type, and `Orchestrator.post_tool_use_once`. The durable marker is still
+  `after:{call_id}`, so ledgers written before this release resume unchanged. No alias: callers
+  rename the keyword.
+
 ## 0.1.0 — 2026-08-30
 
 ### Added

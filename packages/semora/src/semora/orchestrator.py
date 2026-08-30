@@ -259,7 +259,7 @@ def require_pending_ids(
 
 
 class _DurableControls:
-    """Delegate every control point; make ``after_tool_call`` once-per-call durable."""
+    """Delegate every control point; make ``post_tool_use`` once-per-call durable."""
 
     def __init__(self, controls: Controls, orchestrator: "Orchestrator") -> None:
         self._controls = controls
@@ -268,9 +268,9 @@ class _DurableControls:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._controls, name)
 
-    async def after_tool_call(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    async def post_tool_use(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         """Run the post-effect hook once per call across replays."""
-        await self._orchestrator.after_tool_call_once(self._controls, ctx, call, result)
+        await self._orchestrator.post_tool_use_once(self._controls, ctx, call, result)
 
 
 class RecoveredTools(NamedTuple):
@@ -931,10 +931,10 @@ class Orchestrator:
             return controls
         return cast(Controls, _DurableControls(controls, self))
 
-    async def after_tool_call_once(
+    async def post_tool_use_once(
         self, controls: Controls, ctx: Ctx, call: ToolCall, result: dict[str, Any]
     ) -> None:
-        """Run ``after_tool_call`` at least once, suppressing replays after its marker commits.
+        """Run ``post_tool_use`` at least once, suppressing replays after its marker commits.
 
         The ``after:{call_id}`` marker is the hook's durable boundary: a replayed result skips
         a hook that already crossed it. Every crash between the hook and its marker re-runs
@@ -945,7 +945,7 @@ class Orchestrator:
         record = await self._log.read(self.run_id, key)
         if record.status == "done":
             return
-        await controls.after_tool_call(ctx, call, result)
+        await controls.post_tool_use(ctx, call, result)
         await self._log.write_control(self.run_id, key, {"hooked": True}, self._token)
 
     async def record_pending(self, calls: list[ToolCall], turn: int) -> None:

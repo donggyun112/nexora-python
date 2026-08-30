@@ -262,7 +262,7 @@ async def record_resolved(
 ) -> None:
     """The durable record first — it may raise — then the observing event."""
     if controls is not None:
-        await controls.after_tool_call(ctx, call, result)
+        await controls.post_tool_use(ctx, call, result)
     if emit is None:
         return
     failed = result.get("type") == "error"

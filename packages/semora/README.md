@@ -24,7 +24,7 @@ outcome = await runtime.run("attempt-42", agent, "inspect this repository")
 ```
 
 Policy lives on `Controls` / `ControlPlane` (`on_inputs`, `before_model`, `pre_tool_use`,
-`after_tool_call`, `before_finish`, `on_resume`, `on_suspend`). `before_finish` can refuse
+`post_tool_use`, `before_finish`, `on_resume`, `on_suspend`). `before_finish` can refuse
 an ending and send the loop around again.
 
 `semora.builtins.builtin_tools()` supplies `read`, `write`, `edit`, `grep`, `glob`, `Bash`,

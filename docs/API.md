@@ -442,7 +442,7 @@ from semora import ControlPlane, Ctx, Continue, Deny, Suspend, Proceed, Halt
 | `on_inputs` | `(ctx, inputs: list[PendingInput])` | `list[PendingInput]` (possibly rewritten) or `Halt` |
 | `before_model` | `(ctx)` | `Proceed` \| `Halt` |
 | `pre_tool_use` | `(ctx, call: ToolCall)` | `Continue` \| `Deny` \| `Suspend` |
-| `after_tool_call` | `(ctx, call, result: dict)` | `None` (observation only) |
+| `post_tool_use` | `(ctx, call, result: dict)` | `None` (observation only) |
 | `before_finish` | `(ctx, reason: StopReason)` | `Proceed` \| `Halt` — **polarity inverts here**, see below |
 | `on_resume` | `(ctx, call, resume: ResumeInput)` | `Continue` \| `Deny` \| `Suspend` |
 | `on_suspend` | `(ctx, call, request, snapshot, completed)` | `None` (persist the continuation) |
@@ -496,7 +496,7 @@ One per control point; each chains stages in order.
 | `Steering(*sources)` | `before_model` | accumulates every source's `Proceed(steers)`; first `Halt` wins |
 | `Permissions(*stages)` | `pre_tool_use` | **denial wins, allowance does not short-circuit** — see below |
 | `FinishPolicy(*gates)` | `before_finish` | **any veto wins**; all gates run and their steering accumulates |
-| `Journal(*writers)` | `after_tool_call` | all writers run in order; the first failure propagates |
+| `Journal(*writers)` | `post_tool_use` | all writers run in order; the first failure propagates |
 | `Suspending(*persisters)` | `on_suspend` | all persisters run before suspension is announced |
 
 `Permissions` does not stop at the first non-`Continue`. It keeps evaluating: a `Deny` returns
@@ -512,7 +512,7 @@ There is no combinator for `on_resume` — its signature takes three arguments, 
 
 ```python
 def gate(answer: Callable[[ToolCall], Awaitable[dict | None]]) -> pre_tool_use stage
-def writer(record: Callable[[ToolCall, dict], Awaitable[None]]) -> after_tool_call stage
+def writer(record: Callable[[ToolCall, dict], Awaitable[None]]) -> post_tool_use stage
 ```
 
 `gate` maps a plain predicate's return value: `None` or `{"type": "allow"}` → `Continue`;
@@ -697,7 +697,7 @@ For parking state the framework should not interpret. `AgentRuntime.state()` rea
 `Orchestrator` also carries the surface `AgentRuntime` drives on your behalf:
 `execute_round`, `invoke_model`, `record_pending`, `pending_calls`, `persist_suspension`,
 `repark_suspension`, `record_suspension_answer`, `recover_pending`, `resume_effect`,
-`after_tool_call_once`, `continue_with_input`, `cancel_and_switch`, `claim_inputs`,
+`post_tool_use_once`, `continue_with_input`, `cancel_and_switch`, `claim_inputs`,
 `admit_inputs`, `discard_inputs`, `enqueue_input`, `commit_transition_inputs`,
 `complete_continuation`, `compact_suspension`, `emit`.
 
@@ -710,7 +710,7 @@ Two of their contracts leak into behaviour you can observe, so they are worth kn
   exposed, so the loop may retry it). Once a chunk was visible, an interrupted request stays
   `running` and recovery raises `Indeterminate` rather than risk a duplicate charge and a
   different answer.
-- `after_tool_call_once` commits an `after:{call_id}` marker so a replayed result skips a hook
+- `post_tool_use_once` commits an `after:{call_id}` marker so a replayed result skips a hook
   that already ran. A crash *between* the hook and its marker re-runs the hook — **exactly-once
   still requires the hook to be idempotent per call id**; the marker only bounds the repetition.
 
@@ -1019,7 +1019,7 @@ from semora.controls import Journal
 mode = PlanMode()
 controls = ControlPlane(
     pre_tool_use=Permissions(plan_mode_gate(tools, mode, exit_tool="exit_plan")),
-    after_tool_call=Journal(plan_mode_enter(mode, enter_tool="enter_plan"),
+    post_tool_use=Journal(plan_mode_enter(mode, enter_tool="enter_plan"),
                             plan_mode_exit(mode, exit_tool="exit_plan")),
 )
 ```
@@ -1034,7 +1034,7 @@ from semora.goal import Goal, goal_complete, goal_gate
 
 goal = Goal("ship the migration")
 controls = ControlPlane(before_finish=FinishPolicy(goal_gate(goal, complete_tool="done")),
-                        after_tool_call=Journal(goal_complete(goal, complete_tool="done")))
+                        post_tool_use=Journal(goal_complete(goal, complete_tool="done")))
 ```
 
 The gate refuses to finish while the goal is open; the writer closes it when `done` succeeds.

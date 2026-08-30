@@ -54,7 +54,7 @@ outcome = await runtime.run(run_id, agent, "inspect this repository")
 ## Control plane
 
 Policy is seven decision points, not callbacks: `on_inputs`, `before_model`, `pre_tool_use`,
-`after_tool_call`, `before_finish`, `on_resume`, `on_suspend`. `before_finish` can refuse an
+`post_tool_use`, `before_finish`, `on_resume`, `on_suspend`. `before_finish` can refuse an
 ending (`Proceed([...])`) and send the loop around again.
 
 ```python

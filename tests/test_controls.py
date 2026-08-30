@@ -124,7 +124,7 @@ async def test_nothing_registered_lets_the_call_through() -> None:
     assert await Permissions()(CTX, CALL) == Continue()
 
 
-# ── after_tool_call: all run, a raise stops the run ──────────────────────────
+# ── post_tool_use: all run, a raise stops the run ──────────────────────────
 
 
 async def test_every_writer_runs_and_a_raise_is_fail_closed() -> None:
@@ -205,7 +205,7 @@ async def test_an_empty_plane_lets_everything_through() -> None:
         current_rules_version="v1",
     )
     assert await plane.on_resume(CTX, CALL, resume) == Continue()
-    await plane.after_tool_call(CTX, CALL, {"type": "text", "text": "x"})
+    await plane.post_tool_use(CTX, CALL, {"type": "text", "text": "x"})
     await plane.on_suspend(CTX, CALL, {"pending_id": "c1"}, [], [])
 
 

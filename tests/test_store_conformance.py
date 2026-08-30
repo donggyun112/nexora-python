@@ -87,7 +87,7 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Transcript]:
         pytest.skip("set SEMORA_TEST_DSN to run the durable half of this suite")
     async for durable in _postgres(
         TRANSCRIPT_SCHEMA,
-        "semora_transcript, semora_run, semora_run_model",
+        "ledger_transcript, ledger_run, ledger_run_model",
         PostgresTranscript,
     ):
         yield durable
@@ -102,7 +102,7 @@ async def steps(request: pytest.FixtureRequest) -> AsyncIterator[StepLog]:
     if not DSN:
         pytest.skip("set SEMORA_TEST_DSN to run the durable half of this suite")
     async for durable in _postgres(
-        SCHEMA, "semora_step, semora_run_lease, semora_input", PostgresSteps
+        SCHEMA, "ledger_step, ledger_run_lease, ledger_input", PostgresSteps
     ):
         yield durable
 

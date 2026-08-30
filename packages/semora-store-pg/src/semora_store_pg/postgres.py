@@ -18,7 +18,7 @@ from semora_store import (
 __all__ = ["SCHEMA", "PostgresSteps"]
 
 SCHEMA = """
-create table if not exists semora_step (
+create table if not exists ledger_step (
     run_id      text        not null,
     key         text        not null,
     status      text        not null check (status in ('running', 'done')),
@@ -29,14 +29,14 @@ create table if not exists semora_step (
     primary key (run_id, key)
 );
 
-create table if not exists semora_run_lease (
+create table if not exists ledger_run_lease (
     run_id     text        primary key,
     owner      text        not null,
     token      bigint      not null default 1,
     expires_at timestamptz not null
 );
 
-create table if not exists semora_input (
+create table if not exists ledger_input (
     sequence     bigserial   primary key,
     run_id       text        not null,
     input_id     text        not null,
@@ -47,16 +47,16 @@ create table if not exists semora_input (
     unique (run_id, input_id)
 );
 
-alter table semora_input drop constraint if exists semora_input_status_check;
-alter table semora_input add constraint semora_input_status_check
+alter table ledger_input drop constraint if exists ledger_input_status_check;
+alter table ledger_input add constraint ledger_input_status_check
     check (status in ('pending', 'claimed', 'admitted', 'discarded'));
 
-drop index if exists semora_input_pending;
-create index if not exists semora_input_pending
-    on semora_input (run_id, sequence) where status in ('pending', 'claimed');
+drop index if exists ledger_input_pending;
+create index if not exists ledger_input_pending
+    on ledger_input (run_id, sequence) where status in ('pending', 'claimed');
 
-create index if not exists semora_step_running
-    on semora_step (started_at) where status = 'running';
+create index if not exists ledger_step_running
+    on ledger_step (started_at) where status = 'running';
 """
 """The three tables. The partial indexes serve recovery and operator stuck-work queries."""
 
@@ -80,7 +80,7 @@ class PostgresSteps:
             connection.cursor(row_factory=dict_row) as cursor,
         ):
             await cursor.execute(
-                "select status, value from semora_step where run_id = %s and key = %s",
+                "select status, value from ledger_step where run_id = %s and key = %s",
                 (run_id, key),
             )
             row = await cursor.fetchone()
@@ -97,7 +97,7 @@ class PostgresSteps:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                insert into semora_step (run_id, key, status)
+                insert into ledger_step (run_id, key, status)
                 values (%s, %s, 'running')
                 on conflict (run_id, key) do nothing
                 returning 1
@@ -125,7 +125,7 @@ class PostgresSteps:
             if expected == "absent":
                 await cursor.execute(
                     """
-                    insert into semora_step (run_id, key, status, value, finished_at)
+                    insert into ledger_step (run_id, key, status, value, finished_at)
                     values (%s, %s, 'done', %s, now())
                     on conflict (run_id, key) do nothing
                     returning 1
@@ -135,7 +135,7 @@ class PostgresSteps:
             else:
                 await cursor.execute(
                     """
-                    update semora_step
+                    update ledger_step
                     set status = 'done', value = %s, finished_at = now()
                     where run_id = %s and key = %s and status = 'running'
                     returning 1
@@ -145,7 +145,7 @@ class PostgresSteps:
             if await cursor.fetchone() is not None:
                 return
             await cursor.execute(
-                "select status, value from semora_step where run_id = %s and key = %s",
+                "select status, value from ledger_step where run_id = %s and key = %s",
                 (run_id, key),
             )
             row = await cursor.fetchone()
@@ -163,7 +163,7 @@ class PostgresSteps:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                insert into semora_step (run_id, key, status, value, finished_at)
+                insert into ledger_step (run_id, key, status, value, finished_at)
                 values (%s, %s, 'done', %s, now())
                 on conflict (run_id, key) do update
                     set status = 'done', value = excluded.value, finished_at = now()
@@ -180,7 +180,7 @@ class PostgresSteps:
         if not token:
             return
         async with connection.cursor(row_factory=dict_row) as cursor:
-            await cursor.execute("select token from semora_run_lease where run_id = %s", (run_id,))
+            await cursor.execute("select token from ledger_run_lease where run_id = %s", (run_id,))
             row = await cursor.fetchone()
         issued = row["token"] if row else 0
         if token < issued:
@@ -192,7 +192,7 @@ class PostgresSteps:
             await self._fence(connection, run_id, token)
             async with connection.cursor() as cursor:
                 await cursor.execute(
-                    "delete from semora_step where run_id = %s and key = %s and status = 'running'",
+                    "delete from ledger_step where run_id = %s and key = %s and status = 'running'",
                     (run_id, key),
                 )
 
@@ -204,15 +204,15 @@ class PostgresSteps:
         ):
             await cursor.execute(
                 """
-                insert into semora_run_lease (run_id, owner, token, expires_at)
+                insert into ledger_run_lease (run_id, owner, token, expires_at)
                 values (%s, %s, 1, now() + make_interval(secs => %s))
                 on conflict (run_id) do update
                     set owner = excluded.owner,
                         expires_at = excluded.expires_at,
-                        token = semora_run_lease.token
-                                + (semora_run_lease.owner <> excluded.owner)::int
-                    where semora_run_lease.owner = excluded.owner
-                       or semora_run_lease.expires_at < now()
+                        token = ledger_run_lease.token
+                                + (ledger_run_lease.owner <> excluded.owner)::int
+                    where ledger_run_lease.owner = excluded.owner
+                       or ledger_run_lease.expires_at < now()
                 returning token
                 """,
                 (run_id, owner, ttl_seconds),
@@ -230,7 +230,7 @@ class PostgresSteps:
         async with self._pool.connection() as connection, connection.cursor() as cursor:
             await cursor.execute(
                 """
-                update semora_run_lease
+                update ledger_run_lease
                 set owner = '', expires_at = to_timestamp(0)
                 where run_id = %s and owner = %s
                 """,
@@ -242,7 +242,7 @@ class PostgresSteps:
         async with self._pool.connection() as connection, connection.cursor() as cursor:
             await cursor.execute(
                 """
-                insert into semora_input (run_id, input_id, status, value)
+                insert into ledger_input (run_id, input_id, status, value)
                 values (%s, %s, 'pending', %s)
                 on conflict (run_id, input_id) do nothing
                 """,
@@ -260,7 +260,7 @@ class PostgresSteps:
             await cursor.execute(
                 """
                 select input_id, status, value, sequence
-                from semora_input
+                from ledger_input
                 where run_id = %s
                 order by sequence
                 """,
@@ -279,7 +279,7 @@ class PostgresSteps:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                update semora_input
+                update ledger_input
                 set status = 'claimed'
                 where run_id = %s and input_id = %s
                   and status not in ('admitted', 'discarded')
@@ -296,7 +296,7 @@ class PostgresSteps:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                update semora_input
+                update ledger_input
                 set status = 'admitted', admitted_at = now()
                 where run_id = %s and input_id = any(%s) and status <> 'discarded'
                 """,
@@ -312,7 +312,7 @@ class PostgresSteps:
             async with connection.cursor() as cursor:
                 await cursor.execute(
                     """
-                update semora_input
+                update ledger_input
                 set status = 'discarded'
                 where run_id = %s and input_id = any(%s)
                 """,
@@ -347,7 +347,7 @@ class PostgresSteps:
                 for key, value in transition.controls.items():
                     await cursor.execute(
                         """
-                        insert into semora_step (run_id, key, status, value, finished_at)
+                        insert into ledger_step (run_id, key, status, value, finished_at)
                         values (%s, %s, 'done', %s, now())
                         on conflict (run_id, key) do update
                             set status = 'done', value = excluded.value, finished_at = now()
@@ -357,7 +357,7 @@ class PostgresSteps:
                 for input_id, value in transition.inputs:
                     await cursor.execute(
                         """
-                        insert into semora_input (run_id, input_id, status, value)
+                        insert into ledger_input (run_id, input_id, status, value)
                         values (%s, %s, 'pending', %s)
                         on conflict (run_id, input_id) do nothing
                         returning input_id

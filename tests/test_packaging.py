@@ -150,6 +150,8 @@ def test_every_declared_workspace_dependency_is_actually_imported() -> None:
 
 LAYERS: dict[str, frozenset[str]] = {
     "contracts": frozenset(),
+    # Pure host-boundary identifier generation; reaches no other Nexora layer.
+    "ids": frozenset(),
     # Reaches nothing, like `contracts`, and for the same kind of reason: a registry of detached
     # jobs is `asyncio.Task` bookkeeping. Knowing what a subagent is would make it one.
     "background": frozenset(),

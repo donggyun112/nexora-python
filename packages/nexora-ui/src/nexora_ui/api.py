@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from nexora import Agent
+from nexora import Agent, new_run_id
 from nexora.contracts import Tools
 from nexora.dispatch import Answer, Prompt, Recover
 from nexora.runtime import AgentRuntime
@@ -54,10 +54,10 @@ async def steps(run_id: str) -> dict[str, Any]:
 @router.post("/run")
 async def run_agent(request: RunRequest) -> StreamingResponse:
     """Start an agent run and stream newline-delimited events."""
-    run_id = request.run_id or f"ui-{uuid.uuid4()}"
+    run_id = request.run_id or new_run_id("ui")
     session = STATE.session(run_id)
     session.controls = permission_controls() if request.permission_gate else None
-    prompt_id = f"{run_id}:prompt:{uuid.uuid4()}"
+    prompt_id = f"{run_id}:prompt:{uuid4()}"
     if request.fault_after_step_commit:
         STATE.step_store.arm(run_id)
 

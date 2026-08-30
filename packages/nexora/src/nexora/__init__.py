@@ -21,6 +21,7 @@ from .controls import (
     Suspend,
     gate,
 )
+from .ids import new_run_id
 from .runtime import AgentRuntime, run
 from .workspace import HostWorkspaceProvider
 
@@ -54,5 +55,6 @@ __all__ = [
     "Tools",
     "__version__",
     "gate",
+    "new_run_id",
     "run",
 ]

@@ -28,6 +28,7 @@ STABLE_CONTRACT = frozenset(
         "Tools",
         "__version__",
         "gate",
+        "new_run_id",
         "run",
     }
 )

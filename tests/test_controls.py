@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import HumanMessage
-from nexora.contracts import PendingInput
-from nexora.controls import (
+from semora.contracts import PendingInput
+from semora.controls import (
     Continue,
     ControlPlane,
     Controls,

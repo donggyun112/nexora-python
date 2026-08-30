@@ -3,12 +3,12 @@
 from typing import Any
 
 import pytest
-from nexora import AgentRuntime
-from nexora.contracts import ToolCall
-from nexora.controls import ControlPlane, Permissions, gate
-from nexora.driver import drive
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import AgentFailed, AgentSuspended, MemorySteps, run_agent
+from semora import AgentRuntime
+from semora.contracts import ToolCall
+from semora.controls import ControlPlane, Permissions, gate
+from semora.driver import drive
+from semora.engines.plain import react_loop
+from semora.orchestrator import AgentFailed, AgentSuspended, MemorySteps, run_agent
 
 from tests.test_loop import Tools, a_call, says, scripted
 

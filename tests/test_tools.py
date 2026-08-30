@@ -9,9 +9,9 @@ from typing import Any, cast
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from nexora.contracts import BaseMessage, ToolCall
-from nexora.history import suspend_history_snapshot
-from nexora.tools import (
+from semora.contracts import BaseMessage, ToolCall
+from semora.history import suspend_history_snapshot
+from semora.tools import (
     InvalidToolCall,
     as_model_tools,
     render_for_model,

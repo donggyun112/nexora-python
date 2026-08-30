@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from nexora.builtins import BuiltinTools, ExecToolOptions
-from nexora.sandbox_remote import HTTPResponse, RemoteSandboxClient, RemoteSandboxError
-from nexora.workspace import (
+from semora.builtins import BuiltinTools, ExecToolOptions
+from semora.sandbox_remote import HTTPResponse, RemoteSandboxClient, RemoteSandboxError
+from semora.workspace import (
     ContinuousWorkspaceProvider,
     MemoryWorkspaceStateStore,
     SandboxCommand,

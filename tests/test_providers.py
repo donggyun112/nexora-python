@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage
-from nexora.providers import FallbackChatModel, ModelProvider
+from semora.providers import FallbackChatModel, ModelProvider
 
 
 class StreamModel:

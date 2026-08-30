@@ -1,18 +1,20 @@
-# Nexora for Python
+# Semora
 
 An agent runtime that makes tool effects happen once. Not a workflow engine.
 
-Messages, tool calls, and chat models are LangChain's. Nexora owns the execution boundary:
+Messages, tool calls, and chat models are LangChain's. Semora owns the execution boundary:
 call-id idempotency, permission parking, crash recovery, and the control plane that decides
 whether a round may start, a tool may run, or a finish may stand.
 
-**Status:** pre-alpha 0.1.0. This Python runtime is the product. The default install
-includes `ChatModel`, an OpenAI-compatible client. Native Anthropic/Google APIs remain extras.
+**Status:** 0.1.0 — the first release. The guarantees below are implemented and tested; the
+version stays under 1.0 because the public API is still young enough to move, not because the
+runtime is unfinished. The default install includes `ChatModel`, an OpenAI-compatible client.
+Native Anthropic/Google APIs remain extras.
 
 ## Hello
 
 ```python
-from nexora import Agent, AgentRuntime, ChatModel, new_run_id
+from semora import Agent, AgentRuntime, ChatModel, new_run_id
 
 model = ChatModel(model="gpt-4.1")
 agent = Agent(
@@ -28,23 +30,23 @@ outcome = await AgentRuntime().run(run_id, agent, "inspect this repository")
 ```
 
 ```bash
-uv add nexora
+uv add semora
 # OpenRouter / xAI: ChatModel(..., base_url="https://openrouter.ai/api/v1")
-# or from nexora_llm import openrouter; openrouter("anthropic/claude-sonnet-4")
+# or from semora_llm import openrouter; openrouter("anthropic/claude-sonnet-4")
 ```
 
 That default records nothing. The whole control plane is there; a crash may run the same
 tool again, and `Suspend` has nowhere to park. Attach a ledger when those guarantees matter:
 
 ```python
-from nexora import AgentRuntime, MemorySteps
+from semora import AgentRuntime, MemorySteps
 
 runtime = AgentRuntime(execution_store=MemorySteps())
 outcome = await runtime.run(run_id, agent, "inspect this repository")
 ```
 
 `execution_store=` is shorthand for `orchestrator=DurableRuntimeOrchestrator(store)` from
-`nexora.orchestration`; `store=` remains accepted. The agent does not change.
+`semora.orchestration`; `store=` remains accepted. The agent does not change.
 
 ## Control plane
 
@@ -53,7 +55,7 @@ Policy is seven decision points, not callbacks: `on_inputs`, `before_model`, `pr
 ending (`Proceed([...])`) and send the loop around again.
 
 ```python
-from nexora import AgentRuntime, ControlPlane, FinishPolicy, Halt, Permissions, gate
+from semora import AgentRuntime, ControlPlane, FinishPolicy, Halt, Permissions, gate
 
 runtime = AgentRuntime()
 await runtime.run(
@@ -75,8 +77,8 @@ state, may this arrive now? `dispatch` answers it once, over the same public pri
 (`run`, `resume`, `recover`, `submit`).
 
 ```python
-from nexora.dispatch import Answer, Prompt, Recover
-from nexora_store import MemoryTranscript
+from semora.dispatch import Answer, Prompt, Recover
+from semora_store import MemoryTranscript
 
 runtime = AgentRuntime(execution_store=MemorySteps(), transcript=MemoryTranscript())
 await runtime.dispatch(run_id, agent, Prompt("also check the tests"))
@@ -121,28 +123,28 @@ uv run pytest
 
 | extra | what |
 |---|---|
-| `nexora` | runtime + in-memory `MemorySteps` |
-| `nexora[openai]` | `langchain-openai` (`ChatOpenAI`) |
-| `nexora[anthropic]` | `langchain-anthropic` (`ChatAnthropic`) |
-| `nexora[google]` | `langchain-google-genai` |
-| `nexora[xai]` | `langchain-xai` (`ChatXAI`) |
-| `nexora[openrouter]` | same adapter as `openai`; point `base_url` at OpenRouter |
-| `nexora[postgres]` | Postgres ledger |
-| `nexora[permissions]` | rule table |
-| `nexora[fork]` | branch a run from before one injected input |
-| `nexora[ui]` | local OpenRouter console at :8790 |
+| `semora` | runtime + in-memory `MemorySteps` |
+| `semora[openai]` | `langchain-openai` (`ChatOpenAI`) |
+| `semora[anthropic]` | `langchain-anthropic` (`ChatAnthropic`) |
+| `semora[google]` | `langchain-google-genai` |
+| `semora[xai]` | `langchain-xai` (`ChatXAI`) |
+| `semora[openrouter]` | same adapter as `openai`; point `base_url` at OpenRouter |
+| `semora[postgres]` | Postgres ledger |
+| `semora[permissions]` | rule table |
+| `semora[fork]` | branch a run from before one injected input |
+| `semora[ui]` | local OpenRouter console at :8790 |
 
-`nexora-store` has no dependencies of its own. A `StepLog` stores opaque values under opaque
-keys, so implementing one needs neither a message type nor `nexora`.
+`semora-store` has no dependencies of its own. A `StepLog` stores opaque values under opaque
+keys, so implementing one needs neither a message type nor `semora`.
 
-`nexora-fork` adds no authority of its own — it is composition over seams the core already
+`semora-fork` adds no authority of its own — it is composition over seams the core already
 has. `fork_run` re-runs a conversation from just before one input entered model context,
 enqueuing the source ledger's pre-screen original so it crosses whatever `controls` the fork
 supplies; `fork_event` does the same from the durable coordinate recorded on an observation
 edge. The source run's ledger is never touched: what actually went out stays the record.
 
 Workspace internals (`ToolContext`, snapshot backends, sandbox HTTP types) live on
-`nexora.workspace` and `nexora.sandbox_remote`, not the top-level package. Feature packs
+`semora.workspace` and `semora.sandbox_remote`, not the top-level package. Feature packs
 (skills, subagents, builtins, plan mode) and power-user seams (`react_loop`,
 `DurableRuntimeOrchestrator`) stay on the submodule that owns them.
 

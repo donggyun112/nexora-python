@@ -13,11 +13,11 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.outputs import ChatGenerationChunk
-from nexora import Agent, AgentRuntime, HostWorkspaceProvider, ToolCall, run
-from nexora.contracts import EventType, PendingInput
-from nexora.controls import ControlPlane, Ctx, Ingress, Permissions, gate
-from nexora.orchestration import RuntimeOrchestrationContext, RuntimeOrchestrationSession
-from nexora.orchestrator import (
+from semora import Agent, AgentRuntime, HostWorkspaceProvider, ToolCall, run
+from semora.contracts import EventType, PendingInput
+from semora.controls import ControlPlane, Ctx, Ingress, Permissions, gate
+from semora.orchestration import RuntimeOrchestrationContext, RuntimeOrchestrationSession
+from semora.orchestrator import (
     AgentFailed,
     AgentSuspended,
     Indeterminate,
@@ -25,10 +25,10 @@ from nexora.orchestrator import (
     ModelFailurePolicy,
     Orchestrator,
 )
-from nexora.tools import InvalidToolResult, RoundSuspended
-from nexora.transcript import messages_of
-from nexora.workspace import ToolContext
-from nexora_store import ExecutionContext, MemoryTranscript
+from semora.tools import InvalidToolResult, RoundSuspended
+from semora.transcript import messages_of
+from semora.workspace import ToolContext
+from semora_store import ExecutionContext, MemoryTranscript
 
 from .test_loop import Llm, Tools, a_call, says, scripted
 

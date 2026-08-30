@@ -8,10 +8,10 @@ in its own docstring: *the semantics are tested through `MemorySteps` … but no
 connects to Postgres.* This file is what that sentence was waiting for.
 
 So every property here runs over both `StepLog` implementations and both `Transcript` ones. The
-Postgres half is skipped unless `NEXORA_TEST_DSN` is set, so **it is still unverified in an ordinary
+Postgres half is skipped unless `SEMORA_TEST_DSN` is set, so **it is still unverified in an ordinary
 run** — but the skip is visible, which is the point. Point it at a scratch database to close it:
 
-    NEXORA_TEST_DSN=postgresql://localhost/nexora_test uv run pytest tests/test_store_conformance.py
+    SEMORA_TEST_DSN=postgresql://localhost/semora_test uv run pytest tests/test_store_conformance.py
 
 Divergences it was written to catch, all now fixed:
 
@@ -35,7 +35,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from nexora_store import (
+from psycopg_pool import AsyncConnectionPool
+from semora_store import (
     EffectCompletion,
     EffectConflict,
     ExecutionStore,
@@ -46,12 +47,11 @@ from nexora_store import (
     StepLog,
     Transcript,
 )
-from nexora_store_pg import SCHEMA, TRANSCRIPT_SCHEMA, PostgresSteps, PostgresTranscript
-from psycopg_pool import AsyncConnectionPool
+from semora_store_pg import SCHEMA, TRANSCRIPT_SCHEMA, PostgresSteps, PostgresTranscript
 
 pytestmark = pytest.mark.anyio
 
-DSN = os.environ.get("NEXORA_TEST_DSN")
+DSN = os.environ.get("SEMORA_TEST_DSN")
 
 
 async def _postgres(schema: str, tables: str, cls: Any) -> AsyncIterator[Any]:
@@ -84,10 +84,10 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Transcript]:
         yield MemoryTranscript()
         return
     if not DSN:
-        pytest.skip("set NEXORA_TEST_DSN to run the durable half of this suite")
+        pytest.skip("set SEMORA_TEST_DSN to run the durable half of this suite")
     async for durable in _postgres(
         TRANSCRIPT_SCHEMA,
-        "nexora_transcript, nexora_run, nexora_run_model",
+        "semora_transcript, semora_run, semora_run_model",
         PostgresTranscript,
     ):
         yield durable
@@ -100,9 +100,9 @@ async def steps(request: pytest.FixtureRequest) -> AsyncIterator[StepLog]:
         yield MemorySteps()
         return
     if not DSN:
-        pytest.skip("set NEXORA_TEST_DSN to run the durable half of this suite")
+        pytest.skip("set SEMORA_TEST_DSN to run the durable half of this suite")
     async for durable in _postgres(
-        SCHEMA, "nexora_step, nexora_run_lease, nexora_input", PostgresSteps
+        SCHEMA, "semora_step, semora_run_lease, semora_input", PostgresSteps
     ):
         yield durable
 

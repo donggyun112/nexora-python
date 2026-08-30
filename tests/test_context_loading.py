@@ -5,16 +5,16 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import HumanMessage, ToolMessage
-from nexora.engines.plain import react_loop
-from nexora.prompts import SystemPrompt, prompt_section, volatile_prompt_section
-from nexora.skills import (
+from semora.engines.plain import react_loop
+from semora.prompts import SystemPrompt, prompt_section, volatile_prompt_section
+from semora.skills import (
     DirectorySkillSource,
     Skill,
     SkillMetadata,
     SkillRegistry,
     SkillTools,
 )
-from nexora.tool_search import DeferredTools
+from semora.tool_search import DeferredTools
 
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 
@@ -146,7 +146,7 @@ async def test_the_skill_catalog_appears_once_in_the_model_request() -> None:
     async for _ in react_loop(
         model,
         SkillTools(Tools(), SkillRegistry([source])),
-        system_prompt=SystemPrompt([prompt_section("identity", "You are Nexora.")]),
+        system_prompt=SystemPrompt([prompt_section("identity", "You are Semora.")]),
     ):
         pass
 

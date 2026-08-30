@@ -4,12 +4,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-import nexora
+import semora
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from nexora import ChatModel
-from nexora.contracts import PendingInput
-from nexora.engines.plain import react_loop
-from nexora.tools import as_model_tools
+from semora import ChatModel
+from semora.contracts import PendingInput
+from semora.engines.plain import react_loop
+from semora.tools import as_model_tools
 
 from tests.test_loop import Tools, a_call, cap
 
@@ -81,8 +81,8 @@ class Scripted:
 
 def test_package_exports_chat_model() -> None:
     """The default install's model is ChatModel, not a LangChain provider class."""
-    assert "ChatModel" in nexora.__all__
-    assert nexora.ChatModel is ChatModel
+    assert "ChatModel" in semora.__all__
+    assert semora.ChatModel is ChatModel
 
 
 async def test_chat_model_streams_text_and_usage() -> None:

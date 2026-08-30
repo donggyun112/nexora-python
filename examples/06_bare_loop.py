@@ -4,7 +4,7 @@
 
 The default `AgentRuntime` drives `react_loop` with its direct `execute_calls`, so the durable
 boundary is optional rather than something the loop depends on. Nothing in
-`nexora.orchestrator` participates.
+`semora.orchestrator` participates.
 
 You keep the whole control plane: `on_inputs`, `before_model`, `pre_tool_use`, `after_tool_call`,
 `before_finish`, the event stream, steers, and the stop hook. What you give up is the three things
@@ -19,7 +19,7 @@ import asyncio
 from typing import Any
 
 from _scripted import Files, calling, says, scripted
-from nexora import (
+from semora import (
     AgentRuntime,
     ControlPlane,
     Ctx,
@@ -29,8 +29,8 @@ from nexora import (
     Proceed,
     gate,
 )
-from nexora.contracts import StopReason, ToolCall
-from nexora.tools import RoundSuspended
+from semora.contracts import StopReason, ToolCall
+from semora.tools import RoundSuspended
 
 
 async def no_deleting(call: ToolCall) -> dict[str, Any] | None:

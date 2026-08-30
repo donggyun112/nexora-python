@@ -5,11 +5,11 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage
-from nexora import AgentRuntime
-from nexora.contracts import BaseMessage, BatchTools
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import MemorySteps, Orchestrator
-from nexora.tools import Concurrent, InvalidToolResult
+from semora import AgentRuntime
+from semora.contracts import BaseMessage, BatchTools
+from semora.engines.plain import react_loop
+from semora.orchestrator import MemorySteps, Orchestrator
+from semora.tools import Concurrent, InvalidToolResult
 
 from tests.test_loop import Tools, a_call, says, scripted
 

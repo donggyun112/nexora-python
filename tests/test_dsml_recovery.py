@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessageChunk
-from nexora_llm import ChatModel, openrouter
-from nexora_llm.dsml import (
+from semora_llm import ChatModel, openrouter
+from semora_llm.dsml import (
     DsmlFilter,
     parse_dsml_tool_calls,
     recover_dsml_chunks,

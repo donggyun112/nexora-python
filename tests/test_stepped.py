@@ -3,9 +3,9 @@
 from typing import Any, cast
 
 import pytest
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import MemorySteps, Orchestrator, Step, Suspended
-from nexora.tools import Concurrent, InvalidToolCall, Stepped
+from semora.engines.plain import react_loop
+from semora.orchestrator import MemorySteps, Orchestrator, Step, Suspended
+from semora.tools import Concurrent, InvalidToolCall, Stepped
 
 from tests.test_loop import Tools, a_call, says, scripted
 

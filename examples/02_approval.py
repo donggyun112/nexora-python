@@ -15,7 +15,7 @@ import asyncio
 from typing import Any
 
 from _scripted import Files, calling, says, scripted
-from nexora import (
+from semora import (
     AgentRuntime,
     Continue,
     ControlPlane,
@@ -26,8 +26,8 @@ from nexora import (
     ResumeInput,
     gate,
 )
-from nexora.controls import ToolDecision
-from nexora.orchestrator import AgentSuspended
+from semora.controls import ToolDecision
+from semora.orchestrator import AgentSuspended
 
 
 async def ask_before_deleting(call: dict[str, Any]) -> dict[str, Any] | None:

@@ -6,15 +6,15 @@ from typing import Any, cast
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
-from nexora.contracts.types import ToolCall, Tools
-from nexora.controls import Ctx
-from nexora.dispatch import InvalidTransition, Recover
-from nexora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
-from nexora.runtime import AgentRuntime
-from nexora_ui.execution import AgentEvent, stream_attempt
-from nexora_ui.policy import permission_controls
-from nexora_ui.state import FaultInjectingMemorySteps, RuntimeState, SimulatedWorkerCrash
-from nexora_ui.tools import DemoTools
+from semora.contracts.types import ToolCall, Tools
+from semora.controls import Ctx
+from semora.dispatch import InvalidTransition, Recover
+from semora.orchestrator import AgentSuspended, MemorySteps, Orchestrator
+from semora.runtime import AgentRuntime
+from semora_ui.execution import AgentEvent, stream_attempt
+from semora_ui.policy import permission_controls
+from semora_ui.state import FaultInjectingMemorySteps, RuntimeState, SimulatedWorkerCrash
+from semora_ui.tools import DemoTools
 
 
 class TrackingTools(DemoTools):

@@ -3,11 +3,11 @@
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and
 documentation corrections belong in the commit log, not here.
 
-## Unreleased
+## 0.1.0 — 2026-08-30
 
 ### Added
 
-- **Composable command routing.** `nexora.dispatch` grew from the command vocabulary into the
+- **Composable command routing.** `semora.dispatch` grew from the command vocabulary into the
   assembly layer: `CommandRouter` is an ordered transition table over the runtime's public
   primitives, and `default_router()` — `StartRun`, `QueueSteer`, `ResumeApproval`,
   `RecoverInterrupted`, `ReplayJournal` — is the preset behind `AgentRuntime.dispatch`, which
@@ -33,21 +33,21 @@ documentation corrections belong in the commit log, not here.
   run used to say `idle`; it now carries the run record's vocabulary (`fresh`/`completed`),
   the same names `Recover` refusals already used.
 
-- **`ChatModel`.** `nexora-llm` is a workspace distribution the core depends on. It wraps
+- **`ChatModel`.** `semora-llm` is a workspace distribution the core depends on. It wraps
   the official `openai` SDK and streams LangChain chunks. OpenAI, OpenRouter, and xAI
   share that wire; `openrouter()` / `xai()` are presets. Anthropic and Google native
   APIs stay extras.
 
-- **Provider extras.** `nexora[openai]`, `nexora[anthropic]`, `nexora[google]`,
-  `nexora[xai]`, and `nexora[openrouter]` install the matching LangChain chat adapter.
+- **Provider extras.** `semora[openai]`, `semora[anthropic]`, `semora[google]`,
+  `semora[xai]`, and `semora[openrouter]` install the matching LangChain chat adapter.
   The core still depends only on `langchain-core`. Construct the model from that
-  adapter (`from langchain_openai import ChatOpenAI`); Nexora does not re-export it.
+  adapter (`from langchain_openai import ChatOpenAI`); Semora does not re-export it.
 
-- **Control plane on the public package.** The top-level `nexora` export is the every-run
+- **Control plane on the public package.** The top-level `semora` export is the every-run
   vocabulary: `AgentRuntime`, `ChatModel`, the control-plane types, `MemorySteps`,
   `ExecutionContext`, `HostWorkspaceProvider`. Feature packs and power-user seams live on
   their submodules; see Breaking. Workspace internals (`ToolContext`, snapshot backends,
-  sandbox HTTP types) stay on `nexora.workspace` and `nexora.sandbox_remote`.
+  sandbox HTTP types) stay on `semora.workspace` and `semora.sandbox_remote`.
 
 - **Shared agent definitions.** `AgentDefinition` is the common identity contract implemented by
   `Agent`, `FactoryAgent`, `RunnerAgent`, and `HttpAgent`. The executable local `Agent` binds a
@@ -81,30 +81,30 @@ documentation corrections belong in the commit log, not here.
 
 ### Packaging
 
-**`nexora` is now a uv workspace of five distributions.** What was split out is what has its own
+**`semora` is now a uv workspace of five distributions.** What was split out is what has its own
 dependency footprint or its own audience — the line the Python ecosystem draws for
 `langchain-openai`, `apache-airflow-providers-*`, `opentelemetry-exporter-*`. Layers sharing one
-footprint stay subpackages of `nexora`, the way `django.db` stays inside `django`, so
-`nexora.contracts`, `nexora.controls`, `nexora.tools`, `nexora.history`, `nexora.orchestrator` and
-`nexora.engines.plain` are all unchanged, as is `from nexora import AgentRuntime`.
+footprint stay subpackages of `semora`, the way `django.db` stays inside `django`, so
+`semora.contracts`, `semora.controls`, `semora.tools`, `semora.history`, `semora.orchestrator` and
+`semora.engines.plain` are all unchanged, as is `from semora import AgentRuntime`.
 
 | was | is | install |
 |---|---|---|
-| part of `nexora.orchestrator` | `nexora_store` (**no dependencies**) | with `nexora` |
-| `nexora.steps_postgres` | `nexora_store_pg` | `nexora[postgres]` |
-| `nexora.permissions` | `nexora_permissions` | `nexora[permissions]` |
-| `nexora.ui` | `nexora_ui` | `nexora[ui]` |
+| part of `semora.orchestrator` | `semora_store` (**no dependencies**) | with `semora` |
+| `semora.steps_postgres` | `semora_store_pg` | `semora[postgres]` |
+| `semora.permissions` | `semora_permissions` | `semora[permissions]` |
+| `semora.ui` | `semora_ui` | `semora[ui]` |
 
-Three of those change what a default install contains. `nexora-permissions` is optional because
-nothing in the runtime imports it — it is a rule table a host opts into. `nexora-store-pg` keeps a
-compiled database driver out of the base install, and `nexora-ui` keeps FastAPI and uvicorn out.
+Three of those change what a default install contains. `semora-permissions` is optional because
+nothing in the runtime imports it — it is a rule table a host opts into. `semora-store-pg` keeps a
+compiled database driver out of the base install, and `semora-ui` keeps FastAPI and uvicorn out.
 
-`nexora_store` is the only distribution with an empty dependency list, and that is the point of it
+`semora_store` is the only distribution with an empty dependency list, and that is the point of it
 existing: a `StepLog` stores opaque values under opaque keys, so implementing one needs neither a
-message type nor `nexora` itself.
+message type nor `semora` itself.
 
 `tests/test_packaging.py` checks both boundaries — each distribution against the dependencies it
-declares, and each layer inside `nexora` against what it is allowed to reach.
+declares, and each layer inside `semora` against what it is allowed to reach.
 
 ### Fixed
 
@@ -146,29 +146,29 @@ declares, and each layer inside `nexora` against what it is allowed to reach.
 
 ### Breaking
 
-- **The top-level package is the every-run vocabulary.** `nexora.__all__` is a closed
+- **The top-level package is the every-run vocabulary.** `semora.__all__` is a closed
   contract, not an accumulating re-export of every feature pack. Names that moved stay
   public on the submodule that already owned them; there is no deprecation shim.
 
   | name | now |
   |---|---|
-  | `Answering`, `Authority`, `FactoryAgent`, `HttpAgent`, `RunnerAgent`, `Subagent`, `Subagents` | `nexora.subagents` |
-  | `DirectorySkillSource`, `SkillRegistry`, `SkillTools` | `nexora.skills` |
-  | `SystemPrompt`, `prompt_section`, `volatile_prompt_section` | `nexora.prompts` |
-  | `DeferredTools` | `nexora.tool_search` |
-  | `Goal`, `goal_complete`, `goal_gate` | `nexora.goal` |
-  | `PlanMode`, `plan_mode_exit`, `plan_mode_gate` | `nexora.plan_mode` |
-  | `BuiltinTools`, `builtin_tools`, `ExecToolOptions` | `nexora.builtins` |
-  | `RemoteSandboxClient` | `nexora.sandbox_remote` |
-  | `FallbackChatModel`, `ModelProvider` | `nexora.providers` |
-  | `openrouter`, `xai` | `nexora_llm` |
-  | `react_loop` | `nexora.engines.plain` |
-  | `DurableRuntimeOrchestrator` | `nexora.orchestration` |
-  | `ModelFailurePolicy` | `nexora.orchestrator` |
-  | `ObservationEventSink` | `nexora.contracts` |
-  | `WorkspaceProvider` | `nexora.workspace` |
+  | `Answering`, `Authority`, `FactoryAgent`, `HttpAgent`, `RunnerAgent`, `Subagent`, `Subagents` | `semora.subagents` |
+  | `DirectorySkillSource`, `SkillRegistry`, `SkillTools` | `semora.skills` |
+  | `SystemPrompt`, `prompt_section`, `volatile_prompt_section` | `semora.prompts` |
+  | `DeferredTools` | `semora.tool_search` |
+  | `Goal`, `goal_complete`, `goal_gate` | `semora.goal` |
+  | `PlanMode`, `plan_mode_exit`, `plan_mode_gate` | `semora.plan_mode` |
+  | `BuiltinTools`, `builtin_tools`, `ExecToolOptions` | `semora.builtins` |
+  | `RemoteSandboxClient` | `semora.sandbox_remote` |
+  | `FallbackChatModel`, `ModelProvider` | `semora.providers` |
+  | `openrouter`, `xai` | `semora_llm` |
+  | `react_loop` | `semora.engines.plain` |
+  | `DurableRuntimeOrchestrator` | `semora.orchestration` |
+  | `ModelFailurePolicy` | `semora.orchestrator` |
+  | `ObservationEventSink` | `semora.contracts` |
+  | `WorkspaceProvider` | `semora.workspace` |
 
-- **`StepLog` declares `forget`, and `nexora_store.ClearableSteps` is gone.** Clearing was modelled
+- **`StepLog` declares `forget`, and `semora_store.ClearableSteps` is gone.** Clearing was modelled
   as an optional capability the orchestrator checked for, but three core paths depend on it — a step
   that raises, a model request that failed before its first chunk, and an aborted stream all end by
   removing their intent. A ledger without it turned every one of those into a permanent

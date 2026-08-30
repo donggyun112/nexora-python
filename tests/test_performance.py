@@ -18,9 +18,9 @@ import time
 from typing import Any
 
 import pytest
-from nexora.contracts import EventEnvelope, EventStream, EventType
-from nexora.controls import ControlPlane, Permissions, gate
-from nexora.engines.plain import react_loop
+from semora.contracts import EventEnvelope, EventStream, EventType
+from semora.controls import ControlPlane, Permissions, gate
+from semora.engines.plain import react_loop
 
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 

@@ -16,8 +16,8 @@ import asyncio
 
 from _scripted import Files, calling, says, scripted
 from langchain_core.messages import AIMessage, HumanMessage
-from nexora import AgentRuntime, MemorySteps
-from nexora.orchestrator import Orchestrator
+from semora import AgentRuntime, MemorySteps
+from semora.orchestrator import Orchestrator
 
 
 async def main() -> None:

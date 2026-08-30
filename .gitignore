@@ -13,8 +13,6 @@ htmlcov/
 .env.*
 !.env.example
 
-# Local symlink to the TypeScript reference checkout — machine-specific.
-reference/
 
 # Local tool/editor state — machine-specific, never pushed.
 .claude/
@@ -24,3 +22,7 @@ reference/
 
 # Superpowers design/spec scratch — working notes, not project documentation.
 docs/superpowers/
+
+# 로컬 자격증명 — 절대 커밋 금지.
+a.txt
+*.token

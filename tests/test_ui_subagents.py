@@ -6,16 +6,16 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import ToolMessage
-from nexora.runtime import AgentRuntime
-from nexora.subagents import RunnerAgent
-from nexora_store import MemoryTranscript
-from nexora_ui.execution import AgentEvent, stream_attempt
-from nexora_ui.recording import Recorder, history_of
-from nexora_ui.state import RuntimeState
+from semora.runtime import AgentRuntime
+from semora.subagents import RunnerAgent
+from semora_store import MemoryTranscript
+from semora_ui.execution import AgentEvent, stream_attempt
+from semora_ui.recording import Recorder, history_of
+from semora_ui.state import RuntimeState
 
 fastapi = pytest.importorskip("fastapi", reason="the console is the `ui` extra")
 from fastapi.testclient import TestClient  # noqa: E402
-from nexora_ui.app import app  # noqa: E402
+from semora_ui.app import app  # noqa: E402
 
 
 def answering(text: str, *, delay: float = 0.0) -> Any:

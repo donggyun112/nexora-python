@@ -5,10 +5,10 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
-from nexora import AgentRuntime
-from nexora.contracts import PendingInput
-from nexora.engines.plain import react_loop
-from nexora.orchestrator import (
+from semora import AgentRuntime
+from semora.contracts import PendingInput
+from semora.engines.plain import react_loop
+from semora.orchestrator import (
     AgentAborted,
     Contended,
     Fenced,
@@ -19,7 +19,7 @@ from nexora.orchestrator import (
     StepLog,
     run_agent,
 )
-from nexora_store_pg import SCHEMA
+from semora_store_pg import SCHEMA
 
 from tests.test_loop import Tools, a_call, says, scripted
 
@@ -377,7 +377,7 @@ async def test_the_postgres_log_matches_the_protocol() -> None:
     The repository's development environment installs the `postgres` extra so this dependency is
     resolved eagerly with every other test dependency.
     """
-    assert "nexora_run_lease" in SCHEMA
-    assert "nexora_input" in SCHEMA
+    assert "semora_run_lease" in SCHEMA
+    assert "semora_input" in SCHEMA
     assert "discarded" in SCHEMA
     assert "expires_at < now()" not in SCHEMA  # the takeover clause lives in the query, not the DDL

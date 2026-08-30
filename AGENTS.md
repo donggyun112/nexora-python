@@ -48,6 +48,10 @@ uv run mypy
 uv run pytest                     # -m "not perf" to skip the timing-sensitive ones
 ```
 
+The public surface is catalogued in [docs/API.md](docs/API.md) — signatures, outcome and error
+shapes, pitfalls. It is the reference a caller reads; `tests/test_docs.py` executes its import
+lines, so a rename that leaves it stale fails the suite. Change a public signature, update it.
+
 Use `src/` layout, strict typing, and a test for every loop semantic ported from the reference.
 Test conventions — one property per test, fakes not mocks, ratios not absolute times — live in
 [.claude/skills/writing-tests/SKILL.md](.claude/skills/writing-tests/SKILL.md).

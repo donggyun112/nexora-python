@@ -11,6 +11,9 @@ version stays under 1.0 because the public API is still young enough to move, no
 runtime is unfinished. The default install includes `ChatModel`, an OpenAI-compatible client.
 Native Anthropic/Google APIs remain extras.
 
+**Writing code against Semora?** [docs/API.md](docs/API.md) is the reference: every public
+signature, the outcome and error shapes, and the pitfalls, with no prose you have to read first.
+
 ## Hello
 
 ```python

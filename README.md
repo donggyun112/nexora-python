@@ -83,6 +83,7 @@ uv run python examples/01_minimal.py
 | `04_control_plane.py` | `on_inputs` vs a `Tools` wrapper vs `before_finish` |
 | `05_workflow.py` | `Orchestrator` outside, an agent run as one durable step |
 | `06_bare_loop.py` | the control plane without a ledger, and the one decision that needs one |
+| `vs_langgraph.py` | the same mid-batch crash in a graph framework and here; needs `langgraph` |
 
 Each file asserts what it claims. `tests/test_examples.py` runs them.
 

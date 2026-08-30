@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 EXAMPLES = sorted((Path(__file__).resolve().parent.parent / "examples").glob("[0-9]*.py"))
 
 
@@ -29,3 +31,17 @@ def test_every_example_runs_to_completion() -> None:
             f"{example.name} exited {finished.returncode}\n{finished.stderr}"
         )
         assert finished.stdout.strip(), f"{example.name} printed nothing"
+
+
+def test_the_langgraph_comparison_still_produces_its_claim() -> None:
+    """The README states this script's output as a fact, so the output has to keep holding.
+
+    Skipped unless langgraph is installed; it is not a dependency of this package.
+    """
+    pytest.importorskip("langgraph")
+    script = Path(__file__).resolve().parent.parent / "examples" / "vs_langgraph.py"
+    finished = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=120
+    )
+    assert finished.returncode == 0, finished.stderr
+    assert "charged 2 times by the graph, 1 time by the runtime" in finished.stdout

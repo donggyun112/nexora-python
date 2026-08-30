@@ -22,6 +22,8 @@ from langchain_core.messages import (
 )
 from openai import AsyncOpenAI
 
+from .dsml import recover_dsml_chunks
+
 __all__ = ["ChatModel"]
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1"
@@ -44,6 +46,9 @@ class ChatModel:
     extra_body: Mapping[str, Any] | None = None
     tools: tuple[dict[str, Any], ...] = ()
     client: Any = None
+    recover_dsml: bool = False
+    """Repair tool markup a gateway left in assistant content. A no-op for a provider
+    that does not leak it, so presets turn it on per gateway rather than per model."""
 
     def bind_tools(self, tools: Sequence[Any], **_kwargs: Any) -> ChatModel:
         """Return a copy that sends these OpenAI-format tool definitions."""
@@ -56,6 +61,7 @@ class ChatModel:
             extra_body=self.extra_body,
             tools=encoded,
             client=self.client,
+            recover_dsml=self.recover_dsml,
         )
 
     @property
@@ -70,7 +76,16 @@ class ChatModel:
     async def astream(
         self, messages: Iterable[BaseMessage], **_kwargs: Any
     ) -> AsyncIterator[AIMessageChunk]:
-        """Yield one LangChain chunk per provider delta."""
+        """Yield one LangChain chunk per provider delta, repaired where a gateway leaks."""
+        deltas = self._deltas(messages)
+        repaired = recover_dsml_chunks(deltas) if self.recover_dsml else deltas
+        async for chunk in repaired:
+            yield chunk
+
+    async def _deltas(
+        self, messages: Iterable[BaseMessage]
+    ) -> AsyncIterator[AIMessageChunk]:
+        """The provider's own stream, one LangChain chunk per delta."""
         stream = await self._openai().chat.completions.create(
             model=self.model,
             messages=encode_messages(list(messages)),
@@ -261,6 +276,9 @@ def openrouter(model: str, *, api_key: str | None = None, **options: Any) -> Cha
             "X-Title": options.pop("title", "Nexora"),
         },
         extra_body=options.pop("extra_body", None),
+        # OpenRouter is the gateway observed dropping DeepSeek's markup into content.
+        # The repair costs a suffix scan per delta and does nothing to a clean stream.
+        recover_dsml=options.pop("recover_dsml", True),
         **options,
     )
 

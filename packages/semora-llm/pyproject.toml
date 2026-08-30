@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "donggyun112" }]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",

@@ -3,7 +3,7 @@
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and
 documentation corrections belong in the commit log, not here.
 
-## Unreleased
+## 0.1.0 — 2026-08-30
 
 ### Added
 

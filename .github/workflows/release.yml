@@ -1,0 +1,54 @@
+name: Release
+
+# A tag is the release trigger, and the tag must name the version already in the manifests:
+# `v0.1.0` publishes the 0.1.0 built from that commit. PyPI accepts a filename once, so a
+# botched upload is a version bump, never a re-push.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # The same suite `main` runs. Publishing is irreversible, so it happens downstream of a pass
+  # rather than beside one.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+
+    # One job per distribution: PyPI mints a Trusted Publishing token per project, so each
+    # upload needs its own OIDC exchange and its own `dist/`.
+    strategy:
+      matrix:
+        package:
+          # Leaves first. The matrix gives no ordering guarantee, so `semora==0.1.0` may land a
+          # few seconds before the `semora-llm==0.1.0` it pins. Only the first release can see
+          # that window, and only as a transient resolution failure.
+          - semora-store
+          - semora-llm
+          - semora-store-pg
+          - semora-permissions
+          - semora
+          - semora-fork
+          - semora-ui
+
+    environment: pypi
+    permissions:
+      id-token: write  # Trusted Publishing. No API token lives in this repository.
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Build ${{ matrix.package }}
+        run: uv build --package ${{ matrix.package }}
+
+      - name: Publish ${{ matrix.package }}
+        uses: pypa/gh-action-pypi-publish@release/v1

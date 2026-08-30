@@ -20,25 +20,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
 
-    # One job per distribution: PyPI mints a Trusted Publishing token per project, so each
-    # upload needs its own OIDC exchange and its own `dist/`.
-    strategy:
-      matrix:
-        package:
-          # Leaves first. The matrix gives no ordering guarantee, so `semora==0.1.0` may land a
-          # few seconds before the `semora-llm==0.1.0` it pins. Only the first release can see
-          # that window, and only as a transient resolution failure.
-          - semora-store
-          - semora-llm
-          - semora-store-pg
-          - semora-permissions
-          - semora
-          - semora-fork
-          - semora-ui
-
+    # Not decoration: `PYPI_API_TOKEN` is scoped to this environment, so it is readable only by
+    # a job that declares it. A workflow added later — or one a pull request can reach — cannot
+    # see the token by default. Add a required reviewer here to gate a release on a human.
     environment: pypi
-    permissions:
-      id-token: write  # Trusted Publishing. No API token lives in this repository.
 
     steps:
       - name: Check out repository
@@ -47,8 +32,12 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
-      - name: Build ${{ matrix.package }}
-        run: uv build --package ${{ matrix.package }}
+      # All seven at once. One token covers the account, so unlike Trusted Publishing there is
+      # no per-project exchange to split the build across.
+      - name: Build every distribution
+        run: uv build --all-packages
 
-      - name: Publish ${{ matrix.package }}
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

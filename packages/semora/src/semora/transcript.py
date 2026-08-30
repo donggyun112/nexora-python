@@ -252,4 +252,4 @@ _MODEL_TOKEN_FIELDS = frozenset(
         "cache_write_tokens",
     }
 )
-"""Usage keys `semora_run_model` has columns for."""
+"""Usage keys `ledger_run_model` has columns for."""

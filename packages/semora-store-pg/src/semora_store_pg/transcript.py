@@ -15,7 +15,7 @@ from semora_store import MODEL_USAGE_FIELDS, RUN_FIELDS, ExecutionContext, check
 __all__ = ["TRANSCRIPT_SCHEMA", "PostgresTranscript"]
 
 TRANSCRIPT_SCHEMA = """
-create table if not exists semora_transcript (
+create table if not exists ledger_transcript (
     entry           jsonb       not null,
     seq             bigserial   primary key,
     ts              timestamptz not null,
@@ -28,13 +28,13 @@ create table if not exists semora_transcript (
     unique (conversation_id, uuid)
 );
 
-create index if not exists semora_transcript_replay
-    on semora_transcript (conversation_id, seq);
+create index if not exists ledger_transcript_replay
+    on ledger_transcript (conversation_id, seq);
 
-create index if not exists semora_transcript_run
-    on semora_transcript (run_id) where run_id is not null;
+create index if not exists ledger_transcript_run
+    on ledger_transcript (run_id) where run_id is not null;
 
-create table if not exists semora_run (
+create table if not exists ledger_run (
     run_id               text primary key,
     conversation_id      text,
     stop_reason          text,
@@ -44,10 +44,10 @@ create table if not exists semora_run (
     ended_at             timestamptz
 );
 
-create index if not exists semora_run_conversation
-    on semora_run (conversation_id, started_at desc);
+create index if not exists ledger_run_conversation
+    on ledger_run (conversation_id, started_at desc);
 
-create table if not exists semora_run_model (
+create table if not exists ledger_run_model (
     run_id             text   not null,
     model              text   not null,
     prompt_tokens      bigint,
@@ -59,8 +59,8 @@ create table if not exists semora_run_model (
     primary key (run_id, model)
 );
 
-create index if not exists semora_run_model_by_model
-    on semora_run_model (model);
+create index if not exists ledger_run_model_by_model
+    on ledger_run_model (model);
 """
 """Schema for transcript entries, run metadata, and per-model usage records."""
 
@@ -82,7 +82,7 @@ class PostgresTranscript:
         async with self._pool.connection() as connection, connection.cursor() as cursor:
             await cursor.execute(
                 """
-                insert into semora_transcript (entry, ts)
+                insert into ledger_transcript (entry, ts)
                 values (%s, coalesce((%s)::timestamptz, now()))
                 on conflict (conversation_id, uuid) do nothing
                 returning seq
@@ -101,7 +101,7 @@ class PostgresTranscript:
             if limit is None:
                 await cursor.execute(
                     """
-                    select entry from semora_transcript
+                    select entry from ledger_transcript
                     where conversation_id = %s
                     order by seq
                     """,
@@ -111,7 +111,7 @@ class PostgresTranscript:
                 await cursor.execute(
                     """
                     select entry from (
-                        select entry, seq from semora_transcript
+                        select entry, seq from ledger_transcript
                         where conversation_id = %s
                         order by seq desc
                         limit %s
@@ -125,12 +125,12 @@ class PostgresTranscript:
 
     async def record_run(self, run_id: str, fields: dict[str, Any]) -> None:
         """Merge validated fields into a run record, creating it when absent."""
-        await self._upsert("semora_run", ("run_id",), (run_id,), fields, RUN_FIELDS)
+        await self._upsert("ledger_run", ("run_id",), (run_id,), fields, RUN_FIELDS)
 
     async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
         """Merge validated token counts for one model of one run."""
         await self._upsert(
-            "semora_run_model", ("run_id", "model"), (run_id, model), counts, MODEL_USAGE_FIELDS
+            "ledger_run_model", ("run_id", "model"), (run_id, model), counts, MODEL_USAGE_FIELDS
         )
 
     async def read_run(self, run_id: str) -> dict[str, Any] | None:
@@ -140,7 +140,7 @@ class PostgresTranscript:
             connection.cursor(row_factory=dict_row) as cursor,
         ):
             await cursor.execute(
-                f"select {', '.join(sorted(RUN_FIELDS))} from semora_run where run_id = %s",
+                f"select {', '.join(sorted(RUN_FIELDS))} from ledger_run where run_id = %s",
                 (run_id,),
             )
             row = await cursor.fetchone()
@@ -155,7 +155,7 @@ class PostgresTranscript:
             await cursor.execute(
                 f"""
                 select model, {", ".join(sorted(MODEL_USAGE_FIELDS))}
-                from semora_run_model where run_id = %s
+                from ledger_run_model where run_id = %s
                 """,
                 (run_id,),
             )

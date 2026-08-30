@@ -12,7 +12,7 @@ includes `ChatModel`, an OpenAI-compatible client. Native Anthropic/Google APIs 
 ## Hello
 
 ```python
-from nexora import Agent, AgentRuntime, ChatModel
+from nexora import Agent, AgentRuntime, ChatModel, new_run_id
 
 model = ChatModel(model="gpt-4.1")
 agent = Agent(
@@ -23,7 +23,8 @@ agent = Agent(
     system_prompt="Inspect evidence before answering.",
 )
 
-outcome = await AgentRuntime().run("run-42", agent, "inspect this repository")
+run_id = new_run_id()
+outcome = await AgentRuntime().run(run_id, agent, "inspect this repository")
 ```
 
 ```bash
@@ -36,14 +37,14 @@ That default records nothing. The whole control plane is there; a crash may run 
 tool again, and `Suspend` has nowhere to park. Attach a ledger when those guarantees matter:
 
 ```python
-from nexora import Agent, AgentRuntime, MemorySteps
+from nexora import AgentRuntime, MemorySteps
 
-runtime = AgentRuntime(store=MemorySteps())
-outcome = await runtime.run("run-42", agent, "inspect this repository")
+runtime = AgentRuntime(execution_store=MemorySteps())
+outcome = await runtime.run(run_id, agent, "inspect this repository")
 ```
 
-`store=` is shorthand for `orchestrator=DurableRuntimeOrchestrator(steps)` from
-`nexora.orchestration`. The agent does not change.
+`execution_store=` is shorthand for `orchestrator=DurableRuntimeOrchestrator(store)` from
+`nexora.orchestration`; `store=` remains accepted. The agent does not change.
 
 ## Control plane
 
@@ -56,7 +57,7 @@ from nexora import AgentRuntime, ControlPlane, FinishPolicy, Halt, Permissions, 
 
 runtime = AgentRuntime()
 await runtime.run(
-    "run-42",
+    run_id,
     model,
     tools,
     "review this change",
@@ -66,6 +67,26 @@ await runtime.run(
     ),
 )
 ```
+
+## Host commands
+
+An HTTP handler, a CLI, and a queue worker all ask one question: given this run's durable
+state, may this arrive now? `dispatch` answers it once, over the same public primitives
+(`run`, `resume`, `recover`, `submit`).
+
+```python
+from nexora.dispatch import Answer, Prompt, Recover
+from nexora_store import MemoryTranscript
+
+runtime = AgentRuntime(execution_store=MemorySteps(), transcript=MemoryTranscript())
+await runtime.dispatch(run_id, agent, Prompt("also check the tests"))
+```
+
+A `Prompt` aimed at a run another worker is driving is durably enqueued for that worker
+(`{"type": "enqueued", ...}`); a command the state cannot accept raises `InvalidTransition`
+carrying the observed state, so an adapter maps it without string-matching. Behind it is
+`default_router()`, an ordered table of rows: drop one and exactly its behaviour disappears,
+and a host's own `Transition` slots into the order without subclassing.
 
 ## Examples
 
@@ -108,10 +129,17 @@ uv run pytest
 | `nexora[openrouter]` | same adapter as `openai`; point `base_url` at OpenRouter |
 | `nexora[postgres]` | Postgres ledger |
 | `nexora[permissions]` | rule table |
+| `nexora[fork]` | branch a run from before one injected input |
 | `nexora[ui]` | local OpenRouter console at :8790 |
 
 `nexora-store` has no dependencies of its own. A `StepLog` stores opaque values under opaque
 keys, so implementing one needs neither a message type nor `nexora`.
+
+`nexora-fork` adds no authority of its own — it is composition over seams the core already
+has. `fork_run` re-runs a conversation from just before one input entered model context,
+enqueuing the source ledger's pre-screen original so it crosses whatever `controls` the fork
+supplies; `fork_event` does the same from the durable coordinate recorded on an observation
+edge. The source run's ledger is never touched: what actually went out stays the record.
 
 Workspace internals (`ToolContext`, snapshot backends, sandbox HTTP types) live on
 `nexora.workspace` and `nexora.sandbox_remote`, not the top-level package. Feature packs

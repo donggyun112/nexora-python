@@ -983,11 +983,18 @@ class Orchestrator:
         turn: int | None = None,
         controls: Controls | None = None,
         retry_running: bool = True,
+        replay_from: str | None = None,
     ) -> RecoveredTools:
         """Recover the latest unanswered tool round without replaying its model call.
 
         Completed results are restored, absent calls are executed, and running calls are either
         retried with their original idempotency keys or reported as indeterminate.
+
+        ``replay_from`` names another run whose completed records stand in for this run's
+        absent ones. That is what a branch taken to re-journal a result needs: the effect
+        happened in the run it was taken from, so its recorded result is restored here — the
+        gate is not consulted again, the tool is not run again, and only the journal sees it.
+        The other run's ledger is read and never written.
 
         Args:
             history: Model history containing the unanswered tool round.
@@ -1014,7 +1021,7 @@ class Orchestrator:
             # person. Re-gating would mint new pending ids and orphan every answer in flight,
             # so the run stays parked under its original identities.
             raise AgentSuspended(parked[0][0], parked[0][1], pending=parked)
-        records = await self._recovery_records(pending, retry_running)
+        records = await self._recovery_records(pending, retry_running, replay_from)
 
         context = Ctx(turn=recovery_turn, messages=list(history))
         publisher = emit if emit is not None else self._emit
@@ -1102,12 +1109,21 @@ class Orchestrator:
         self,
         pending: list[ToolCall],
         retry_running: bool,
+        replay_from: str | None = None,
     ) -> list[tuple[ToolCall, Step]]:
         """Read pending steps and turn explicitly retryable running intents into absent ones."""
         records: list[tuple[ToolCall, Step]] = []
         for call in pending:
             call_id = call["id"] or ""
             record = await self._log.read(self.run_id, call_id)
+            if record.status == "absent" and replay_from is not None:
+                # Only a finished record is borrowed. A running one is that run's
+                # indeterminacy to resolve, not this one's to retry, and an absent one means
+                # the effect never happened there — so this run gates and runs it as usual.
+                borrowed = await self._log.read(replay_from, call_id)
+                if borrowed.status == "done":
+                    records.append((call, borrowed))
+                    continue
             if record.status == "running" and not retry_running:
                 raise Indeterminate(self.run_id, call_id)
             records.append((call, record))

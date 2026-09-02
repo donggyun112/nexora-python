@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from semora import AgentRuntime, PendingInput
+from semora import AgentRuntime, Deny, PendingInput
 from semora.controls import ControlPlane, Ingress
 from semora_fork import (
     RERUNS,
@@ -276,6 +276,7 @@ def test_a_coordinate_says_which_control_point_it_resumes_at() -> None:
 
     assert resume_point([HumanMessage("hi")], ForkCoordinate("run-1", "p1", None)) == "on_inputs"
     assert resume_point([HumanMessage("hi"), asked], leaf) == "pre_tool_use"
+    assert resume_point([HumanMessage("hi"), asked], leaf, rejournal=True) == "post_tool_use"
     assert resume_point([HumanMessage("hi"), asked, answered], leaf) == "before_model"
     assert resume_point([HumanMessage("hi"), asked, answered, AIMessage("done")], leaf) == (
         "before_model"
@@ -284,6 +285,93 @@ def test_a_coordinate_says_which_control_point_it_resumes_at() -> None:
 
 def test_what_reruns_from_a_resume_point_is_the_loop_order() -> None:
     assert RERUNS["pre_tool_use"] == ("pre_tool_use", "post_tool_use", "before_finish")
+    assert RERUNS["post_tool_use"] == ("post_tool_use", "before_finish")
     assert RERUNS["before_model"] == ("before_model", "before_finish")
     assert RERUNS["on_inputs"][0] == "on_inputs" and "post_tool_use" in RERUNS["on_inputs"]
     assert "pre_tool_use" not in RERUNS["before_model"], "a recorded call is not re-gated"
+
+
+def _tool_call_leaf(entries: list[dict[str, Any]]) -> str:
+    """The leaf holding the assistant turn that still owes its tool answer."""
+    return next(
+        str(entry["uuid"])
+        for entry in entries
+        if entry.get("message", {}).get("type") == "ai"
+        and entry["message"].get("data", {}).get("tool_calls")
+    )
+
+
+async def test_a_rejournal_fork_skips_the_gate_and_reuses_the_effect() -> None:
+    """Changing only the journal must not cost a second gate decision or a second effect.
+
+    A branch taken to re-mask a result used to resume at the gate: the tool replayed, but
+    an approval gate asked a person again for an effect that had already happened. With
+    `rejournal`, the source run's finished record stands in — no gate, no effect, and the
+    journal sees the recorded result exactly as the tool returned it, not as the previous
+    journal left it.
+    """
+    steps = MemorySteps()
+    transcript = MemoryTranscript()
+    runtime = AgentRuntime(store=steps, transcript=transcript)
+    tools = Tools(results={"read": {"type": "text", "text": "ssn is 123-45"}})
+    call = {"id": "c1", "name": "read", "args": {}, "type": "tool_call"}
+
+    async def mask(_ctx: Any, _call: Any, result: dict[str, Any]) -> None:
+        result["text"] = str(result["text"]).replace("123-45", "***")
+
+    await runtime.run(
+        "run-a",
+        scripted(says("", call), says("masked")),
+        tools,
+        "read it",
+        controls=ControlPlane(post_tool_use=mask),
+        conversation_id="conv",
+    )
+    entries = await transcript.read("conv")
+    leaf = ForkCoordinate("run-a", None, _tool_call_leaf(entries))
+    await record_event_checkpoint(
+        transcript, EventCheckpoint("event-gate", "conv", leaf, leaf)
+    )
+
+    gated: list[str] = []
+    journaled: list[str] = []
+
+    async def refuse(_ctx: Any, asked: Any) -> Any:
+        gated.append(asked["id"])
+        return Deny({"type": "error", "message": "not now"})
+
+    async def audit(_ctx: Any, _call: Any, result: dict[str, Any]) -> None:
+        journaled.append(str(result["text"]))
+
+    await fork_event(
+        runtime,
+        steps,
+        transcript,
+        event_id="event-gate",
+        edge="before",
+        run_id="run-b",
+        model=scripted(says("re-journaled")),
+        tools=tools,
+        controls=ControlPlane(pre_tool_use=refuse, post_tool_use=audit),
+        conversation_id="conv",
+        rejournal=True,
+    )
+
+    assert gated == [], "the gate was not asked — a refusing one would have refused"
+    assert tools.ran == ["read"], "the effect happened once, in the source run"
+    assert journaled == ["ssn is 123-45"], "the journal saw the recorded result, unmasked"
+
+    await fork_event(
+        runtime,
+        steps,
+        transcript,
+        event_id="event-gate",
+        edge="before",
+        run_id="run-c",
+        model=scripted(says("re-gated")),
+        tools=tools,
+        controls=ControlPlane(pre_tool_use=refuse, post_tool_use=audit),
+        conversation_id="conv",
+    )
+    assert gated == ["c1"], "without rejournal the same branch asks the gate again"
+    assert tools.ran == ["read"], "and a refusal still runs nothing"

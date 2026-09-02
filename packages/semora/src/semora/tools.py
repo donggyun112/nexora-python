@@ -155,7 +155,7 @@ async def _advance_calls(
         call_id = call["id"] or ""
         if call_id in replayed:
             result = replayed[call_id]
-            await record_resolved(controls, emit, here, call, result)
+            await record_resolved(controls, emit, here, call, result, replayed=True)
             resolved.append(Resolved(call, result, refused=False))
             continue
         if collecting:
@@ -259,15 +259,22 @@ async def record_resolved(
     ctx: Ctx,
     call: ToolCall,
     result: dict[str, Any],
+    *,
+    replayed: bool = False,
 ) -> None:
-    """The durable record first — it may raise — then the observing event."""
+    """The durable record first — it may raise — then the observing event.
+
+    ``replayed`` marks a result restored from a record rather than produced now, so an
+    observer can tell a boundary that ran from one that was journaled again.
+    """
     if controls is not None:
         await controls.post_tool_use(ctx, call, result)
     if emit is None:
         return
     failed = result.get("type") == "error"
     outcome = EventType.POST_TOOL_USE_FAILURE if failed else EventType.POST_TOOL_USE
-    await emit(outcome, tool_payload(ctx, call, event=outcome, result=result))
+    marks = {"replayed": True} if replayed else {}
+    await emit(outcome, tool_payload(ctx, call, event=outcome, result=result, **marks))
 
 
 class Stepped:
@@ -511,9 +518,12 @@ async def _execute_batched(
         elif call["id"] in by_id:
             resolved.append(Resolved(call, by_id[call["id"]], refused=False))
     # In call order, not completion order: the record reads the same sequence a retry replays.
+    restored = {call["id"] for call, _decision, recovered in decided if recovered is not None}
     for call, result, refused in resolved:
         if not refused:
-            await record_resolved(controls, emit, ctx, call, result)
+            await record_resolved(
+                controls, emit, ctx, call, result, replayed=call["id"] in restored
+            )
     return resolved
 
 

@@ -596,3 +596,27 @@ async def test_an_unwritten_count_is_absent_rather_than_zero(store: Transcript) 
     await store.record_model_usage("run-1", "opus", {"prompt_tokens": 10})
 
     assert "cached_tokens" not in (await store.read_model_usage("run-1"))["opus"]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_record_does_not_follow_the_caller_s_later_edits():
+    """A record is what the step returned, not what the caller did to it afterwards.
+
+    A journal rewrites a tool result in place after the step recorded it. The database
+    store serialized on write and never noticed; the memory store kept the dict itself, so
+    the "raw" record read back masked — and a branch taken to re-journal it had nothing
+    raw to work from. The memory store now keeps a copy, as a database would.
+    """
+    steps = MemorySteps()
+    result = {"type": "text", "text": "ssn is 123-45"}
+    await steps.start("run-1", "call-1")
+    await steps.finish_effect("run-1", "call-1", result)
+
+    result["text"] = "ssn is ***"
+    recorded = await steps.read("run-1", "call-1")
+    assert recorded.value == {"type": "text", "text": "ssn is 123-45"}
+
+    recorded.value["text"] = "tampered"
+    assert (await steps.read("run-1", "call-1")).value["text"] == "ssn is 123-45", (
+        "and a reader cannot edit the record through what it was handed"
+    )

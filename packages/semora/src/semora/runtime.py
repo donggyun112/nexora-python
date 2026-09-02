@@ -844,6 +844,9 @@ class AgentRuntime:
             )
         engine_options.setdefault("on_model_failure", self._model_failure_policy)
         engine_options.setdefault("compact_context", self._compact_context)
+        # A recovery option, not an engine one: which run's finished effect records may
+        # stand in for this run's absent ones. Taken out here so the loop never sees it.
+        replay_from = engine_options.pop("replay_from", None)
 
         transcript = (
             await _RuntimeTranscript.open(
@@ -894,6 +897,7 @@ class AgentRuntime:
                     tools,
                     controls,
                     engine_options,
+                    replay_from=replay_from,
                 )
             outcome = await drive(
                 react_loop,
@@ -995,6 +999,7 @@ class AgentRuntime:
         tools: Tools,
         controls: Controls | None,
         engine_options: dict[str, Any],
+        replay_from: str | None = None,
     ) -> None:
         """Turn an unanswered transcript tool round into durable queued results."""
         recovered = await orchestrator.recover_pending(
@@ -1003,6 +1008,7 @@ class AgentRuntime:
             controls=controls,
             aborted=engine_options.get("aborted", lambda: False),
             retry_running=True,
+            replay_from=replay_from,
         )
         for message in recovered.history[len(history) :]:
             if isinstance(message, ToolMessage):

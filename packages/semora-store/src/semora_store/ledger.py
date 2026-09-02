@@ -4,6 +4,7 @@ The ledger records opaque step values and distinguishes absent, running, and com
 It surfaces ambiguous interrupted effects instead of claiming exactly-once execution.
 """
 
+import copy
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from time import monotonic
@@ -198,7 +199,8 @@ class MemorySteps:
 
     async def read(self, run_id: str, key: str) -> Step:
         """Return the stored step or an absent state."""
-        return self._entries.get((run_id, key), Step("absent"))
+        record = self._entries.get((run_id, key), Step("absent"))
+        return Step(record.status, copy.deepcopy(record.value))
 
     async def start(self, run_id: str, key: str, token: int = 0) -> bool:
         """Record running intent only when the step is absent."""
@@ -218,12 +220,15 @@ class MemorySteps:
             raise EffectConflict(run_id, key, "a different result is already committed")
         if record.status != "running":
             raise EffectConflict(run_id, key, f"expected 'running', found {record.status!r}")
-        self._entries[run_id, key] = Step("done", value)
+        # Stored as a copy, the way a database would store it. The caller keeps mutating
+        # the dict it handed in — a journal rewrites a tool result in place — and the
+        # record's whole point is to still say what the tool returned.
+        self._entries[run_id, key] = Step("done", copy.deepcopy(value))
 
     async def write_control(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         """Upsert mutable process-local control state."""
         self._fence(run_id, token)
-        self._entries[run_id, key] = Step("done", value)
+        self._entries[run_id, key] = Step("done", copy.deepcopy(value))
 
     async def finish(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         """Compatibility alias for ``write_control``."""

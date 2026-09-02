@@ -181,6 +181,7 @@ async def fork_event(
     tools: Tools | str | None = None,
     controls: Controls | None = None,
     conversation_id: str,
+    rejournal: bool = False,
     **options: Any,
 ) -> dict[str, Any]:
     """Fork from the durable coordinate attached to one observation edge.
@@ -188,6 +189,12 @@ async def fork_event(
     A before edge with an input origin reuses :func:`fork_run`, so the source ledger's
     pre-screen original crosses the new controls. Other coordinates continue from their
     explicit transcript leaf without copying source-run effect records.
+
+    ``rejournal`` is for a branch whose only change is to the journal: the round still
+    owed at the leaf is resumed with the source run's finished effect records standing in
+    for this run's — the gate is not asked again, the tool does not run again, and the
+    journal alone sees the recorded result. The source ledger is read, not written. A call
+    the source never finished falls back to the gate as usual.
     """
     if edge not in {"before", "after"}:
         raise ValueError("edge must be 'before' or 'after'")
@@ -209,6 +216,8 @@ async def fork_event(
 
     entries = await transcript.read(checkpoint.conversation_id)
     history = messages_at(entries, coordinate.leaf_uuid)
+    if rejournal:
+        options["replay_from"] = coordinate.from_run_id
     return await runtime.run(
         run_id,
         model,
@@ -224,6 +233,7 @@ RERUNS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "on_inputs": ("on_inputs", "before_model", "pre_tool_use", "post_tool_use", "before_finish"),
         "pre_tool_use": ("pre_tool_use", "post_tool_use", "before_finish"),
+        "post_tool_use": ("post_tool_use", "before_finish"),
         "before_model": ("before_model", "before_finish"),
     }
 )
@@ -236,7 +246,9 @@ promise in advance, so it is not listed.
 """
 
 
-def resume_point(history: list[BaseMessage], coordinate: ForkCoordinate) -> str:
+def resume_point(
+    history: list[BaseMessage], coordinate: ForkCoordinate, *, rejournal: bool = False
+) -> str:
     """The control point a run restored at ``coordinate`` enters first.
 
     A branch is only worth taking if the policy it was taken for will run, and which
@@ -247,14 +259,16 @@ def resume_point(history: list[BaseMessage], coordinate: ForkCoordinate) -> str:
     - a leaf whose last assistant turn still owes a tool answer resumes that round at
       ``pre_tool_use`` — the gate decides again, the effect replays from its ledger
       record, the journal sees the result again;
+    - the same leaf taken with ``rejournal`` resumes at ``post_tool_use`` — the gate is
+      skipped, the effect is the record, only the journal runs;
     - any other leaf hands the conversation back to the model at ``before_model`` — the
       recorded round is final and only what follows it is new.
 
-    The middle case uses the predicate recovery uses, so this is not a prediction of
+    The middle cases use the predicate recovery uses, so this is not a prediction of
     what the fork will do; it is the same decision, made early enough to be shown.
     """
     if coordinate.origin_id is not None:
         return "on_inputs"
     if unanswered_tool_calls(history):
-        return "pre_tool_use"
+        return "post_tool_use" if rejournal else "pre_tool_use"
     return "before_model"

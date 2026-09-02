@@ -16,7 +16,24 @@ documentation corrections belong in the commit log, not here.
   just turned on actually run from here. `unanswered_tool_calls` is public for the same
   reason.
 
+- **A branch can re-journal a result without re-gating it.** `fork_event(...,
+  rejournal=True)` resumes the round still owed at a leaf with the source run's finished
+  effect records standing in for the new run's absent ones — `Orchestrator.recover_pending`
+  and `AgentRuntime.run` take `replay_from` for the same purpose. The gate is not asked
+  again, the tool does not run again, and the journal alone sees the recorded result, as the
+  tool returned it. Until now the only way to re-mask a result was to resume at the gate,
+  which under an approval policy asked a person to approve an effect that had already
+  happened. `resume_point(..., rejournal=True)` reports `post_tool_use`, and `RERUNS` lists
+  what runs from there. The source ledger is read, never written; a call it never finished
+  falls back to the gate.
+
 ### Fixed
+
+- **`MemorySteps` keeps a copy of what it records.** It kept the caller's dict, so a journal
+  rewriting a tool result in place after the step recorded it rewrote the record too, and the
+  "raw" result read back masked. The Postgres store serialized on write and never had the
+  problem; the memory store now copies on write and on read, so the two keep the same promise.
+  Surfaced by the re-journal branch, which is the first reader that needed the raw copy.
 
 - **A replayed message now moves the branch every reader sees.** `TranscriptWriter.record`
   advances its own chain position when an entry turns out to be a duplicate, but nothing was

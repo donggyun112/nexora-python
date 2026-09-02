@@ -6,7 +6,8 @@ import asyncio
 import math
 from collections.abc import Mapping, Sequence
 
-from ..workspace import CommandResult, SandboxCommand, ToolContext, WorkspaceViolation
+from semora.workspace import CommandResult, SandboxCommand, ToolContext, WorkspaceViolation
+
 from ._types import (
     BuiltinToolState,
     ToolResult,

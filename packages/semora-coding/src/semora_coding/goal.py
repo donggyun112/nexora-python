@@ -12,9 +12,8 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from langchain_core.messages import HumanMessage
-
-from .contracts.types import StopReason, ToolCall
-from .controls import Ctx, Halt, Proceed, TurnDecision
+from semora.contracts.types import StopReason, ToolCall
+from semora.controls import Ctx, Halt, Proceed, TurnDecision
 
 __all__ = ["Goal", "goal_complete", "goal_gate"]
 

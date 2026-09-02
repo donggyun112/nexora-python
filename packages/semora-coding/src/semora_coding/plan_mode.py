@@ -10,10 +10,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contracts.types import ToolCall, Tools
-from .controls import Continue, Ctx, Deny, ToolDecision
+from semora.contracts.types import ToolCall, Tools
+from semora.controls import Continue, Ctx, Deny, ToolDecision
+from semora.tools import is_read_only
+
 from .prompts import PromptSection, volatile_prompt_section
-from .tools import is_read_only
 
 __all__ = ["PlanMode", "plan_mode_enter", "plan_mode_exit", "plan_mode_gate", "plan_mode_prompt"]
 

@@ -11,7 +11,8 @@ import urllib.request
 from collections.abc import Mapping
 from urllib.parse import urlsplit, urlunsplit
 
-from ..workspace import ToolContext
+from semora.workspace import ToolContext
+
 from ._types import (
     BuiltinToolState,
     ToolResult,

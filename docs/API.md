@@ -62,6 +62,7 @@ uv add "semora[postgres]"      # Postgres ledger + transcript
 uv add "semora[permissions]"   # rule table
 uv add "semora[fork]"          # branch a run
 uv add "semora[ui]"            # local console at :8790
+uv add "semora[coding]"        # a coding agent's tools, prompts and policies
 ```
 
 | extra | package it pulls | import root |
@@ -73,6 +74,7 @@ uv add "semora[ui]"            # local console at :8790
 | `permissions` | `semora-permissions` | `semora_permissions` |
 | `fork` | `semora-fork` | `semora_fork` |
 | `ui` | `semora-ui` | `semora_ui` |
+| `coding` | `semora-coding` | `semora_coding` |
 
 ## Quickstart, four shapes
 
@@ -126,9 +128,9 @@ Top-level exports: `Agent`, `AgentDefinition`, `AgentRuntime`, `ChatModel`, `Con
 `ResumeInput`, `Suspend`, `ToolCall`, `Tools`, `gate`, `new_run_id`, `run`, `__version__`.
 
 Anything else is on the submodule that owns it (`semora.controls`, `semora.tools`,
-`semora.dispatch`, `semora.orchestration`, `semora.orchestrator`, `semora.builtins`,
-`semora.workspace`, `semora.skills`, `semora.subagents`, `semora.plan_mode`, `semora.goal`,
-`semora.tool_search`, `semora.background`, `semora.providers`, `semora.transcript`,
+`semora.dispatch`, `semora.orchestration`, `semora.orchestrator`, `semora_coding.builtins`,
+`semora.workspace`, `semora_coding.skills`, `semora.subagents`, `semora_coding.plan_mode`, `semora_coding.goal`,
+`semora_coding.tool_search`, `semora.background`, `semora.providers`, `semora.transcript`,
 `semora.engines.plain`).
 
 ### `Agent`
@@ -377,7 +379,7 @@ Related protocols:
 ### `builtin_tools()`
 
 ```python
-from semora.builtins import ExecToolOptions, builtin_tools
+from semora_coding.builtins import ExecToolOptions, builtin_tools
 
 tools = builtin_tools(exec_options=ExecToolOptions(allow_list=("git", "pytest")))
 ```
@@ -417,8 +419,8 @@ Each wraps a `Tools` and returns a `Tools`, so they compose by nesting.
 |---|---|---|
 | `Concurrent(tools, aborted=...)` | `semora.tools` | batch execution honouring `is_concurrency_safe` |
 | `Stepped(tools, orchestrator)` | `semora.tools` | route each call through the durable ledger |
-| `SkillTools(inner, registry)` | `semora.skills` | an on-demand `skill` tool |
-| `DeferredTools(inner, deferred=..., initially_active=...)` | `semora.tool_search` | hide schemas until `tool_search` activates them |
+| `SkillTools(inner, registry)` | `semora_coding.skills` | an on-demand `skill` tool |
+| `DeferredTools(inner, deferred=..., initially_active=...)` | `semora_coding.tool_search` | hide schemas until `tool_search` activates them |
 | `Subagents(tools, subagents, ...)` | `semora.subagents` | `delegate` + background-task tools |
 | `Answering(tools, reply)` | `semora.subagents` | `respond_to_parent` on a child |
 
@@ -963,10 +965,17 @@ ModelFailure(error_type, error_kind, message, partial, attempt)
 
 ## Feature packs
 
-### Skills — `semora.skills`
+Two kinds, and the line between them is a distribution. The mechanisms — subagents, background
+work, the workspace contract — ship in `semora`, because the runtime wires them and the
+parent:call_id rule for a child run is idempotency, not product. What a coding agent *says and
+does* with them — its built-in tools, the words of its plan mode and goal, the skill catalog,
+deferred tool search — ships in `semora-coding`, installed with the `coding` extra. The core does
+not import it and does not know it is there; it is one assembly, replaceable as a whole.
+
+### Skills — `semora_coding.skills`
 
 ```python
-from semora.skills import DirectorySkillSource, SkillRegistry, SkillTools
+from semora_coding.skills import DirectorySkillSource, SkillRegistry, SkillTools
 
 registry = SkillRegistry([DirectorySkillSource("./skills")], catalog_char_budget=8000)
 tools = SkillTools(inner_tools, registry)
@@ -1010,10 +1019,10 @@ unsubscribe = registry.subscribe(listener)
 Process-local only. Deliver settled work back into a run with
 `AgentRuntime.background_sink(run_id)`; `BackgroundResult.as_message()` renders it.
 
-### Plan mode — `semora.plan_mode`
+### Plan mode — `semora_coding.plan_mode`
 
 ```python
-from semora.plan_mode import PlanMode, plan_mode_enter, plan_mode_exit, plan_mode_gate, plan_mode_prompt
+from semora_coding.plan_mode import PlanMode, plan_mode_enter, plan_mode_exit, plan_mode_gate, plan_mode_prompt
 from semora.controls import Journal
 
 mode = PlanMode()
@@ -1027,10 +1036,10 @@ controls = ControlPlane(
 `plan_mode_gate` denies every non-read-only call while planning. `plan_mode_prompt(mode,
 exit_tool=...)` is a volatile system-prompt section that appears only while planning.
 
-### Goals — `semora.goal`
+### Goals — `semora_coding.goal`
 
 ```python
-from semora.goal import Goal, goal_complete, goal_gate
+from semora_coding.goal import Goal, goal_complete, goal_gate
 
 goal = Goal("ship the migration")
 controls = ControlPlane(before_finish=FinishPolicy(goal_gate(goal, complete_tool="done")),
@@ -1039,10 +1048,10 @@ controls = ControlPlane(before_finish=FinishPolicy(goal_gate(goal, complete_tool
 
 The gate refuses to finish while the goal is open; the writer closes it when `done` succeeds.
 
-### Deferred tools — `semora.tool_search`
+### Deferred tools — `semora_coding.tool_search`
 
 ```python
-from semora.tool_search import DeferredTools
+from semora_coding.tool_search import DeferredTools
 
 tools = DeferredTools(many_tools, deferred={"rare_a", "rare_b"}, initially_active={"read"})
 ```

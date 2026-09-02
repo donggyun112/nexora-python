@@ -9,7 +9,8 @@ from __future__ import annotations
 from functools import partial
 from typing import Any
 
-from ..workspace import ToolContext
+from semora.workspace import ToolContext
+
 from ._exec import exec_is_read_only, exec_tool
 from ._files import edit_tool, read_tool, write_tool
 from ._search import glob_tool, grep_tool

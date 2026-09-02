@@ -45,6 +45,16 @@ documentation corrections belong in the commit log, not here.
 
 ### Changed
 
+- **The coding agent moved out of the core.** `semora.builtins`, `semora.prompts`,
+  `semora.plan_mode`, `semora.goal`, `semora.skills` and `semora.tool_search` are now
+  `semora_coding.*`, in a distribution of their own installed with `semora[coding]`. The core's
+  claim is that a tool's effect happens once and every decision about it has a seam; none of
+  those modules decides that. They are what one coding agent reads and edits with, the words its
+  plan mode and goal say, the catalog its skills sit in — a product over the core, which the
+  core used to carry in the same wheel, so that its reference copy read as the framework's
+  policy. The mechanisms stay: `subagents`, `background`, `workspace`, `sandbox_remote` are
+  wired by the runtime and decide nothing a model says. No alias: rename the import.
+
 - **`after_tool_call` is now `post_tool_use`.** The hook fires the `post_tool_use` event and
   pairs with `pre_tool_use`, so it carried two names for one seam and a control plane read as
   though the two sides of a tool call belonged to different vocabularies. Renamed everywhere it

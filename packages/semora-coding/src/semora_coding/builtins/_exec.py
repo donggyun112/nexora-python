@@ -6,7 +6,8 @@ import re
 import shlex
 from collections.abc import Mapping
 
-from ..workspace import SandboxCommand, ToolContext, WorkspaceViolation
+from semora.workspace import SandboxCommand, ToolContext, WorkspaceViolation
+
 from ._types import (
     BuiltinToolState,
     ExecToolOptions,

@@ -2,16 +2,16 @@
 
 from typing import Any
 
-from semora.builtins._exec import exec_is_read_only
 from semora.controls import Continue, Ctx, Deny, Journal, Permissions
-from semora.plan_mode import (
+from semora_coding.builtins._exec import exec_is_read_only
+from semora_coding.plan_mode import (
     PlanMode,
     plan_mode_enter,
     plan_mode_exit,
     plan_mode_gate,
     plan_mode_prompt,
 )
-from semora.prompts import SystemPrompt
+from semora_coding.prompts import SystemPrompt
 
 from tests.test_loop import Tools, a_call
 

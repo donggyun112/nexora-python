@@ -599,7 +599,7 @@ async def test_an_unwritten_count_is_absent_rather_than_zero(store: Transcript) 
 
 
 @pytest.mark.asyncio
-async def test_a_finished_record_does_not_follow_the_caller_s_later_edits():
+async def test_a_finished_record_does_not_follow_the_caller_s_later_edits() -> None:
     """A record is what the step returned, not what the caller did to it afterwards.
 
     A journal rewrites a tool result in place after the step recorded it. The database

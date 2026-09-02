@@ -7,15 +7,15 @@ from typing import Any
 
 import pytest
 from semora import AgentRuntime, HostWorkspaceProvider
-from semora.builtins import (
+from semora.workspace import ToolContext
+from semora_coding.builtins import (
     BuiltinTools,
     ExecToolOptions,
     WebFetchResponse,
     WebFetchToolOptions,
     builtin_tools,
 )
-from semora.builtins._types import BuiltinToolState
-from semora.workspace import ToolContext
+from semora_coding.builtins._types import BuiltinToolState
 
 from .test_loop import a_call, says, scripted
 

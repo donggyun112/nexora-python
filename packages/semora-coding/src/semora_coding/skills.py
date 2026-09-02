@@ -17,7 +17,7 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from .contracts import BaseMessage, DynamicTools, Tools
+from semora.contracts import BaseMessage, DynamicTools, Tools
 
 __all__ = [
     "DirectorySkillSource",

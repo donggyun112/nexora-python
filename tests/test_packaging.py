@@ -52,7 +52,7 @@ def distributions() -> list[Distribution]:
         found.append(
             Distribution(project["name"], module, source, _internal(project["dependencies"]))
         )
-    assert len(found) == 7, f"expected seven distributions, found {[d.name for d in found]}"
+    assert len(found) == 8, f"expected eight distributions, found {[d.name for d in found]}"
     return found
 
 
@@ -155,14 +155,9 @@ LAYERS: dict[str, frozenset[str]] = {
     # Reaches nothing, like `contracts`, and for the same kind of reason: a registry of detached
     # jobs is `asyncio.Task` bookkeeping. Knowing what a subagent is would make it one.
     "background": frozenset(),
-    # Built-ins are adapters over the workspace boundary; they do not own gating or execution.
-    "builtins": frozenset({"workspace"}),
     # Provider selection and workspace lifecycle adapt external runtimes without reaching the
     # planner or durable execution layers.
     "providers": frozenset(),
-    "prompts": frozenset(),
-    "skills": frozenset({"contracts"}),
-    "tool_search": frozenset({"contracts"}),
     "workspace": frozenset({"contracts"}),
     "sandbox_remote": frozenset({"workspace"}),
     "controls": frozenset({"contracts"}),
@@ -170,13 +165,7 @@ LAYERS: dict[str, frozenset[str]] = {
     # runtime's public primitives — it reaches only the contracts it routes for, and the
     # runtime is handed in as a value so the assembly layer never imports the core it assembles.
     "dispatch": frozenset({"contracts"}),
-    # Peer of `tools`, not above it: a finish gate decides with a flag and a tool's name, and
-    # reaching the execution boundary would let a goal run one.
-    "goal": frozenset({"contracts", "controls"}),
     "tools": frozenset({"contracts", "controls"}),
-    # Above both: a permission policy reads a tool's flag and answers with a control decision.
-    # `prompts` because the mode announces itself: the reminder section renders off the same flag.
-    "plan_mode": frozenset({"contracts", "controls", "prompts", "tools"}),
     # Beside `tools`, not above it: a subagent wrapper composes a `Tools` the way a host does, and
     # reaching the execution boundary would make a child's launch a second kind of tool round.
     "subagents": frozenset({"background", "contracts"}),
@@ -206,6 +195,10 @@ LAYERS: dict[str, frozenset[str]] = {
     ),
 }
 """What each subpackage of `semora` may reach. Absent from a value means absent from the layer.
+
+Not listed because not here: the coding agent's tools, prompts, plan mode, goal, skills and tool
+search live in `semora-coding`, a distribution over this one. The line between them is the
+manifest, which the distribution test enforces, rather than an entry in this table.
 
 `contracts` reaching nothing is the load-bearing entry — it is the hub every other layer imports,
 and a single import out of it would invert the whole thing.

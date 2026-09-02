@@ -34,6 +34,9 @@ postgres = ["semora-store-pg==0.1.0"]
 permissions = ["semora-permissions==0.1.0"]
 ui = ["semora-ui==0.1.0"]
 fork = ["semora-fork==0.1.0"]
+# The coding agent's tools, prompts and policies. A product over the core, not part of it: the
+# core's promise is that an effect happens once, and nothing in this extra decides that.
+coding = ["semora-coding==0.1.0"]
 # Chat models stay LangChain's. These extras only install the provider adapter;
 # `from langchain_openai import ChatOpenAI` is still how a caller constructs one.
 openai = ["langchain-openai>=1,<2"]
@@ -47,6 +50,7 @@ openrouter = ["langchain-openai>=1,<2"]
 packages = ["src/semora"]
 
 [tool.uv.sources]
+semora-coding = { workspace = true }
 semora-fork = { workspace = true }
 semora-llm = { workspace = true }
 semora-permissions = { workspace = true }

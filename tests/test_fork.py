@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from semora import AgentRuntime, Deny, PendingInput
+from semora.contracts import ToolCall
 from semora.controls import ControlPlane, Ingress
 from semora_fork import (
     RERUNS,
@@ -314,7 +315,7 @@ async def test_a_rejournal_fork_skips_the_gate_and_reuses_the_effect() -> None:
     transcript = MemoryTranscript()
     runtime = AgentRuntime(store=steps, transcript=transcript)
     tools = Tools(results={"read": {"type": "text", "text": "ssn is 123-45"}})
-    call = {"id": "c1", "name": "read", "args": {}, "type": "tool_call"}
+    call: ToolCall = {"id": "c1", "name": "read", "args": {}, "type": "tool_call"}
 
     async def mask(_ctx: Any, _call: Any, result: dict[str, Any]) -> None:
         result["text"] = str(result["text"]).replace("123-45", "***")

@@ -4,7 +4,7 @@ from typing import Any
 
 from semora.contracts import StopReason
 from semora.controls import Ctx, FinishPolicy, Halt, Journal, Proceed, TurnDecision
-from semora.goal import Goal, goal_complete, goal_gate
+from semora_coding.goal import Goal, goal_complete, goal_gate
 
 from tests.test_loop import a_call
 

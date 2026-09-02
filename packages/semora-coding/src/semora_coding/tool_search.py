@@ -15,8 +15,7 @@ from inspect import isawaitable
 from typing import Any
 
 from langchain_core.messages import BaseMessage, ToolMessage
-
-from .contracts import DynamicTools, Tools
+from semora.contracts import DynamicTools, Tools
 
 __all__ = ["DeferredTools"]
 

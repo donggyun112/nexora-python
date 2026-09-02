@@ -6,15 +6,15 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from semora.engines.plain import react_loop
-from semora.prompts import SystemPrompt, prompt_section, volatile_prompt_section
-from semora.skills import (
+from semora_coding.prompts import SystemPrompt, prompt_section, volatile_prompt_section
+from semora_coding.skills import (
     DirectorySkillSource,
     Skill,
     SkillMetadata,
     SkillRegistry,
     SkillTools,
 )
-from semora.tool_search import DeferredTools
+from semora_coding.tool_search import DeferredTools
 
 from tests.test_loop import Llm, Tools, a_call, says, scripted
 

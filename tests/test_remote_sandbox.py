@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from semora.builtins import BuiltinTools, ExecToolOptions
 from semora.sandbox_remote import HTTPResponse, RemoteSandboxClient, RemoteSandboxError
 from semora.workspace import (
     ContinuousWorkspaceProvider,
@@ -15,6 +14,7 @@ from semora.workspace import (
     WorkspaceSeed,
     WorkspaceSnapshot,
 )
+from semora_coding.builtins import BuiltinTools, ExecToolOptions
 
 
 @dataclass(frozen=True)

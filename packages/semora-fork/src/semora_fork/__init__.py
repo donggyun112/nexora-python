@@ -231,7 +231,9 @@ async def fork_event(
 
 RERUNS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "on_inputs": ("on_inputs", "before_model", "pre_tool_use", "post_tool_use", "before_finish"),
+        "on_inputs": (
+            "on_inputs", "before_model", "pre_tool_use", "post_tool_use", "before_finish"
+        ),
         "pre_tool_use": ("pre_tool_use", "post_tool_use", "before_finish"),
         "post_tool_use": ("post_tool_use", "before_finish"),
         "before_model": ("before_model", "before_finish"),

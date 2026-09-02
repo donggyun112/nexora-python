@@ -1004,6 +1004,8 @@ class Orchestrator:
             turn: Optional turn override.
             controls: Runtime control plane.
             retry_running: Whether to retry ambiguous running steps.
+            replay_from: Another run whose finished effect records stand in for this run's
+                absent ones — read there, never written.
 
         Returns:
             Reconstructed history and ordered tool outcomes.

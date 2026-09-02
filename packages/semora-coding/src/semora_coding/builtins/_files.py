@@ -7,7 +7,8 @@ import json
 from pathlib import PurePath
 from typing import Any
 
-from ..workspace import ToolContext, WorkspaceViolation
+from semora.workspace import ToolContext, WorkspaceViolation
+
 from ._types import BuiltinToolState, ToolResult, error_result, require_workspace, text_result
 
 MAX_LINES = 2_000

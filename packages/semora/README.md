@@ -27,7 +27,7 @@ Policy lives on `Controls` / `ControlPlane` (`on_inputs`, `before_model`, `pre_t
 `post_tool_use`, `before_finish`, `on_resume`, `on_suspend`). `before_finish` can refuse
 an ending and send the loop around again.
 
-`semora.builtins.builtin_tools()` supplies `read`, `write`, `edit`, `grep`, `glob`, `Bash`,
+`semora_coding.builtins.builtin_tools()` supplies `read`, `write`, `edit`, `grep`, `glob`, `Bash`,
 and `web_fetch`. `web_search` is not included. `Bash` stays disabled until
 `ExecToolOptions.allow_list` is set. File and process effects use the `WorkspaceProvider`
 injected by `AgentRuntime` (`semora.workspace`).

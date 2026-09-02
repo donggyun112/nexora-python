@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "semora-coding"
-version = "0.1.0"
+version = "0.2.0"
 description = "A coding agent's toolset, prompts and policies, assembled over the semora core."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -20,7 +20,7 @@ classifiers = [
 urls = { Homepage = "https://github.com/donggyun112/semora", Source = "https://github.com/donggyun112/semora", Changelog = "https://github.com/donggyun112/semora/blob/main/CHANGELOG.md" }
 dependencies = [
   "langchain-core>=1,<2",
-  "semora==0.1.0",
+  "semora==0.2.0",
 ]
 # The product layer the core used to carry: what a coding agent reads and edits with, the words
 # its plan mode and goal say, the catalog its skills are listed in. None of it decides whether an

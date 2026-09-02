@@ -7,9 +7,15 @@ on:
   push:
     tags: ["v*"]
   # PyPI rate-limits *new project* creation, so a first release of several distributions can
-  # stop half-done. Re-running the tag's workflow would rebuild the same commit; this lets the
-  # rest go up without moving the tag.
+  # stop half-done. This lets the rest go up without moving the tag: `ref` names the commit to
+  # rebuild — the tag itself — so what goes up second is what went up first, not whatever
+  # `main` has become since. Left empty, it builds the commit the workflow runs on.
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or commit to build and publish (e.g. v0.1.0). Empty: this commit."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -32,11 +38,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
-      # All seven at once. One token covers the account, so unlike Trusted Publishing there is
+      # All eight at once. One token covers the account, so unlike Trusted Publishing there is
       # no per-project exchange to split the build across.
       - name: Build every distribution
         run: uv build --all-packages

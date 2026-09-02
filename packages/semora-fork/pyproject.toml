@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "semora-fork"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fork a conversation from before one injected input, under different controls."
 requires-python = ">=3.12"
 license = "MIT"
@@ -19,8 +19,8 @@ classifiers = [
 urls = { Homepage = "https://github.com/donggyun112/semora", Source = "https://github.com/donggyun112/semora", Changelog = "https://github.com/donggyun112/semora/blob/main/CHANGELOG.md" }
 dependencies = [
   "langchain-core>=1,<2",
-  "semora==0.1.0",
-  "semora-store==0.1.0",
+  "semora==0.2.0",
+  "semora-store==0.2.0",
 ]
 # Assembly over the core's public primitives: the ledger keeps the pre-screen original, the
 # transcript rewinds by branch, controls are per-call arguments. This package only walks those

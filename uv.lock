@@ -1788,7 +1788,7 @@ wheels = [
 
 [[package]]
 name = "semora"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora" }
 dependencies = [
     { name = "langchain-core" },
@@ -1850,7 +1850,7 @@ provides-extras = ["postgres", "permissions", "ui", "fork", "coding", "openai", 
 
 [[package]]
 name = "semora-coding"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora-coding" }
 dependencies = [
     { name = "langchain-core" },
@@ -1865,7 +1865,7 @@ requires-dist = [
 
 [[package]]
 name = "semora-fork"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora-fork" }
 dependencies = [
     { name = "langchain-core" },
@@ -1882,7 +1882,7 @@ requires-dist = [
 
 [[package]]
 name = "semora-llm"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora-llm" }
 dependencies = [
     { name = "langchain-core" },
@@ -1897,7 +1897,7 @@ requires-dist = [
 
 [[package]]
 name = "semora-permissions"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora-permissions" }
 dependencies = [
     { name = "semora" },
@@ -1908,12 +1908,12 @@ requires-dist = [{ name = "semora", editable = "packages/semora" }]
 
 [[package]]
 name = "semora-store"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora-store" }
 
 [[package]]
 name = "semora-store-pg"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora-store-pg" }
 dependencies = [
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -1928,7 +1928,7 @@ requires-dist = [
 
 [[package]]
 name = "semora-ui"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/semora-ui" }
 dependencies = [
     { name = "fastapi" },

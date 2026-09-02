@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "semora-llm"
-version = "0.1.0"
+version = "0.2.0"
 description = "OpenAI-compatible chat model for Semora: official openai SDK, LangChain chunks."
 requires-python = ">=3.12"
 license = "MIT"

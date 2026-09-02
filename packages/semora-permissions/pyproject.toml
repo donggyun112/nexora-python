@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "semora-permissions"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Claude-Code-shaped permission rule table as pre_tool_use / on_resume stages."
 requires-python = ">=3.12"
 license = "MIT"
@@ -18,7 +18,7 @@ classifiers = [
 ]
 urls = { Homepage = "https://github.com/donggyun112/semora", Source = "https://github.com/donggyun112/semora", Changelog = "https://github.com/donggyun112/semora/blob/main/CHANGELOG.md" }
 dependencies = [
-  "semora==0.1.0",
+  "semora==0.2.0",
 ]
 # Optional by construction: nothing in the runtime imports this. A host that wants the
 # rule table installs it; a host with its own policy never sees it.

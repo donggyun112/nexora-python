@@ -6,7 +6,7 @@ Messages, tool calls, and chat models are LangChain's. Semora owns the execution
 call-id idempotency, permission parking, crash recovery, and the control plane that decides
 whether a round may start, a tool may run, or a finish may stand.
 
-**Status:** 0.1.0 — the first release. The guarantees below are implemented and tested; the
+**Status:** 0.2.0. The guarantees below are implemented and tested; the
 version stays under 1.0 because the public API is still young enough to move, not because the
 runtime is unfinished. The default install includes `ChatModel`, an OpenAI-compatible client.
 Native Anthropic/Google APIs remain extras.

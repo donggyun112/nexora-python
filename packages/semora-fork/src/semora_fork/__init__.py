@@ -7,24 +7,30 @@ those seams and adds no authority of its own. The source run's ledger is never t
 what actually went out stays the record.
 """
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 from semora import AgentRuntime
 from semora.contracts import Agent, Tools
 from semora.controls import Controls
 from semora.history import decode_pending_input
+from semora.orchestrator import unanswered_tool_calls
 from semora.transcript import SCHEMA_VERSION, entry_id, messages_at
 from semora_store import ExecutionStore, Transcript
 
 __all__ = [
+    "RERUNS",
     "EventCheckpoint",
     "ForkCoordinate",
     "fork_event",
     "fork_run",
     "read_event_checkpoint",
     "record_event_checkpoint",
+    "resume_point",
 ]
 
 
@@ -212,3 +218,43 @@ async def fork_event(
         history=history,
         **options,
     )
+
+
+RERUNS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "on_inputs": ("on_inputs", "before_model", "pre_tool_use", "post_tool_use", "before_finish"),
+        "pre_tool_use": ("pre_tool_use", "post_tool_use", "before_finish"),
+        "before_model": ("before_model", "before_finish"),
+    }
+)
+"""The control points that run again over the recorded round, from each resume point.
+
+Ordered as the loop runs them. Anything the model does after that round runs every point
+as usual; this names only what a fork re-decides about the round it was taken in. A
+suspension inside the gate adds ``on_resume`` when a person answers, which no branch can
+promise in advance, so it is not listed.
+"""
+
+
+def resume_point(history: list[BaseMessage], coordinate: ForkCoordinate) -> str:
+    """The control point a run restored at ``coordinate`` enters first.
+
+    A branch is only worth taking if the policy it was taken for will run, and which
+    policies run is settled by where the runtime picks the conversation up:
+
+    - an input coordinate replays the input through ``on_inputs`` — the run starts over
+      at that prompt, so every later point runs too;
+    - a leaf whose last assistant turn still owes a tool answer resumes that round at
+      ``pre_tool_use`` — the gate decides again, the effect replays from its ledger
+      record, the journal sees the result again;
+    - any other leaf hands the conversation back to the model at ``before_model`` — the
+      recorded round is final and only what follows it is new.
+
+    The middle case uses the predicate recovery uses, so this is not a prediction of
+    what the fork will do; it is the same decision, made early enough to be shown.
+    """
+    if coordinate.origin_id is not None:
+        return "on_inputs"
+    if unanswered_tool_calls(history):
+        return "pre_tool_use"
+    return "before_model"

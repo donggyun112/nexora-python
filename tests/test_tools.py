@@ -155,7 +155,7 @@ def test_a_round_with_an_unkeyable_call_is_refused_whole() -> None:
     What this replaced: the first tool executed and the second raised `duplicate step name` from
     inside the ledger — after the effect. Refused whole rather than filtered, because a dropped
     call would stay in the assistant message with no `ToolMessage` answering it, which
-    `_unanswered_tool_calls` reads as still pending, forever.
+    `unanswered_tool_calls` reads as still pending, forever.
     """
     with pytest.raises(InvalidToolCall, match="has no id"):
         require_call_ids([a_call("read", cast(str, None))])

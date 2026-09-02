@@ -1087,7 +1087,7 @@ class Orchestrator:
             stored_turn = int(round_record.value.get("turn", 0))
 
         recovery_turn = stored_turn if turn is None else turn
-        pending = _unanswered_tool_calls(history)
+        pending = unanswered_tool_calls(history)
         if not pending:
             return recovery_turn, []
 
@@ -1312,8 +1312,14 @@ def _pending_round_key() -> str:
     return "agent:pending-round"
 
 
-def _unanswered_tool_calls(history: list[BaseMessage]) -> list[ToolCall]:
-    """Calls in the latest assistant tool round that have no following `ToolMessage`."""
+def unanswered_tool_calls(history: list[BaseMessage]) -> list[ToolCall]:
+    """Calls in the latest assistant tool round that have no following `ToolMessage`.
+
+    Public because it is also the answer to "where does a run resume from here": a
+    history that still owes a tool answer resumes at the gate for that round, and one
+    that does not hands the conversation back to the model. `semora_fork` states that
+    for a coordinate with this same predicate, so a fork is told what recovery would do.
+    """
     for index in range(len(history) - 1, -1, -1):
         message = history[index]
         if not isinstance(message, AIMessage):

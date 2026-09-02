@@ -1084,6 +1084,25 @@ ledger's **pre-screen original** so it crosses whatever `controls` the fork supp
 touched** — what actually went out stays the record. `semora-fork` adds no authority of its own;
 it is composition over seams the core already has.
 
+A coordinate can also say what a branch taken there will do, before it is taken:
+
+```python
+from semora_fork import RERUNS, resume_point
+
+point = resume_point(messages_at(entries, coordinate.leaf_uuid), coordinate)
+# "on_inputs"     — an input coordinate: the run starts over at that prompt
+# "pre_tool_use"  — a leaf that still owes a tool answer: that round's gate decides again,
+#                   the effect replays from its ledger record, the journal sees it again
+# "before_model"  — any other leaf: the recorded round is final, the model continues
+RERUNS[point]     # the control points that run again over the recorded round, in loop order
+```
+
+`resume_point` uses the predicate recovery uses (`unanswered_tool_calls`), so it is the
+decision the fork will make, stated early. A host that lets a person pick a branch point
+for a policy can pair it with each control's point and say, per button, which of the
+selected policies that branch actually reaches — a journal unit does nothing from a
+result coordinate, a finish policy does; neither has to be guessed from its name.
+
 ### Events — `semora.contracts.events`
 
 ```python

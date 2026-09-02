@@ -3,15 +3,17 @@
 from typing import Any
 
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from semora import AgentRuntime, PendingInput
 from semora.controls import ControlPlane, Ingress
 from semora_fork import (
+    RERUNS,
     EventCheckpoint,
     ForkCoordinate,
     fork_event,
     fork_run,
     record_event_checkpoint,
+    resume_point,
 )
 from semora_store import MemorySteps, MemoryTranscript
 
@@ -259,3 +261,29 @@ async def test_event_fork_rejects_an_unknown_edge() -> None:
             tools=Tools(),
             conversation_id="conv",
         )
+
+
+def test_a_coordinate_says_which_control_point_it_resumes_at() -> None:
+    """Where a fork picks the conversation up decides which policies run — so say it.
+
+    An operator choosing a branch point for a policy needs this before branching: a
+    result coordinate never re-runs the gate or the journal for the recorded call, and
+    the console had been guessing that from row labels.
+    """
+    asked = AIMessage(content="", tool_calls=[{"id": "c1", "name": "read", "args": {}}])
+    answered = ToolMessage(content="ok", tool_call_id="c1")
+    leaf = ForkCoordinate("run-1", None, "leaf")
+
+    assert resume_point([HumanMessage("hi")], ForkCoordinate("run-1", "p1", None)) == "on_inputs"
+    assert resume_point([HumanMessage("hi"), asked], leaf) == "pre_tool_use"
+    assert resume_point([HumanMessage("hi"), asked, answered], leaf) == "before_model"
+    assert resume_point([HumanMessage("hi"), asked, answered, AIMessage("done")], leaf) == (
+        "before_model"
+    )
+
+
+def test_what_reruns_from_a_resume_point_is_the_loop_order() -> None:
+    assert RERUNS["pre_tool_use"] == ("pre_tool_use", "post_tool_use", "before_finish")
+    assert RERUNS["before_model"] == ("before_model", "before_finish")
+    assert RERUNS["on_inputs"][0] == "on_inputs" and "post_tool_use" in RERUNS["on_inputs"]
+    assert "pre_tool_use" not in RERUNS["before_model"], "a recorded call is not re-gated"

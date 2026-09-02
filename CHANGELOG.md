@@ -5,6 +5,17 @@ documentation corrections belong in the commit log, not here.
 
 ## Unreleased
 
+### Added
+
+- **`semora_fork.resume_point` and `semora_fork.RERUNS`.** A fork coordinate can now say
+  which control point the run enters first when restored there — `on_inputs` for an input
+  coordinate, `pre_tool_use` for a leaf that still owes a tool answer, `before_model` for
+  any other leaf — using the predicate recovery already uses. `RERUNS` lists, in loop order,
+  the control points that run again over the recorded round from each of those. Together
+  they answer the question a person holds while choosing where to branch: will the policy I
+  just turned on actually run from here. `unanswered_tool_calls` is public for the same
+  reason.
+
 ### Fixed
 
 - **A replayed message now moves the branch every reader sees.** `TranscriptWriter.record`

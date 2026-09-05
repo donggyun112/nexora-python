@@ -4,7 +4,9 @@ Execution controls and durable effect recovery for **Pydantic AI agents**.
 
 Pydantic AI owns the agent loop, messages, models and tools. Semora adds a call-id ledger, worker leases and fencing, durable approval suspension, policy revalidation on resume, and seven composable control points. Use an ordinary Pydantic AI agent or Semora's optional class-based agent interface.
 
-**0.3 is the Pydantic AI successor to Semora 0.2.** The implementation developed in `contribution/pydantic-ai-runtime` now lives here under the Semora package names. The LangChain implementation is retired and remains in Git at `156e4b1`. This is a breaking local development version, not a claim that 0.3 has been published. See [migration](docs/MIGRATION-0.3.md) and [API](docs/API.md).
+**Why not durable execution alone?** Durable execution replays steps. It does not say which effect may already have gone out, and it does not make policy decide again when a parked call comes back. Semora handles those two things: a tool call that started and never reported stays `Indeterminate` until the caller says a retry is safe, and a person's approval is an input to a fresh policy decision, never the decision itself. The ledger is a protocol, so a durable-execution backend can sit underneath it.
+
+**0.3 is the Pydantic AI successor to Semora 0.2.** The implementation developed in `contribution/pydantic-ai-runtime` now lives here under the Semora package names. The LangChain implementation is retired and remains in Git at `156e4b1`. 0.3.0 is a breaking release; see [migration](docs/MIGRATION-0.3.md) and [API](docs/API.md).
 
 ## Run an agent
 

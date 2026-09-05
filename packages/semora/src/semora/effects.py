@@ -19,7 +19,7 @@ when an approved call comes back, and the three turn-level points around the gra
 import asyncio
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any, NamedTuple, Protocol
@@ -182,6 +182,7 @@ class Effects(AbstractCapability[Any]):
         resumed: Mapping[str, Resumed] | None = None,
         inputs: Inputs | None = None,
         record: Record | None = None,
+        regate: Collection[str] = (),
     ) -> None:
         """Bind the ledger, the run, its token, and the policy in force for this attempt.
 
@@ -197,6 +198,9 @@ class Effects(AbstractCapability[Any]):
             resumed: Answers for parked calls this attempt finishes, keyed by call id.
             inputs: The durable input queue, drained at every model boundary.
             record: Where admitted messages are persisted, in the shape the model sees them.
+            regate: Call ids whose finished record is a copy from another run, to be gated
+                again under this run's policy before it is replayed. Everything else that is
+                already recorded bypasses the gate.
         """
         self.store = store
         self.run_id = run_id
@@ -208,6 +212,7 @@ class Effects(AbstractCapability[Any]):
         self.resumed: Mapping[str, Resumed] = resumed or {}
         self.inputs = inputs
         self.record = record
+        self.regate = set(regate)
         self.calls_made: list[dict[str, Any]] = []
         self.stop_reason: StopReason | None = None
         self.turn = 0
@@ -409,9 +414,10 @@ class Effects(AbstractCapability[Any]):
         """Ask the gate. A denial is a result the model sees; a suspension parks first."""
         here = self._ctx(ctx)
         decision: ToolDecision
-        if await self._recorded(call):
+        if call.tool_call_id not in self.regate and await self._recorded(call):
             # The effect happened. No gate can undo it, and asking a person to approve it would
-            # be asking about the past: the record replays and only the journal sees it.
+            # be asking about the past: the record replays and only the journal sees it. A fork
+            # that wants the new policy's verdict on a copied record says so with `regate`.
             decision = Continue()
         elif ctx.tool_call_approved:
             decision = await self._resume_decision(here, call)

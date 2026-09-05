@@ -351,6 +351,8 @@ class Agent(PydanticAgent[Any, Any]):
         prompt: str | None = None,
         *,
         run_id: str | ExecutionContext | None = None,
+        history: Sequence[ModelMessage] | None = None,
+        regate: bool = False,
         controls: Controls | None = None,
         rules_version: str = "",
         conversation_id: str | None = None,
@@ -359,8 +361,8 @@ class Agent(PydanticAgent[Any, Any]):
     ) -> Outcome:
         """Make this instance's run a branch of `source`, from one transcript entry.
 
-        Effects the source finished before `at` replay here without being gated again; the rest
-        runs under this instance's policy.
+        Effects the source finished before `at` replay here; `regate=True` asks this instance's
+        gate about them first. The rest runs under this instance's policy.
         """
         bound = self._bind(run_id)
         return await self._attempt(
@@ -371,6 +373,8 @@ class Agent(PydanticAgent[Any, Any]):
                 bound,
                 self,
                 prompt,
+                history=history,
+                regate=regate,
                 controls=controls,
                 rules_version=rules_version,
                 conversation_id=conversation_id,

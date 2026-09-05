@@ -998,7 +998,7 @@ wheels = [
 
 [[package]]
 name = "semora"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "packages/semora" }
 dependencies = [
     { name = "pydantic-ai-slim" },
@@ -1024,12 +1024,12 @@ provides-extras = ["postgres", "openai"]
 
 [[package]]
 name = "semora-store"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "packages/semora-store" }
 
 [[package]]
 name = "semora-store-pg"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "packages/semora-store-pg" }
 dependencies = [
     { name = "psycopg", extra = ["binary", "pool"] },

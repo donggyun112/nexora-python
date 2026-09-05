@@ -6,7 +6,7 @@ interrupted round from what the dead worker committed.
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Collection, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -191,6 +191,7 @@ class AgentRuntime:
         deps: Any = None,
         capabilities: Sequence[AbstractCapability[Any]] = (),
         _resumed: dict[str, Resumed] | None = None,
+        _regate: Collection[str] = (),
         **options: Any,
     ) -> Outcome:
         """Drive an attempt while the caller owns the run lease."""
@@ -220,6 +221,7 @@ class AgentRuntime:
             resumed=_resumed,
             inputs=_InputSession(self.store, execution.run_id, token) if self.store else None,
             record=branch.append if branch is not None else None,
+            regate=_regate,
         )
         # Semora's run id is the durable coordinate every attempt shares; Pydantic AI stamps
         # each attempt with its own `run_id`, so ours is the conversation.
@@ -345,6 +347,8 @@ class AgentRuntime:
         agent: Agent[Any, Any],
         prompt: str | None = None,
         *,
+        history: Sequence[ModelMessage] | None = None,
+        regate: bool = False,
         controls: Controls | None = None,
         rules_version: str = "",
         source_conversation_id: str | None = None,
@@ -354,27 +358,41 @@ class AgentRuntime:
     ) -> Outcome:
         """Start `target` from one point of `source`'s transcript.
 
-        `at` is a transcript entry uuid; `None` forks from the tip of the active branch. The
-        history up to that point becomes the new run's, and `prompt` follows it. Calls in that
-        history the source run finished are copied into the new run's ledger, so they replay
-        instead of running again and no gate is asked about them; the new run's `post_tool_use`
-        still sees each of them once. Anything the source never finished runs fresh, under the
-        new run's policy. The source run is read, never written.
+        `at` is a transcript entry uuid; `None` forks from the tip of the active branch. A host
+        that keeps its own coordinates passes the messages as `history` instead, and no
+        transcript is read. That history becomes the new run's, and `prompt` follows it.
+
+        Calls in that history the source run finished are copied into the new run's ledger, so
+        they replay instead of running again; the new run's `post_tool_use` still sees each of
+        them once. By default no gate is asked about them. `regate=True` asks the new run's
+        `pre_tool_use` first, so a changed policy can deny or park a call whose effect the
+        source already made, and only a `Continue` replays it. A call the source started and
+        never reported is copied as started: the new run inherits the doubt, and `retry_running`
+        decides. Anything the source never began runs fresh. The source run is read, never
+        written.
         """
-        if self.transcript is None:
-            raise TypeError("fork requires AgentRuntime(transcript=...)")
         src, dst = _execution_context(source), _execution_context(target)
-        entries = await self.transcript.for_execution(src).read(
-            source_conversation_id or src.run_id
-        )
-        history = messages_at(entries, at) if at is not None else messages_of(entries)
+        if history is None:
+            if self.transcript is None:
+                raise TypeError("fork without history= requires AgentRuntime(transcript=...)")
+            entries = await self.transcript.for_execution(src).read(
+                source_conversation_id or src.run_id
+            )
+            history = messages_at(entries, at) if at is not None else messages_of(entries)
+        history = list(history)
         async with self._lease(dst.run_id) as token:
+            copied: list[str] = []
             if self.store is not None:
                 for call in unanswered_tool_calls(history):
                     key = step_key(call.tool_call_id)
                     record = await self.store.read(src.run_id, key)
-                    if record.status == "done" and await self.store.start(dst.run_id, key, token):
+                    if record.status == "absent" or not await self.store.start(
+                        dst.run_id, key, token
+                    ):
+                        continue
+                    if record.status == "done":
                         await self.store.finish_effect(dst.run_id, key, record.value, token)
+                        copied.append(call.tool_call_id)
             return await self._attempt(
                 dst,
                 token,
@@ -385,6 +403,7 @@ class AgentRuntime:
                 conversation_id=conversation_id,
                 message_history=history,
                 deps=deps,
+                _regate=copied if regate else (),
                 **options,
             )
 

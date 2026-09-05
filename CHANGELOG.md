@@ -3,6 +3,12 @@
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and
 documentation corrections belong in the commit log, not here.
 
+## 0.3.2 — 2026-09-05
+
+- `fork(..., history=)` takes the branch point as messages, for a host that keeps its own coordinates; no transcript is read then.
+- `fork(..., regate=True)` asks the branch's `pre_tool_use` about each copied effect before replaying it, so a changed policy can deny or park what the source already did. The default still replays without gating.
+- A call the source started and never reported is copied as started: the branch inherits the doubt instead of running the effect again.
+
 ## 0.3.1 — 2026-09-05
 
 - `AgentRuntime.fork(source, at, target, agent, ...)` and `Agent.fork(source, at, ...)`: start a run from one entry of another run's transcript. Effects the source finished in that history replay in the branch without being gated again; the rest runs under the branch's policy.

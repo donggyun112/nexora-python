@@ -4,7 +4,7 @@ Semora now extends Pydantic AI. The independently developed `pydantic-ai-runtime
 
 ## Preserved implementation
 
-The LangChain implementation remains in Git through commit `156e4b1`, also named by the local `archive/langchain-0.2` tag. Read or check out that revision for 0.2 behavior. Existing 0.2 releases are unaffected. The old loop, provider adapters, coding assembly, UI package and fork package are no longer built by this workspace; only three 0.3 distributions are maintained.
+The LangChain implementation remains in Git through commit `156e4b1`. Read or check out that revision for 0.2 behavior. Existing 0.2 releases are unaffected. The old loop, provider adapters, coding assembly, UI package and fork package are no longer built by this workspace; only three 0.3 distributions are maintained.
 
 ## Application changes
 

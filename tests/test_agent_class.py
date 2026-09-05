@@ -66,13 +66,13 @@ class Reviewer(Agent):
         repo: Path,
         *rounds: Round,
         runtime: AgentRuntime | None = None,
-        run_id: str | None = None,
+        branch_id: str | None = None,
     ) -> None:
         self.repo = repo
         self.touched: list[str] = []
         self.asked: list[tuple[str, str]] = []
         self.llm = scripted(*rounds)
-        super().__init__(runtime=runtime, run_id=run_id)
+        super().__init__(runtime=runtime, branch_id=branch_id)
 
     def prompt(self) -> str:
         return f"Review the repository at {self.repo}. Read before you judge."
@@ -115,7 +115,7 @@ async def test_own_methods_and_external_implementations_share_one_ledger() -> No
         runtime=AgentRuntime(store),
     )
 
-    outcome = await agent.run("review", run_id="run-1")
+    outcome = await agent.run("review", branch_id="run-1")
 
     assert outcome.output == "done"
     assert [(await store.read("run-1", f"tool:c0{n}")).value["value"] for n in range(3)] == [
@@ -141,12 +141,12 @@ async def test_a_suspension_parks_and_the_class_re_decides_on_resume() -> None:
         Path("/repo"), [("write", {"path": "notes.md", "text": "hi"})], runtime=runtime
     )
 
-    parked = await agent.run("write notes", run_id="run-3", rules_version="v1")
+    parked = await agent.run("write notes", branch_id="run-3", rules_version="v1")
     assert parked.suspended and agent.touched == []
 
     # Another process, hours later: a fresh instance of the same class, bound to the same run.
     later = Reviewer(
-        Path("/repo"), runtime=AgentRuntime(store, transcript=transcript), run_id="run-3"
+        Path("/repo"), runtime=AgentRuntime(store, transcript=transcript), branch_id="run-3"
     )
     outcome = await later.resume({"type": "approve"}, rules_version="v2")
 
@@ -173,7 +173,7 @@ async def test_an_approval_may_replace_the_arguments_and_the_class_re_decides_on
         Path("/repo"),
         [("write", {"path": "notes.md", "text": "hi"})],
         runtime=AgentRuntime(store),
-        run_id="run-10",
+        branch_id="run-10",
     )
     assert (await agent.run("write notes")).suspended
 
@@ -191,7 +191,7 @@ async def test_an_explicit_control_plane_replaces_the_class_policy() -> None:
         runtime=AgentRuntime(MemorySteps()),
     )
 
-    outcome = await agent.run("write notes", run_id="run-4", controls=ControlPlane())
+    outcome = await agent.run("write notes", branch_id="run-4", controls=ControlPlane())
 
     assert agent.touched == ["notes.md"], "no gate: the class's Suspend never ran"
     assert outcome.output == "done"
@@ -202,7 +202,7 @@ async def test_the_store_declared_in_the_class_body_is_the_ledger() -> None:
         store = MemorySteps()
 
     agent = Durable(Path("/repo"), [("read", {"path": "a"})])
-    outcome = await agent.run("go", run_id="run-5")
+    outcome = await agent.run("go", branch_id="run-5")
 
     assert outcome.output == "done"
     assert (await Durable.store.read("run-5", "tool:c00")).status == "done"
@@ -230,7 +230,7 @@ async def test_a_store_factory_is_called_once_per_class_on_first_use() -> None:
     assert made == [], "declaring the class opened nothing"
     first = Lazy(Path("/repo"), [("read", {"path": "a"})])
     second = Lazy(Path("/repo"), [("read", {"path": "a"})])
-    await first.run("go", run_id="run-6")
+    await first.run("go", branch_id="run-6")
 
     assert len(made) == 1, "one store for the class, opened when the first agent was made"
     assert (await made[0].read("run-6", "tool:c00")).status == "done"
@@ -282,7 +282,7 @@ async def test_requires_approval_parks_through_the_gate_and_resumes() -> None:
     store = MemorySteps()
     agent = Deployer(Path("/repo"), [("deploy", {"target": "prod"})], runtime=AgentRuntime(store))
 
-    parked = await agent.run("ship", run_id="run-7", rules_version="v1")
+    parked = await agent.run("ship", branch_id="run-7", rules_version="v1")
 
     assert parked.suspended and parked.pending == (("c00", "c00"),)
     assert agent.touched == [], "parked before the effect"
@@ -297,9 +297,12 @@ async def test_requires_approval_parks_through_the_gate_and_resumes() -> None:
 def test_run_sync_drives_the_runtime() -> None:
     """Pydantic AI's run_sync forwards output_type=None; that must not collide with ours."""
     store = MemorySteps()
-    agent = Reviewer(Path("/repo"), [("read", {"path": "a"})], runtime=AgentRuntime(store))
+    agent = Reviewer(
+        Path("/repo"), [("read", {"path": "a"})], runtime=AgentRuntime(store), branch_id="run-8"
+    )
 
-    outcome = cast(Outcome, agent.run_sync("go", run_id="run-8"))
+    # `run_sync` is Pydantic AI's: its `run_id` is the loop's, so the branch is bound up front.
+    outcome = cast(Outcome, agent.run_sync("go"))
 
     assert outcome.output == "done" and agent.last is outcome
     assert asyncio.run(store.read("run-8", "tool:c00")).status == "done"
@@ -309,7 +312,7 @@ async def test_a_queued_prompt_is_a_receipt_not_the_last_outcome() -> None:
     """A dispatch behind a live lease returns an enqueue receipt; `last` stays an Outcome."""
     store = MemorySteps()
     runtime = AgentRuntime(store, transcript=MemoryTranscript())
-    agent = Reviewer(Path("/repo"), runtime=runtime, run_id="run-9")
+    agent = Reviewer(Path("/repo"), runtime=runtime, branch_id="run-9")
     await store.acquire("run-9", "another-worker", 60)
 
     receipt = await agent.dispatch(Prompt("also this", prompt_id="p1"))
@@ -322,7 +325,7 @@ async def test_an_instance_is_one_run() -> None:
     agent = Reviewer(Path("/repo"), [("read", {"path": "a"})], runtime=AgentRuntime(MemorySteps()))
 
     first = await agent.run("go")
-    assert first.output == "done" and agent.run_id is not None and agent.last is first
+    assert first.output == "done" and agent.branch_id is not None and agent.last is first
 
     with pytest.raises(RuntimeError, match="bound to run"):
-        await agent.run("again", run_id="another")
+        await agent.run("again", branch_id="another")

@@ -8,7 +8,7 @@ interrupted round from what the dead worker committed.
 import asyncio
 from collections.abc import AsyncIterator, Collection, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
@@ -114,7 +114,7 @@ class AgentRuntime:
 
     async def run(
         self,
-        run_id: str | ExecutionContext,
+        branch_id: str | ExecutionContext,
         agent: Agent[Any, Any],
         prompt: str | None = None,
         *,
@@ -137,8 +137,9 @@ class AgentRuntime:
 
         Without `message_history` the attempt continues the committed conversation. A prompt
         aimed at a parked run is queued behind the park and the park is announced again.
-        `conversation_id` names the transcript the run belongs to; one conversation holds many
-        runs. It defaults to the run id.
+        `conversation_id` names the conversation the branch belongs to: its transcript, and the
+        scope of its ledger. One conversation holds many branches. It defaults to the branch id,
+        and an `ExecutionContext` that already carries one keeps it.
 
         Raises:
             AgentSuspended: A gate parked the round. Answer it with `resume`.
@@ -146,18 +147,18 @@ class AgentRuntime:
                 needs finalization. A prompt aimed at that continuation is queued before raising.
             Indeterminate: A step started and never reported, and repeating it was not allowed.
         """
-        execution = _execution_context(run_id)
+        execution = _execution_context(branch_id, conversation_id)
         if self.store is not None and prompt is not None:
-            active = await self._active(execution.run_id)
+            active = await self._active(execution)
             if active is not None:
                 await self.submit(
                     execution, PendingInput("user_prompt", UserPromptPart(prompt), prompt_id)
                 )
                 undecided = _undecided(active)
                 if not undecided:
-                    raise Contended(execution.run_id)
+                    raise Contended(execution.branch_id)
                 raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
-        async with self._lease(execution.run_id) as token:
+        async with self._lease(execution) as token:
             return await self._attempt(
                 execution,
                 token,
@@ -166,7 +167,6 @@ class AgentRuntime:
                 controls=controls,
                 rules_version=rules_version,
                 prompt_id=prompt_id,
-                conversation_id=conversation_id,
                 message_history=message_history,
                 deferred_tool_results=deferred_tool_results,
                 deps=deps,
@@ -185,7 +185,6 @@ class AgentRuntime:
         controls: Controls | None = None,
         rules_version: str = "",
         prompt_id: str | None = None,
-        conversation_id: str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deps: Any = None,
@@ -194,37 +193,38 @@ class AgentRuntime:
         _regate: Collection[str] = (),
         **options: Any,
     ) -> Outcome:
-        """Drive an attempt while the caller owns the run lease."""
-        conversation = conversation_id or execution.run_id
+        """Drive an attempt while the caller owns the branch lease."""
+        conversation = execution.conversation_id or execution.branch_id
         branch = await self._open(execution, conversation)
         if branch is not None:
             if message_history is None:
                 message_history = branch.messages or None
             else:
                 await branch.replace(list(message_history))
-        if prompt is not None and prompt_id is not None and self.store is not None:
+        store = self._store_for(execution)
+        if prompt is not None and prompt_id is not None and store is not None:
             item = PendingInput("user_prompt", UserPromptPart(prompt), prompt_id)
-            if not await self.store.enqueue_input(execution.run_id, prompt_id, _encode(item)):
+            if not await store.enqueue_input(execution.branch_id, prompt_id, _encode(item)):
                 prompt = None  # delivered once: the earlier attempt already carried it
             else:
-                await self.store.admit_inputs(execution.run_id, [prompt_id], token)
+                await store.admit_inputs(execution.branch_id, [prompt_id], token)
         # An explicit control plane wins; otherwise the agent's own methods are the policy.
         controls = controls if controls is not None else controls_of(agent)
         effects = Effects(
-            self.store,
-            execution.run_id,
+            store,
+            execution.branch_id,
             token,
             controls=controls,
             retry_running=self.retry_running,
             rules_version=rules_version,
             subject=execution.subject or "",
             resumed=_resumed,
-            inputs=_InputSession(self.store, execution.run_id, token) if self.store else None,
+            inputs=_InputSession(store, execution.branch_id, token) if store else None,
             record=branch.append if branch is not None else None,
             regate=_regate,
         )
-        # Semora's run id is the durable coordinate every attempt shares; Pydantic AI stamps
-        # each attempt with its own `run_id`, so ours is the conversation.
+        # Semora's branch id is the durable coordinate every attempt shares; Pydantic AI stamps
+        # each attempt with its own `run_id`, so what we hand it is the conversation.
         # Called on the base class on purpose: our `Agent` overrides `run` to come here.
         result: AgentRunResult[Any] = await Agent.run(
             agent,
@@ -250,13 +250,14 @@ class AgentRuntime:
 
     async def resume(
         self,
-        run_id: str | ExecutionContext,
+        branch_id: str | ExecutionContext,
         pending_id: str,
         answer: dict[str, Any],
         agent: Agent[Any, Any],
         *,
         controls: Controls | None = None,
         rules_version: str = "",
+        conversation_id: str | None = None,
         deps: Any = None,
     ) -> Outcome:
         """Route an answer by its suspension's external `pending_id`.
@@ -266,18 +267,21 @@ class AgentRuntime:
         still-undecided requests. The final answer revalidates and finishes every parked call in
         model order, and only then does the run continue. The answer is an *input* to `on_resume`,
         never the decision: current policy re-decides.
+
+        A branch that ran inside a conversation parked inside it; name the same conversation here,
+        by `conversation_id` or on the `ExecutionContext`, or the park is not found.
         """
-        execution = _execution_context(run_id)
-        store = self._require_store()
-        async with self._lease(execution.run_id) as token:
-            active = await self._active(execution.run_id)
+        execution = _execution_context(branch_id, conversation_id)
+        store = self._require_store(execution)
+        async with self._lease(execution) as token:
+            active = await self._active(execution)
             parked = _decode_parked(active) if active is not None else []
             by_pending = {str(request["pending_id"]): call for call, request in parked}
             if active is None or pending_id not in by_pending:
                 raise LookupError(f"no active suspension for pending id {pending_id!r}")
             answers = {**active["answers"], by_pending[pending_id].tool_call_id: answer}
             await store.write_control(
-                execution.run_id, ACTIVE_SUSPENSION, {**active, "answers": answers}, token
+                execution.branch_id, ACTIVE_SUSPENSION, {**active, "answers": answers}, token
             )
             undecided = _undecided({**active, "answers": answers})
             if undecided:
@@ -288,7 +292,7 @@ class AgentRuntime:
 
     async def recover(
         self,
-        run_id: str | ExecutionContext,
+        branch_id: str | ExecutionContext,
         agent: Agent[Any, Any],
         history: Sequence[ModelMessage],
         *,
@@ -304,10 +308,11 @@ class AgentRuntime:
         again for calls it already made. A round parked before the crash stays parked under its
         original pending ids — re-gating would orphan every answer in flight.
         """
-        execution = _execution_context(run_id)
-        async with self._lease(execution.run_id) as token:
-            if self.store is not None:
-                active = await self._active(execution.run_id)
+        execution = _execution_context(branch_id, conversation_id)
+        store = self._store_for(execution)
+        async with self._lease(execution) as token:
+            if store is not None:
+                active = await self._active(execution)
                 if active is not None:
                     undecided = _undecided(active)
                     if undecided:
@@ -323,7 +328,7 @@ class AgentRuntime:
                         rules_version,
                         deps,
                     )
-                recorded = await self.store.read(execution.run_id, PENDING_ROUND)
+                recorded = await store.read(execution.branch_id, PENDING_ROUND)
                 if recorded.status == "done":
                     ids = {call["id"] for call in recorded.value["calls"]}
                     if any(call.tool_call_id not in ids for call in unanswered_tool_calls(history)):
@@ -332,7 +337,6 @@ class AgentRuntime:
                 execution,
                 token,
                 agent,
-                conversation_id=conversation_id,
                 message_history=history,
                 controls=controls,
                 rules_version=rules_version,
@@ -371,27 +375,31 @@ class AgentRuntime:
         decides. Anything the source never began runs fresh. The source run is read, never
         written.
         """
-        src, dst = _execution_context(source), _execution_context(target)
+        src = _execution_context(source, source_conversation_id)
+        dst = _execution_context(target, conversation_id)
         if history is None:
             if self.transcript is None:
                 raise TypeError("fork without history= requires AgentRuntime(transcript=...)")
             entries = await self.transcript.for_execution(src).read(
-                source_conversation_id or src.run_id
+                src.conversation_id or src.branch_id
             )
             history = messages_at(entries, at) if at is not None else messages_of(entries)
         history = list(history)
-        async with self._lease(dst.run_id) as token:
+        # Each end of the fork is read and written through its own conversation's view, so a
+        # record copies only where both contexts can see it.
+        from_store, into_store = self._store_for(src), self._store_for(dst)
+        async with self._lease(dst) as token:
             copied: list[str] = []
-            if self.store is not None:
+            if from_store is not None and into_store is not None:
                 for call in unanswered_tool_calls(history):
                     key = step_key(call.tool_call_id)
-                    record = await self.store.read(src.run_id, key)
-                    if record.status == "absent" or not await self.store.start(
-                        dst.run_id, key, token
+                    record = await from_store.read(src.branch_id, key)
+                    if record.status == "absent" or not await into_store.start(
+                        dst.branch_id, key, token
                     ):
                         continue
                     if record.status == "done":
-                        await self.store.finish_effect(dst.run_id, key, record.value, token)
+                        await into_store.finish_effect(dst.branch_id, key, record.value, token)
                         copied.append(call.tool_call_id)
             return await self._attempt(
                 dst,
@@ -400,30 +408,35 @@ class AgentRuntime:
                 prompt,
                 controls=controls,
                 rules_version=rules_version,
-                conversation_id=conversation_id,
                 message_history=history,
                 deps=deps,
                 _regate=copied if regate else (),
                 **options,
             )
 
-    async def submit(self, run_id: str | ExecutionContext, item: PendingInput) -> PendingInput:
-        """Durably queue one input for the run's next model boundary.
+    async def submit(
+        self,
+        branch_id: str | ExecutionContext,
+        item: PendingInput,
+        *,
+        conversation_id: str | None = None,
+    ) -> PendingInput:
+        """Durably queue one input for the branch's next model boundary.
 
         Unleased on purpose: enqueueing is append-only and keyed by the input's own id, so it
-        needs no exclusion, and a live run holds the lease itself.
+        needs no exclusion, and a live branch holds the lease itself.
         """
-        execution = _execution_context(run_id)
+        execution = _execution_context(branch_id, conversation_id)
         normalized = PendingInput(item.kind, item.part, item.origin_id or str(uuid4()))
         assert normalized.origin_id is not None
-        await self._require_store().enqueue_input(
-            execution.run_id, normalized.origin_id, _encode(normalized)
+        await self._require_store(execution).enqueue_input(
+            execution.branch_id, normalized.origin_id, _encode(normalized)
         )
         return normalized
 
     async def dispatch(
         self,
-        run_id: str | ExecutionContext,
+        branch_id: str | ExecutionContext,
         agent: Agent[Any, Any],
         command: Command,
         *,
@@ -438,18 +451,24 @@ class AgentRuntime:
         """
         if self.store is None or self.transcript is None:
             raise TypeError("dispatch requires AgentRuntime(execution_store=..., transcript=...)")
+        # The state read and the transition it picks must look at the same conversation's ledger.
+        execution = _execution_context(branch_id, options.get("conversation_id"))
         return await default_router().dispatch(
-            self, run_id, agent, command, controls=controls, **options
+            self, execution, agent, command, controls=controls, **options
         )
 
-    async def pending(self, run_id: str | ExecutionContext) -> list[tuple[str, str]]:
-        """The undecided `(pending_id, tool_call_id)` pairs of a parked run, in model order."""
+    async def pending(
+        self, branch_id: str | ExecutionContext, conversation_id: str | None = None
+    ) -> list[tuple[str, str]]:
+        """The undecided `(pending_id, tool_call_id)` pairs of a parked branch, in model order."""
         if self.store is None:
             return []
-        active = await self._active(_execution_context(run_id).run_id)
+        active = await self._active(_execution_context(branch_id, conversation_id))
         return _undecided(active) if active is not None else []
 
-    async def state(self, run_id: str | ExecutionContext) -> str:
+    async def state(
+        self, branch_id: str | ExecutionContext, conversation_id: str | None = None
+    ) -> str:
         """Name the run's durable state from one observation.
 
         A parked run reports its continuation state (``waiting``/``resuming``). Otherwise the
@@ -458,27 +477,27 @@ class AgentRuntime:
         only a lease attempt can tell those apart). Without a transcript an unparked run is
         just ``idle``.
         """
-        execution = _execution_context(run_id)
+        execution = _execution_context(branch_id, conversation_id)
         if self.store is not None:
-            active = await self._active(execution.run_id)
+            active = await self._active(execution)
             if active is not None:
                 return str(active["state"])
         if self.transcript is None:
             return "idle"
-        record = await self.transcript.for_execution(execution).read_run(execution.run_id)
+        record = await self.transcript.for_execution(execution).read_branch(execution.branch_id)
         if record is None:
             return "fresh"
         return "completed" if record.get("ended_at") is not None else "interrupted"
 
     async def committed_history(
-        self, run_id: str | ExecutionContext, conversation_id: str | None = None
+        self, branch_id: str | ExecutionContext, conversation_id: str | None = None
     ) -> list[ModelMessage]:
         """The committed model history of the run's conversation."""
         if self.transcript is None:
             raise TypeError("committed_history requires AgentRuntime(transcript=...)")
-        execution = _execution_context(run_id)
+        execution = _execution_context(branch_id, conversation_id)
         entries = await self.transcript.for_execution(execution).read(
-            conversation_id or execution.run_id
+            execution.conversation_id or execution.branch_id
         )
         return messages_of(entries)
 
@@ -508,7 +527,8 @@ class AgentRuntime:
             for call, request in parked:
                 await effects.controls.on_suspend(ctx, call, request, messages, completed)
         pending = [(str(request["pending_id"]), call.tool_call_id) for call, request in parked]
-        if self.store is not None:
+        store = self._store_for(execution)
+        if store is not None:
             first = parked[0][0].tool_call_id
             continuation = {
                 "origin": "pre_tool_use",
@@ -540,8 +560,8 @@ class AgentRuntime:
                 "call_ids": [call.tool_call_id for call, _ in parked],
                 "answers": {},
             }
-            await self.store.commit_transition(
-                execution.run_id, ExecutionTransition(controls=writes), token
+            await store.commit_transition(
+                execution.branch_id, ExecutionTransition(controls=writes), token
             )
         raise AgentSuspended(pending[0][0], pending[0][1], pending=pending)
 
@@ -558,7 +578,7 @@ class AgentRuntime:
         deps: Any,
     ) -> Outcome:
         """Idempotently finish a fully answered continuation after resume or recovery."""
-        store = self._require_store()
+        store = self._require_store(execution)
         continuation = active["continuation"]
         history = ModelMessagesTypeAdapter.validate_python(continuation["messages"])
         approvals: dict[str, bool | ToolApproved | ToolDenied] = {}
@@ -576,16 +596,22 @@ class AgentRuntime:
                 )
             resumed[call.tool_call_id] = Resumed(answer, request, continuation["rules_version"])
         await store.write_control(
-            execution.run_id,
+            execution.branch_id,
             ACTIVE_SUSPENSION,
             {**active, "state": "resuming", "answers": answers},
             token,
         )
+        # The park remembers its conversation, so a caller that named only the branch rejoins it.
+        # The transcript's fallback, the branch id itself, is not a conversation anyone named and
+        # must not start scoping the ledger halfway through a branch.
+        remembered = active.get("conversation_id")
+        rejoined = _execution_context(
+            execution, None if remembered == execution.branch_id else remembered
+        )
         outcome = await self._attempt(
-            execution,
+            rejoined,
             token,
             agent,
-            conversation_id=active.get("conversation_id"),
             message_history=history,
             deferred_tool_results=DeferredToolResults(approvals=approvals),
             controls=controls,
@@ -594,16 +620,16 @@ class AgentRuntime:
             _resumed=resumed,
         )
         await store.write_control(
-            execution.run_id,
+            execution.branch_id,
             ACTIVE_SUSPENSION,
             {"state": "completed", "call_id": active["call_id"], "call_ids": active["call_ids"]},
             token,
         )
         return outcome
 
-    async def _active(self, run_id: str) -> dict[str, Any] | None:
+    async def _active(self, execution: ExecutionContext) -> dict[str, Any] | None:
         """The live continuation, or None when nothing is parked."""
-        record = await self._require_store().read(run_id, ACTIVE_SUSPENSION)
+        record = await self._require_store(execution).read(execution.branch_id, ACTIVE_SUSPENSION)
         if record.status != "done" or record.value.get("state") not in {"waiting", "resuming"}:
             return None
         return dict(record.value)
@@ -611,51 +637,58 @@ class AgentRuntime:
     # ── lease and transcript ──────────────────────────────────────────────────
 
     @asynccontextmanager
-    async def _lease(self, run_id: str) -> AsyncIterator[int]:
-        if self.store is None:
+    async def _lease(self, execution: ExecutionContext) -> AsyncIterator[int]:
+        store = self._store_for(execution)
+        if store is None:
             yield 0
             return
-        owner = uuid4().hex
-        token = await self.store.acquire(run_id, owner, self.lease_ttl)
+        branch_id, owner = execution.branch_id, uuid4().hex
+        token = await store.acquire(branch_id, owner, self.lease_ttl)
         if not token:
-            raise Contended(run_id)
-        renewal = asyncio.create_task(self._renew(run_id, owner))
+            raise Contended(branch_id)
+        renewal = asyncio.create_task(self._renew(store, branch_id, owner))
         try:
             yield token
         finally:
             renewal.cancel()
-            await self.store.release(run_id, owner)
+            await store.release(branch_id, owner)
 
-    async def _renew(self, run_id: str, owner: str) -> None:
-        assert self.store is not None
+    async def _renew(self, store: ExecutionStore, branch_id: str, owner: str) -> None:
         while True:
             await asyncio.sleep(self.lease_ttl / 3)
             # A lost lease is not handled here: the next write carries a stale token and is Fenced.
-            await self.store.acquire(run_id, owner, self.lease_ttl)
+            await store.acquire(branch_id, owner, self.lease_ttl)
 
     async def _open(self, execution: ExecutionContext, conversation: str) -> Branch | None:
         if self.transcript is None:
             return None
-        return await Branch.open(self.transcript, conversation, execution.run_id, context=execution)
+        return await Branch.open(
+            self.transcript, conversation, execution.branch_id, context=execution
+        )
 
-    def _require_store(self) -> ExecutionStore:
-        if self.store is None:
+    def _store_for(self, execution: ExecutionContext) -> ExecutionStore | None:
+        """The ledger as this execution sees it: its conversation's view when it names one."""
+        return self.store.for_execution(execution) if self.store is not None else None
+
+    def _require_store(self, execution: ExecutionContext) -> ExecutionStore:
+        store = self._store_for(execution)
+        if store is None:
             raise TypeError("this needs a ledger; pass execution_store=")
-        return self.store
+        return store
 
 
 class _InputSession:
     """Admit the durable input queue through one leased attempt."""
 
-    def __init__(self, store: ExecutionStore, run_id: str, token: int) -> None:
+    def __init__(self, store: ExecutionStore, branch_id: str, token: int) -> None:
         self._store = store
-        self._run_id = run_id
+        self._branch_id = branch_id
         self._token = token
         self._seen: set[str] = set()
 
     async def claim(self, represented: set[str]) -> list[PendingInput]:
         claimed: list[PendingInput] = []
-        for record in await self._store.list_inputs(self._run_id):
+        for record in await self._store.list_inputs(self._branch_id):
             # ponytail: an admitted input is trusted as delivered even if history lost it;
             # semora reclaims those by message id. Reinstate if transcripts prove lossy.
             if (
@@ -664,7 +697,7 @@ class _InputSession:
                 or record.input_id in self._seen
             ):
                 continue
-            await self._store.claim_input(self._run_id, record.input_id, self._token)
+            await self._store.claim_input(self._branch_id, record.input_id, self._token)
             self._seen.add(record.input_id)
             claimed.append(_decode(record.value))
         return claimed
@@ -672,12 +705,12 @@ class _InputSession:
     async def admit(self, items: list[PendingInput]) -> None:
         ids = [item.origin_id for item in items if item.origin_id is not None]
         if ids:
-            await self._store.admit_inputs(self._run_id, ids, self._token)
+            await self._store.admit_inputs(self._branch_id, ids, self._token)
 
     async def discard(self, items: list[PendingInput]) -> None:
         ids = [item.origin_id for item in items if item.origin_id is not None]
         if ids:
-            await self._store.discard_inputs(self._run_id, ids, self._token)
+            await self._store.discard_inputs(self._branch_id, ids, self._token)
 
 
 def unanswered_tool_calls(history: Sequence[ModelMessage]) -> list[ToolCallPart]:
@@ -777,5 +810,12 @@ def _decode(payload: dict[str, Any]) -> PendingInput:
     )
 
 
-def _execution_context(value: str | ExecutionContext) -> ExecutionContext:
-    return value if isinstance(value, ExecutionContext) else ExecutionContext(run_id=value)
+def _execution_context(
+    value: str | ExecutionContext, conversation_id: str | None = None
+) -> ExecutionContext:
+    """The context as given, with a conversation named separately filled in if it had none."""
+    if not isinstance(value, ExecutionContext):
+        return ExecutionContext(branch_id=value, conversation_id=conversation_id)
+    if value.conversation_id is None and conversation_id is not None:
+        return replace(value, conversation_id=conversation_id)
+    return value

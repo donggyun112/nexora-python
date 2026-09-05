@@ -94,7 +94,7 @@ class Transition(Protocol):
     async def apply(
         self,
         runtime: Any,
-        run_id: Any,
+        branch_id: Any,
         agent: Any,
         command: Command,
         state: str | None,
@@ -123,7 +123,7 @@ class StartRun:
     async def apply(
         self,
         runtime: Any,
-        run_id: Any,
+        branch_id: Any,
         agent: Any,
         command: Command,
         state: str | None,
@@ -134,7 +134,7 @@ class StartRun:
         """Run one attempt with the prompt as its input."""
         assert isinstance(command, Prompt)
         return await runtime.run(
-            run_id,
+            branch_id,
             agent,
             command.text,
             prompt_id=command.prompt_id,
@@ -160,7 +160,7 @@ class QueueSteer:
     async def apply(
         self,
         runtime: Any,
-        run_id: Any,
+        branch_id: Any,
         agent: Any,
         command: Command,
         state: str | None,
@@ -171,7 +171,7 @@ class QueueSteer:
         """Enqueue the prompt for the lease holder and report the durable input id."""
         assert isinstance(command, Prompt)
         item = await runtime.submit(
-            run_id, PendingInput("user_prompt", UserPromptPart(command.text), command.prompt_id)
+            branch_id, PendingInput("user_prompt", UserPromptPart(command.text), command.prompt_id)
         )
         return {"type": "enqueued", "input_id": item.origin_id}
 
@@ -189,7 +189,7 @@ class ResumeApproval:
     async def apply(
         self,
         runtime: Any,
-        run_id: Any,
+        branch_id: Any,
         agent: Any,
         command: Command,
         state: str | None,
@@ -201,12 +201,12 @@ class ResumeApproval:
         assert isinstance(command, Answer)
         try:
             return await runtime.resume(
-                run_id, command.pending_id, command.payload, agent, controls=controls, **options
+                branch_id, command.pending_id, command.payload, agent, controls=controls, **options
             )
         except LookupError as undecided:
             if isinstance(undecided, KeyError):
                 raise
-            named = state if state is not None else await runtime.state(run_id)
+            named = state if state is not None else await runtime.state(branch_id)
             raise InvalidTransition(named, command) from undecided
 
 
@@ -223,7 +223,7 @@ class RecoverInterrupted:
     async def apply(
         self,
         runtime: Any,
-        run_id: Any,
+        branch_id: Any,
         agent: Any,
         command: Command,
         state: str | None,
@@ -232,8 +232,8 @@ class RecoverInterrupted:
         **options: Any,
     ) -> Any:
         """Finish the parked round without replaying its model turn."""
-        history = await runtime.committed_history(run_id, options.get("conversation_id"))
-        return await runtime.recover(run_id, agent, history, controls=controls, **options)
+        history = await runtime.committed_history(branch_id, options.get("conversation_id"))
+        return await runtime.recover(branch_id, agent, history, controls=controls, **options)
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,7 +255,7 @@ class ReplayJournal:
     async def apply(
         self,
         runtime: Any,
-        run_id: Any,
+        branch_id: Any,
         agent: Any,
         command: Command,
         state: str | None,
@@ -264,7 +264,7 @@ class ReplayJournal:
         **options: Any,
     ) -> Any:
         """Re-run the attempt with no new input; the journal supplies the interrupted turn."""
-        return await runtime.run(run_id, agent, None, controls=controls, **options)
+        return await runtime.run(branch_id, agent, None, controls=controls, **options)
 
 
 class CommandRouter:
@@ -280,7 +280,7 @@ class CommandRouter:
     async def dispatch(
         self,
         runtime: Any,
-        run_id: Any,
+        branch_id: Any,
         agent: Any,
         command: Command,
         *,
@@ -293,21 +293,21 @@ class CommandRouter:
         candidates = [row for row in self._transitions if row.applies(command)]
         state: str | None = None
         if any(row.states is not None for row in candidates):
-            state = await runtime.state(run_id)
+            state = await runtime.state(branch_id)
         contended: Contended | None = None
         for row in candidates:
             if row.states is not None and state not in row.states:
                 continue
             try:
                 return await row.apply(
-                    runtime, run_id, agent, command, state, controls=controls, **options
+                    runtime, branch_id, agent, command, state, controls=controls, **options
                 )
             except Contended as busy:
                 contended = busy
         if contended is not None:
             raise contended
         raise InvalidTransition(
-            state if state is not None else await runtime.state(run_id), command
+            state if state is not None else await runtime.state(branch_id), command
         )
 
 

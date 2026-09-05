@@ -33,7 +33,7 @@ if outcome.suspended:                                     # a park is an outcome
     outcome = await reviewer.resume({"type": "approve"})  # same instance, same run
 
 # another process, hours later: a fresh instance bound to the same run
-outcome = await Reviewer(Path("."), run_id="run-1").recover()
+outcome = await Reviewer(Path("."), branch_id="run-1").recover()
 ```
 
 A control point defined as a method replaces the parent's; call `super()` to keep it. A control
@@ -61,7 +61,7 @@ from .contracts import AgentSuspended, PendingInput
 from .controls import Controls
 from .dispatch import Command, Recover
 from .effects import CONCURRENCY_SAFE
-from .ids import new_run_id
+from .ids import new_branch_id
 from .runtime import AgentRuntime, Outcome
 
 __all__ = ["Agent", "tool"]
@@ -144,19 +144,21 @@ class Agent(PydanticAgent[Any, Any]):
     def __init__(
         self,
         *,
-        run_id: str | ExecutionContext | None = None,
+        branch_id: str | ExecutionContext | None = None,
         runtime: AgentRuntime | None = None,
         **overrides: Any,
     ) -> None:
         """Assemble the Pydantic AI agent from the class body.
 
         Args:
-            run_id: Bind this instance to an existing run — the one another process parked or
+            branch_id: Bind this instance to an existing run — the one another process parked or
                 lost. Left out, the first `run` mints one.
             runtime: Bind this instance to its own runtime instead of the class's.
             overrides: Reach Pydantic AI's constructor untouched.
         """
-        self.run_id: str | None = run_id.run_id if isinstance(run_id, ExecutionContext) else run_id
+        self.branch_id: str | None = (
+            branch_id.branch_id if isinstance(branch_id, ExecutionContext) else branch_id
+        )
         self.last: Outcome | None = None
         """The outcome of this instance's latest attempt."""
         self._attempting = False
@@ -205,19 +207,19 @@ class Agent(PydanticAgent[Any, Any]):
 
     # ── one instance, one run ────────────────────────────────────────────────
 
-    def _bind(self, run_id: str | ExecutionContext | None) -> str:
+    def _bind(self, branch_id: str | ExecutionContext | None) -> str:
         """The run this instance is for. Set once; a second run needs a second instance."""
-        wanted = run_id.run_id if isinstance(run_id, ExecutionContext) else run_id
-        if self.run_id is None:
-            self.run_id = wanted or new_run_id()
-        elif wanted is not None and wanted != self.run_id:
+        wanted = branch_id.branch_id if isinstance(branch_id, ExecutionContext) else branch_id
+        if self.branch_id is None:
+            self.branch_id = wanted or new_branch_id()
+        elif wanted is not None and wanted != self.branch_id:
             raise RuntimeError(
-                f"{type(self).__name__} is bound to run {self.run_id!r}; "
+                f"{type(self).__name__} is bound to run {self.branch_id!r}; "
                 f"make another instance for {wanted!r}"
             )
-        return self.run_id
+        return self.branch_id
 
-    async def _attempt(self, run_id: str, attempt: Any) -> Outcome:
+    async def _attempt(self, branch_id: str, attempt: Any) -> Outcome:
         """Run one attempt; a park comes back as an outcome, and only one attempt at a time."""
         if self._attempting:
             raise RuntimeError(f"{type(self).__name__} already has an attempt in flight")
@@ -236,7 +238,7 @@ class Agent(PydanticAgent[Any, Any]):
         self,
         user_prompt: str | None = None,
         *,
-        run_id: str | ExecutionContext | None = None,
+        branch_id: str | ExecutionContext | None = None,
         controls: Controls | None = None,
         rules_version: str = "",
         prompt_id: str | None = None,
@@ -253,7 +255,7 @@ class Agent(PydanticAgent[Any, Any]):
         `resume`. `options` are Pydantic AI's own `run` arguments, forwarded untouched — that is
         what lets a harness `SubAgents` delegate to this agent.
         """
-        bound = self._bind(run_id)
+        bound = self._bind(branch_id)
         return await self._attempt(
             bound,
             self.runtime.run(
@@ -277,9 +279,10 @@ class Agent(PydanticAgent[Any, Any]):
         answer: dict[str, Any],
         *,
         pending_id: str | None = None,
-        run_id: str | ExecutionContext | None = None,
+        branch_id: str | ExecutionContext | None = None,
         controls: Controls | None = None,
         rules_version: str = "",
+        conversation_id: str | None = None,
         deps: Any = None,
     ) -> Outcome:
         """Route a person's answer to the parked call; current policy re-decides.
@@ -287,11 +290,11 @@ class Agent(PydanticAgent[Any, Any]):
         `pending_id` defaults to the first undecided request. In a batch park, an answer for one
         call comes back as a still-suspended outcome listing the rest.
         """
-        bound = self._bind(run_id)
+        bound = self._bind(branch_id)
         if pending_id is None:
-            undecided = await self.runtime.pending(bound)
+            undecided = await self.runtime.pending(bound, conversation_id)
             if not undecided:
-                raise LookupError(f"run {bound!r} has nothing parked")
+                raise LookupError(f"branch {bound!r} has nothing parked")
             pending_id = undecided[0][0]
         return await self._attempt(
             bound,
@@ -302,6 +305,7 @@ class Agent(PydanticAgent[Any, Any]):
                 self,
                 controls=controls,
                 rules_version=rules_version,
+                conversation_id=conversation_id,
                 deps=deps,
             ),
         )
@@ -309,7 +313,7 @@ class Agent(PydanticAgent[Any, Any]):
     async def recover(
         self,
         *,
-        run_id: str | ExecutionContext | None = None,
+        branch_id: str | ExecutionContext | None = None,
         history: Sequence[ModelMessage] | None = None,
         controls: Controls | None = None,
         rules_version: str = "",
@@ -321,7 +325,7 @@ class Agent(PydanticAgent[Any, Any]):
         Committed effects replay from the record; missing ones run; the model turn is not paid
         for again. A round parked before the crash stays parked.
         """
-        bound = self._bind(run_id)
+        bound = self._bind(branch_id)
         if history is None:
             attempt = self.runtime.dispatch(
                 bound,
@@ -350,7 +354,7 @@ class Agent(PydanticAgent[Any, Any]):
         at: str | None = None,
         prompt: str | None = None,
         *,
-        run_id: str | ExecutionContext | None = None,
+        branch_id: str | ExecutionContext | None = None,
         history: Sequence[ModelMessage] | None = None,
         regate: bool = False,
         controls: Controls | None = None,
@@ -364,7 +368,7 @@ class Agent(PydanticAgent[Any, Any]):
         Effects the source finished before `at` replay here; `regate=True` asks this instance's
         gate about them first. The rest runs under this instance's policy.
         """
-        bound = self._bind(run_id)
+        bound = self._bind(branch_id)
         return await self._attempt(
             bound,
             self.runtime.fork(
@@ -387,29 +391,31 @@ class Agent(PydanticAgent[Any, Any]):
         self,
         command: Command,
         *,
-        run_id: str | ExecutionContext | None = None,
+        branch_id: str | ExecutionContext | None = None,
         controls: Controls | None = None,
         **options: Any,
     ) -> Outcome | Any:
         """Route a host command to whatever the run's durable state allows."""
-        bound = self._bind(run_id)
+        bound = self._bind(branch_id)
         return await self._attempt(
             bound, self.runtime.dispatch(bound, self, command, controls=controls, **options)
         )
 
     async def submit(
-        self, item: PendingInput, *, run_id: str | ExecutionContext | None = None
+        self, item: PendingInput, *, branch_id: str | ExecutionContext | None = None
     ) -> PendingInput:
         """Queue input for the run's next model boundary."""
-        return await self.runtime.submit(self._bind(run_id), item)
+        return await self.runtime.submit(self._bind(branch_id), item)
 
-    async def state(self, run_id: str | ExecutionContext | None = None) -> str:
+    async def state(self, branch_id: str | ExecutionContext | None = None) -> str:
         """Name the run's durable state."""
-        return await self.runtime.state(self._bind(run_id))
+        return await self.runtime.state(self._bind(branch_id))
 
-    async def pending(self, run_id: str | ExecutionContext | None = None) -> list[tuple[str, str]]:
+    async def pending(
+        self, branch_id: str | ExecutionContext | None = None
+    ) -> list[tuple[str, str]]:
         """The undecided `(pending_id, tool_call_id)` pairs, in model order."""
-        return await self.runtime.pending(self._bind(run_id))
+        return await self.runtime.pending(self._bind(branch_id))
 
 
 def _resolve(cls: type, attribute: str) -> Any:

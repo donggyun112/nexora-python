@@ -62,7 +62,7 @@ async def test_a_delegation_is_one_effect_and_the_child_runs_in_its_own_run() ->
         store = ledger
         uses = (SubAgents(agents=[SubAgent(explorer)], agent_folders=None),)
 
-    outcome = await Lead().run("go", run_id="lead-1")
+    outcome = await Lead().run("go", branch_id="lead-1")
 
     assert outcome.output == "lead done"
     assert explorer.reads == ["a"]
@@ -104,7 +104,7 @@ async def test_a_recovered_parent_does_not_run_the_child_again() -> None:
             return "waited"
 
     lead = Lead(runtime=AgentRuntime(ledger, transcript=transcript))
-    worker = asyncio.create_task(lead.run("go", run_id="lead-2"))
+    worker = asyncio.create_task(lead.run("go", branch_id="lead-2"))
     while (await ledger.read("lead-2", "tool:lead-c2")).status != "running":
         await asyncio.sleep(0)
     worker.cancel()  # the worker dies after the delegation committed, mid second call
@@ -113,7 +113,7 @@ async def test_a_recovered_parent_does_not_run_the_child_again() -> None:
     block.set()
 
     later = Lead(runtime=AgentRuntime(ledger, transcript=transcript, retry_running=True))
-    outcome = await later.dispatch(Recover(), run_id="lead-2")
+    outcome = await later.dispatch(Recover(), branch_id="lead-2")
 
     assert outcome.output == "lead done"
     assert explorer.reads == ["a"], "the delegation replayed from the record; the child ran once"

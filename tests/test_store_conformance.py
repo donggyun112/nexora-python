@@ -18,7 +18,7 @@ Divergences it was written to catch, all now fixed:
 
 * the in-memory transcript accepted run fields Postgres has no column for;
 * the two disagreed about what identifies an entry, and about which conversation it belonged to;
-* `read_run` / `read_model_usage` existed on one side only;
+* `read_branch` / `read_model_usage` existed on one side only;
 * `MemorySteps.start` reopened a `done` step, so the in-memory ledger alone could lose a committed
   result on replay;
 * `MemorySteps` ignored `ttl_seconds`, making lease takeover unreachable there;
@@ -40,6 +40,7 @@ from psycopg_pool import AsyncConnectionPool
 from semora_store import (
     EffectCompletion,
     EffectConflict,
+    ExecutionContext,
     ExecutionStore,
     ExecutionTransition,
     Fenced,
@@ -93,7 +94,7 @@ async def store(request: pytest.FixtureRequest) -> AsyncIterator[Transcript]:
         pytest.skip("set SEMORA_TEST_DSN to run the durable half of this suite")
     async for durable in _postgres(
         TRANSCRIPT_SCHEMA,
-        "ledger_transcript, ledger_run, ledger_run_model",
+        "ledger_transcript, ledger_branch, ledger_branch_model",
         PostgresTranscript,
     ):
         yield durable
@@ -108,7 +109,7 @@ async def steps(request: pytest.FixtureRequest) -> AsyncIterator[StepLog]:
     if not DSN:
         pytest.skip("set SEMORA_TEST_DSN to run the durable half of this suite")
     async for durable in _postgres(
-        SCHEMA, "ledger_step, ledger_run_lease, ledger_input", PostgresSteps
+        SCHEMA, "ledger_step, ledger_branch_lease, ledger_input", PostgresSteps
     ):
         yield durable
 
@@ -384,6 +385,31 @@ async def test_forgetting_a_finished_step_leaves_its_result_alone(steps: StepLog
     assert record.value == {"dispensed": True}
 
 
+async def test_a_conversation_files_the_same_branch_id_as_a_different_branch(
+    steps: StepLog,
+) -> None:
+    """What binds a replayed effect to its conversation: outside it, the record is not there.
+
+    Both stores share the layout, so the property is the same on either: a branch id under one
+    conversation, under another, and under none are three branches with three ledgers and three
+    leases.
+    """
+    chat_a = steps.for_execution(ExecutionContext(branch_id="b-1", conversation_id="chat-a"))
+    chat_b = steps.for_execution(ExecutionContext(branch_id="b-1", conversation_id="chat-b"))
+    await chat_a.start("b-1", "meds")
+    await chat_a.finish_effect("b-1", "meds", {"dispensed": True})
+
+    assert (await chat_a.read("b-1", "meds")).value == {"dispensed": True}
+    assert (await chat_b.read("b-1", "meds")).status == "absent"
+    assert (await steps.read("b-1", "meds")).status == "absent"
+    assert await chat_a.acquire("b-1", "w1", 60) and await chat_b.acquire("b-1", "w2", 60), (
+        "two conversations on one branch id do not contend"
+    )
+    assert steps.for_execution(ExecutionContext(branch_id="b-1")) is steps, (
+        "no conversation, no view: the whole ledger"
+    )
+
+
 async def test_forgetting_from_a_replaced_worker_is_fenced(steps: StepLog) -> None:
     """The one write where a missing fence loses an effect instead of just failing.
 
@@ -497,16 +523,16 @@ async def test_an_unknown_conversation_reads_as_empty_rather_than_raising(
 
 
 async def test_an_unopened_run_reads_as_none(store: Transcript) -> None:
-    assert await store.read_run("never-ran") is None
+    assert await store.read_branch("never-ran") is None
 
 
 async def test_run_fields_merge_across_writes(store: Transcript) -> None:
     """The property `opened`/`closed` depends on: two writes from different vantage points."""
-    await store.record_run("run-1", {"conversation_id": "conv-1"})
+    await store.record_branch("run-1", {"conversation_id": "conv-1"})
 
-    await store.record_run("run-1", {"stop_reason": "completed"})
+    await store.record_branch("run-1", {"stop_reason": "completed"})
 
-    row = await store.read_run("run-1")
+    row = await store.read_branch("run-1")
     assert row is not None
     assert row["conversation_id"] == "conv-1"
     assert row["stop_reason"] == "completed"
@@ -518,9 +544,9 @@ async def test_a_run_reads_back_exactly_the_fields_that_were_recorded(store: Tra
     A column default invents a field the memory store has no way to produce, so the same run read as
     two different facts — and every assertion here checked keys individually, which cannot see it.
     """
-    await store.record_run("run-1", {"conversation_id": "conv-1"})
+    await store.record_branch("run-1", {"conversation_id": "conv-1"})
 
-    assert await store.read_run("run-1") == {"conversation_id": "conv-1"}
+    assert await store.read_branch("run-1") == {"conversation_id": "conv-1"}
 
 
 async def test_a_field_no_table_has_a_column_for_is_refused(store: Transcript) -> None:
@@ -530,7 +556,7 @@ async def test_a_field_no_table_has_a_column_for_is_refused(store: Transcript) -
     real write.
     """
     with pytest.raises(ValueError, match="prompt_tokens"):
-        await store.record_run("run-1", {"prompt_tokens": 10})
+        await store.record_branch("run-1", {"prompt_tokens": 10})
 
 
 async def test_a_field_outside_the_per_model_set_is_refused(store: Transcript) -> None:
@@ -540,22 +566,22 @@ async def test_a_field_outside_the_per_model_set_is_refused(store: Transcript) -
 
 async def test_an_empty_write_still_creates_the_row(store: Transcript) -> None:
     """`opened()` has to register a run before it knows anything else about it."""
-    await store.record_run("run-1", {})
+    await store.record_branch("run-1", {})
 
-    assert await store.read_run("run-1") is not None
+    assert await store.read_branch("run-1") is not None
 
 
 # ── per-model usage ──────────────────────────────────────────────────────────
 
 
 async def test_a_run_with_no_usage_has_no_model_rows(store: Transcript) -> None:
-    await store.record_run("run-1", {})
+    await store.record_branch("run-1", {})
 
     assert await store.read_model_usage("run-1") == {}
 
 
 async def test_usage_is_kept_per_model(store: Transcript) -> None:
-    await store.record_run("run-1", {})
+    await store.record_branch("run-1", {})
 
     await store.record_model_usage("run-1", "opus", {"prompt_tokens": 10})
     await store.record_model_usage("run-1", "haiku", {"prompt_tokens": 20})
@@ -571,7 +597,7 @@ async def test_unattributed_tokens_key_on_the_empty_model(store: Transcript) -> 
 
     Charging them to a guess is worse than leaving them unattributed.
     """
-    await store.record_run("run-1", {})
+    await store.record_branch("run-1", {})
 
     await store.record_model_usage("run-1", "", {"prompt_tokens": 7})
 
@@ -579,7 +605,7 @@ async def test_unattributed_tokens_key_on_the_empty_model(store: Transcript) -> 
 
 
 async def test_per_model_counts_merge_across_writes(store: Transcript) -> None:
-    await store.record_run("run-1", {})
+    await store.record_branch("run-1", {})
     await store.record_model_usage("run-1", "opus", {"prompt_tokens": 10})
 
     await store.record_model_usage("run-1", "opus", {"completion_tokens": 2})
@@ -595,7 +621,7 @@ async def test_an_unwritten_count_is_absent_rather_than_zero(store: Transcript) 
     A `0` here prices an unmeasured run as free, and the two stores must agree on which of the two
     they are reporting.
     """
-    await store.record_run("run-1", {})
+    await store.record_branch("run-1", {})
 
     await store.record_model_usage("run-1", "opus", {"prompt_tokens": 10})
 

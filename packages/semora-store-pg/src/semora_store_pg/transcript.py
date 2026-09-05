@@ -10,7 +10,7 @@ from psycopg import AsyncConnection
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
-from semora_store import MODEL_USAGE_FIELDS, RUN_FIELDS, ExecutionContext, check_fields
+from semora_store import BRANCH_FIELDS, MODEL_USAGE_FIELDS, ExecutionContext, check_fields
 
 __all__ = ["TRANSCRIPT_SCHEMA", "PostgresTranscript"]
 
@@ -24,7 +24,7 @@ create table if not exists ledger_transcript (
     parent_uuid     text        generated always as (entry ->> 'parent_uuid') stored,
     type            text        generated always as (entry ->> 'type') stored,
     schema_version  text        generated always as (entry ->> 'schema_version') stored,
-    run_id          text        generated always as (entry -> 'metadata' ->> 'run_id') stored,
+    branch_id          text        generated always as (entry -> 'metadata' ->> 'branch_id') stored,
     unique (conversation_id, uuid)
 );
 
@@ -32,10 +32,10 @@ create index if not exists ledger_transcript_replay
     on ledger_transcript (conversation_id, seq);
 
 create index if not exists ledger_transcript_run
-    on ledger_transcript (run_id) where run_id is not null;
+    on ledger_transcript (branch_id) where branch_id is not null;
 
-create table if not exists ledger_run (
-    run_id               text primary key,
+create table if not exists ledger_branch (
+    branch_id               text primary key,
     conversation_id      text,
     stop_reason          text,
     tool_calls           integer,
@@ -45,10 +45,10 @@ create table if not exists ledger_run (
 );
 
 create index if not exists ledger_run_conversation
-    on ledger_run (conversation_id, started_at desc);
+    on ledger_branch (conversation_id, started_at desc);
 
-create table if not exists ledger_run_model (
-    run_id             text   not null,
+create table if not exists ledger_branch_model (
+    branch_id             text   not null,
     model              text   not null,
     prompt_tokens      bigint,
     completion_tokens  bigint,
@@ -56,11 +56,11 @@ create table if not exists ledger_run_model (
     cached_tokens      bigint,
     cache_write_tokens bigint,
     cost_usd           numeric(12, 6),
-    primary key (run_id, model)
+    primary key (branch_id, model)
 );
 
-create index if not exists ledger_run_model_by_model
-    on ledger_run_model (model);
+create index if not exists ledger_branch_model_by_model
+    on ledger_branch_model (model);
 """
 """Schema for transcript entries, run metadata, and per-model usage records."""
 
@@ -123,30 +123,35 @@ class PostgresTranscript:
             rows = await cursor.fetchall()
         return [row["entry"] for row in rows]
 
-    async def record_run(self, run_id: str, fields: dict[str, Any]) -> None:
+    async def record_branch(self, branch_id: str, fields: dict[str, Any]) -> None:
         """Merge validated fields into a run record, creating it when absent."""
-        await self._upsert("ledger_run", ("run_id",), (run_id,), fields, RUN_FIELDS)
+        await self._upsert("ledger_branch", ("branch_id",), (branch_id,), fields, BRANCH_FIELDS)
 
-    async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
+    async def record_model_usage(self, branch_id: str, model: str, counts: dict[str, Any]) -> None:
         """Merge validated token counts for one model of one run."""
         await self._upsert(
-            "ledger_run_model", ("run_id", "model"), (run_id, model), counts, MODEL_USAGE_FIELDS
+            "ledger_branch_model",
+            ("branch_id", "model"),
+            (branch_id, model),
+            counts,
+            MODEL_USAGE_FIELDS,
         )
 
-    async def read_run(self, run_id: str) -> dict[str, Any] | None:
+    async def read_branch(self, branch_id: str) -> dict[str, Any] | None:
         """Return a run record with unwritten null fields omitted."""
         async with (
             self._pool.connection() as connection,
             connection.cursor(row_factory=dict_row) as cursor,
         ):
             await cursor.execute(
-                f"select {', '.join(sorted(RUN_FIELDS))} from ledger_run where run_id = %s",
-                (run_id,),
+                f"select {', '.join(sorted(BRANCH_FIELDS))} from ledger_branch"
+                " where branch_id = %s",
+                (branch_id,),
             )
             row = await cursor.fetchone()
         return None if row is None else {k: v for k, v in row.items() if v is not None}
 
-    async def read_model_usage(self, run_id: str) -> dict[str, dict[str, Any]]:
+    async def read_model_usage(self, branch_id: str) -> dict[str, dict[str, Any]]:
         """This run's token counts keyed by the model that spent them."""
         async with (
             self._pool.connection() as connection,
@@ -155,9 +160,9 @@ class PostgresTranscript:
             await cursor.execute(
                 f"""
                 select model, {", ".join(sorted(MODEL_USAGE_FIELDS))}
-                from ledger_run_model where run_id = %s
+                from ledger_branch_model where branch_id = %s
                 """,
-                (run_id,),
+                (branch_id,),
             )
             rows = await cursor.fetchall()
         return {

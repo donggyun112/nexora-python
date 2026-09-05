@@ -36,10 +36,10 @@ from .controls import (
 )
 from .dispatch import Answer, InvalidTransition, Prompt, Recover
 from .effects import CONCURRENCY_SAFE, Effects
-from .ids import new_run_id
+from .ids import new_branch_id
 from .runtime import AgentRuntime, Outcome
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"
 
 __all__ = [
     "CONCURRENCY_SAFE",
@@ -79,7 +79,7 @@ __all__ = [
     "Suspending",
     "__version__",
     "gate",
-    "new_run_id",
+    "new_branch_id",
     "tool",
     "writer",
 ]

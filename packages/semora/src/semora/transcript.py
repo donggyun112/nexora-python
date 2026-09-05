@@ -28,12 +28,13 @@ __all__ = [
     "stripped",
 ]
 
-SCHEMA_VERSION = "pai-v1"
+SCHEMA_VERSION = "pai-v2"
 
 _VOLATILE = frozenset(
     {
         "timestamp",
-        "run_id",
+        "run_id",  # Pydantic AI's: a new one per loop, so a resumed round must not hash differently
+        "branch_id",  # ours, in entry metadata
         "conversation_id",
         "usage",
         "provider_details",
@@ -175,13 +176,13 @@ class TranscriptWriter:
         store: Transcript,
         *,
         conversation_id: str,
-        run_id: str,
+        branch_id: str,
         parent_uuid: str | None = None,
     ) -> None:
         """Initialize a writer for one run and conversation chain."""
         self._store = store
         self._conversation_id = conversation_id
-        self._run_id = run_id
+        self._branch_id = branch_id
         self._parent_uuid = parent_uuid
 
     @property
@@ -191,8 +192,8 @@ class TranscriptWriter:
 
     async def opened(self) -> None:
         """Register the run and its start timestamp."""
-        await self._store.record_run(
-            self._run_id,
+        await self._store.record_branch(
+            self._branch_id,
             {"conversation_id": self._conversation_id, "started_at": datetime.now(UTC)},
         )
 
@@ -202,7 +203,7 @@ class TranscriptWriter:
             message,
             conversation_id=self._conversation_id,
             parent_uuid=self._parent_uuid,
-            metadata={"run_id": self._run_id},
+            metadata={"branch_id": self._branch_id},
         )
         appended = await self._store.append(entry)
         # Advanced even when the entry was a duplicate: the chain position is the same either way,
@@ -231,8 +232,8 @@ class TranscriptWriter:
         usage: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Record terminal run metadata and per-model usage."""
-        await self._store.record_run(
-            self._run_id,
+        await self._store.record_branch(
+            self._branch_id,
             {
                 "conversation_id": self._conversation_id,
                 "stop_reason": stop_reason,
@@ -243,7 +244,7 @@ class TranscriptWriter:
         )
         for model, counts in (usage or {}).items():
             if counts:
-                await self._store.record_model_usage(self._run_id, model, counts)
+                await self._store.record_model_usage(self._branch_id, model, counts)
 
     async def _append_marker(self, kind: str, **fields: Any) -> None:
         await self._store.append(marker_entry(kind, self._conversation_id, **fields))
@@ -262,7 +263,7 @@ class Branch:
 
     @classmethod
     async def open(
-        cls, store: Transcript, conversation_id: str, run_id: str, *, context: ExecutionContext
+        cls, store: Transcript, conversation_id: str, branch_id: str, *, context: ExecutionContext
     ) -> "Branch":
         """Restore a run's active branch and continue writing from its tip."""
         store = store.for_execution(context)
@@ -272,7 +273,7 @@ class Branch:
         writer = TranscriptWriter(
             store,
             conversation_id=conversation_id,
-            run_id=run_id,
+            branch_id=branch_id,
             parent_uuid=branch[-1]["uuid"] if branch else None,
         )
         await writer.opened()

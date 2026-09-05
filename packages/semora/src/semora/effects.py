@@ -172,7 +172,7 @@ class Effects(AbstractCapability[Any]):
     def __init__(
         self,
         store: ExecutionStore | None,
-        run_id: str,
+        branch_id: str,
         token: int = 0,
         *,
         controls: Controls | None = None,
@@ -188,7 +188,7 @@ class Effects(AbstractCapability[Any]):
 
         Args:
             store: The execution ledger, or `None` to record nothing.
-            run_id: The run whose steps this capability keys.
+            branch_id: The run whose steps this capability keys.
             token: Fencing token from the run lease; zero means unleased.
             controls: The seven decision points. `None` gates nothing.
             retry_running: Treat a step that started and never reported as safe to run again.
@@ -203,7 +203,7 @@ class Effects(AbstractCapability[Any]):
                 already recorded bypasses the gate.
         """
         self.store = store
-        self.run_id = run_id
+        self.branch_id = branch_id
         self.token = token
         self.controls = controls
         self.retry_running = retry_running
@@ -331,7 +331,7 @@ class Effects(AbstractCapability[Any]):
         ]
         if self.store is not None and calls:
             await self.store.write_control(
-                self.run_id, PENDING_ROUND, {"calls": calls, "turn": ctx.run_step}, self.token
+                self.branch_id, PENDING_ROUND, {"calls": calls, "turn": ctx.run_step}, self.token
             )
 
     async def _decide_finish(self, ctx: RunContext[Any], result: Any) -> Any:
@@ -377,24 +377,24 @@ class Effects(AbstractCapability[Any]):
         if self.store is None:
             return await handler(request_context)
         key = model_step_key(request_context)
-        step = await self.store.read(self.run_id, key)
+        step = await self.store.read(self.branch_id, key)
         if step.status == "done":
             return _RESPONSE.validate_python(step.value["response"])
         if step.status == "running":
             if not self.retry_running:
-                raise Indeterminate(self.run_id, key)
-            await self.store.forget(self.run_id, key, self.token)
-        if not await self.store.start(self.run_id, key, self.token):
-            raise Indeterminate(self.run_id, key)
+                raise Indeterminate(self.branch_id, key)
+            await self.store.forget(self.branch_id, key, self.token)
+        if not await self.store.start(self.branch_id, key, self.token):
+            raise Indeterminate(self.branch_id, key)
         try:
             response = await handler(request_context)
         except asyncio.CancelledError:
             raise  # a cancellation is a crash, not the step's report about itself
         except BaseException:
-            await self.store.forget(self.run_id, key, self.token)
+            await self.store.forget(self.branch_id, key, self.token)
             raise
         await self.store.finish_effect(
-            self.run_id,
+            self.branch_id,
             key,
             {"type": "model_result", "response": to_jsonable_python(response)},
             self.token,
@@ -458,7 +458,7 @@ class Effects(AbstractCapability[Any]):
         """Whether this run's ledger already holds the call's finished effect."""
         if self.store is None:
             return False
-        return (await self.store.read(self.run_id, step_key(call.tool_call_id))).status == "done"
+        return (await self.store.read(self.branch_id, step_key(call.tool_call_id))).status == "done"
 
     async def _resume_decision(self, here: Ctx, call: ToolCallPart) -> ToolDecision:
         """Ask `on_resume` about an approved call that still has to run."""
@@ -485,15 +485,15 @@ class Effects(AbstractCapability[Any]):
             step = await self._execute(None, args, handler)
         else:
             key = step_key(call.tool_call_id)
-            step = await self.store.read(self.run_id, key)
+            step = await self.store.read(self.branch_id, key)
             if step.status == "running":
                 if not self.retry_running:
-                    raise Indeterminate(self.run_id, key)
-                await self.store.forget(self.run_id, key, self.token)
+                    raise Indeterminate(self.branch_id, key)
+                await self.store.forget(self.branch_id, key, self.token)
                 step = Step("absent")
             if step.status == "absent":
-                if not await self.store.start(self.run_id, key, self.token):
-                    raise Indeterminate(self.run_id, key)
+                if not await self.store.start(self.branch_id, key, self.token):
+                    raise Indeterminate(self.branch_id, key)
                 step = await self._execute(key, args, handler)
         record = await self._journal_once(ctx, call, step.value)
         if record["ok"]:
@@ -507,7 +507,7 @@ class Effects(AbstractCapability[Any]):
             value = await handler(args)
         except _NOTHING_HAPPENED:
             if self.store is not None and key is not None:
-                await self.store.forget(self.run_id, key, self.token)
+                await self.store.forget(self.branch_id, key, self.token)
             raise
         except _RUNTIME_SIGNALS:
             raise
@@ -517,7 +517,7 @@ class Effects(AbstractCapability[Any]):
             record = {"ok": True, "value": value}
         # A cancellation between `handler` and here leaves the step `running`, which is the truth.
         if self.store is not None and key is not None:
-            await self.store.finish_effect(self.run_id, key, record, self.token)
+            await self.store.finish_effect(self.branch_id, key, record, self.token)
         return Step("done", record)
 
     async def _journal_once(
@@ -530,7 +530,7 @@ class Effects(AbstractCapability[Any]):
         """
         key = after_key(call.tool_call_id)
         if self.store is not None:
-            journal = await self.store.read(self.run_id, key)
+            journal = await self.store.read(self.branch_id, key)
             if journal.status == "done":
                 projection = journal.value.get("record")
                 if not isinstance(projection, dict):
@@ -547,7 +547,7 @@ class Effects(AbstractCapability[Any]):
         await self.controls.post_tool_use(self._ctx(ctx), call, result)
         if self.store is not None:
             await self.store.write_control(
-                self.run_id, key, {"hooked": True, "record": projected}, self.token
+                self.branch_id, key, {"hooked": True, "record": projected}, self.token
             )
         return projected
 

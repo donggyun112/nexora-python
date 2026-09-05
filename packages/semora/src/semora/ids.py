@@ -1,13 +1,13 @@
-"""Run identifiers that sort in creation order."""
+"""Branch identifiers that sort in creation order."""
 
 import os
 import time
 from uuid import UUID
 
-__all__ = ["new_run_id"]
+__all__ = ["new_branch_id"]
 
 
-def new_run_id(prefix: str = "run") -> str:
+def new_branch_id(prefix: str = "branch") -> str:
     """A UUIDv7 with a prefix: unique, and later ids sort after earlier ones."""
     # ponytail: hand-rolled v7; swap for `uuid.uuid7()` once 3.14 is the floor
     millis = time.time_ns() // 1_000_000

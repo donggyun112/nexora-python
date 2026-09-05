@@ -34,7 +34,7 @@ def prompts(messages: list[ModelMessage]) -> list[str]:
     ]
 
 
-async def test_conversation_history_is_independent_from_run_identity() -> None:
+async def test_conversation_history_is_independent_from_branch_identity() -> None:
     transcript = MemoryTranscript()
     runtime = AgentRuntime(MemorySteps(), transcript=transcript)
     seen: list[list[str]] = []
@@ -77,7 +77,10 @@ async def test_a_resumed_run_stays_in_its_conversation() -> None:
     with pytest.raises(AgentSuspended):
         await runtime.run("run-3", agent, "go", conversation_id="chat-9", controls=controls)
 
-    outcome = await runtime.resume("run-3", "p1", {"type": "approve"}, agent, controls=controls)
+    # The branch parked inside chat-9, so the answer has to name chat-9 to find it.
+    outcome = await runtime.resume(
+        "run-3", "p1", {"type": "approve"}, agent, controls=controls, conversation_id="chat-9"
+    )
 
     assert outcome.output == "done"
     kinds = [

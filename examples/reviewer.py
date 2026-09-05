@@ -2,7 +2,7 @@
 
     uv run python examples/reviewer.py
 
-`main(run_id)` looks at the run's durable state and takes the next step: start it, finish a round
+`main(branch_id)` looks at the run's durable state and takes the next step: start it, finish a round
 a dead worker left behind, or resume a parked call with a person's answer. Call it again after a
 crash, in another process, and it picks up where the ledger says. No API key: the model is
 scripted.
@@ -73,11 +73,11 @@ async def ask_person(pending_id: str) -> dict[str, str]:
     return {"type": "approve"}
 
 
-async def main(run_id: str, reviewer: Reviewer | None = None) -> None:
+async def main(branch_id: str, reviewer: Reviewer | None = None) -> None:
     """Carry the run one step further, from whatever state it is in."""
-    reviewer = reviewer or Reviewer(Path("."), run_id=run_id)
+    reviewer = reviewer or Reviewer(Path("."), branch_id=branch_id)
     state = await reviewer.state()
-    print(f"{run_id} is {state}")
+    print(f"{branch_id} is {state}")
 
     match state:
         case "interrupted":  # a worker died mid-round
@@ -95,7 +95,7 @@ async def main(run_id: str, reviewer: Reviewer | None = None) -> None:
 
 async def demo() -> None:
     # Process A starts the run and dies while the tests are running.
-    doomed = Reviewer(Path("."), run_id="review-1")
+    doomed = Reviewer(Path("."), branch_id="review-1")
     doomed.hold = asyncio.Event()
     worker = asyncio.create_task(main("review-1", doomed))
     while (await Reviewer.store.read("review-1", "tool:c1")).status != "running":

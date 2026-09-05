@@ -35,11 +35,18 @@ from semora import (
     Suspend,
     Suspending,
     gate,
-    new_run_id,
+    new_branch_id,
     tool,
     writer,
 )
-from semora_store import Contended, ExecutionContext, ExecutionStore, Fenced, Indeterminate
+from semora_store import (
+    Contended,
+    ConversationScopedSteps,
+    ExecutionContext,
+    ExecutionStore,
+    Fenced,
+    Indeterminate,
+)
 from semora_store_pg import PostgresSteps, PostgresTranscript
 ```
 
@@ -47,19 +54,19 @@ from semora_store_pg import PostgresSteps, PostgresTranscript
 
 `AgentRuntime(execution_store=None, *, transcript=None, lease_ttl=60.0, retry_running=False)`
 
-All methods below are async. `run_id` accepts a string or `ExecutionContext`.
+All methods below are async. `branch_id` accepts a string or `ExecutionContext`. A branch is the durable unit: a first loop plus its resumes and recoveries; a fork is a new branch. `ExecutionContext(branch_id, conversation_id=None)` also names the conversation the branch belongs to; the ledger is scoped by it, so a branch that ran inside a conversation is resumed, recovered and inspected by naming that conversation, either on the context or through the `conversation_id=` keyword every method accepts. Without a conversation nothing is scoped.
 
 | Method | Result and contract |
 |---|---|
-| `run(run_id, agent, prompt=None, *, controls=None, rules_version="", prompt_id=None, conversation_id=None, message_history=None, deferred_tool_results=None, deps=None, capabilities=(), **options)` | `Outcome`; `agent` is a Pydantic AI agent. Extra model/run options reach Pydantic AI. Acquires and renews a run lease. |
-| `resume(run_id, pending_id, answer, agent, *, controls=None, rules_version="", deps=None)` | Records an answer, then revalidates when all parked calls are answered. Unanswered siblings raise `AgentSuspended` again. Unknown pending IDs raise `LookupError`. |
-| `recover(run_id, agent, history, *, controls=None, rules_version="", conversation_id=None, deps=None)` | Continues from native message history. Reuses committed effects; unreported effects raise `Indeterminate` unless retry was explicitly enabled. |
+| `run(branch_id, agent, prompt=None, *, controls=None, rules_version="", prompt_id=None, conversation_id=None, message_history=None, deferred_tool_results=None, deps=None, capabilities=(), **options)` | `Outcome`; `agent` is a Pydantic AI agent. Extra model/run options reach Pydantic AI. Acquires and renews a run lease. |
+| `resume(branch_id, pending_id, answer, agent, *, controls=None, rules_version="", deps=None)` | Records an answer, then revalidates when all parked calls are answered. Unanswered siblings raise `AgentSuspended` again. Unknown pending IDs raise `LookupError`. |
+| `recover(branch_id, agent, history, *, controls=None, rules_version="", conversation_id=None, deps=None)` | Continues from native message history. Reuses committed effects; unreported effects raise `Indeterminate` unless retry was explicitly enabled. |
 | `fork(source, at, target, agent, prompt=None, *, history=None, regate=False, controls=None, rules_version="", source_conversation_id=None, conversation_id=None, deps=None, **options)` | Starts `target` from `source`'s transcript at entry uuid `at` (`None`: the active tip), or from `history` when the host keeps its own coordinates. Effects the source finished in that history are copied to the new run's ledger and replay; `regate=True` asks the new run's `pre_tool_use` about each first, and only `Continue` replays. A call the source started and never reported is copied as started, so `retry_running` decides. The rest runs under the new run's policy. The source is never written. |
-| `committed_history(run_id, conversation_id=None)` | `list[ModelMessage]`; requires a transcript. Supply this to `recover`. |
-| `submit(run_id, item)` | Enqueues and returns a `PendingInput`; requires an execution store. |
-| `dispatch(run_id, agent, command, *, controls=None, **options)` | Routes `Prompt`, `Answer`, or `Recover` using durable state. Attach both ledger and transcript. |
-| `pending(run_id)` | Undecided `(pending_id, tool_call_id)` pairs in model order. |
-| `state(run_id)` | `fresh`, `interrupted`, `completed`, or suspension state `waiting`/`resuming`; without a transcript an unparked run is `idle`. |
+| `committed_history(branch_id, conversation_id=None)` | `list[ModelMessage]`; requires a transcript. Supply this to `recover`. |
+| `submit(branch_id, item)` | Enqueues and returns a `PendingInput`; requires an execution store. |
+| `dispatch(branch_id, agent, command, *, controls=None, **options)` | Routes `Prompt`, `Answer`, or `Recover` using durable state. Attach both ledger and transcript. |
+| `pending(branch_id)` | Undecided `(pending_id, tool_call_id)` pairs in model order. |
+| `state(branch_id)` | `fresh`, `interrupted`, `completed`, or suspension state `waiting`/`resuming`; without a transcript an unparked run is `idle`. |
 
 `interrupted` includes a still-running worker. Only acquiring the lease distinguishes it from a dead one.
 
@@ -85,7 +92,7 @@ Subclass `semora.Agent`; this is a Pydantic AI Agent subclass with run-bound con
 
 `@tool` also accepts `concurrency_safe=False`, `requires_approval=False`, `name=None`, and `description=None`. A `requires_approval=True` tool parks through the `pre_tool_use` gate like a `Suspend`, with the call's `tool_call_id` as its `pending_id`; a gate's `Deny` still wins, and `on_resume` re-decides the answer.
 
-Construct with `run_id=None`, `runtime=None`, and supported configuration overrides. An instance binds to one run ID; changing its ID or overlapping attempts raises `RuntimeError`. `run(prompt=None, ...)` mints an ID if needed. `resume(answer, pending_id=None, ...)` defaults to the first pending request. `recover(history=None, ...)` loads committed history when omitted. `fork(source, at=None, prompt=None, *, history=None, regate=False, ...)` makes this instance's run a branch of another run. `dispatch(command, ...)`, `submit(item, ...)`, `state()` and `pending()` operate on that instance's run. `last` holds the last outcome.
+Construct with `branch_id=None`, `runtime=None`, and supported configuration overrides. An instance binds to one branch; changing its id or overlapping attempts raises `RuntimeError`. `run(prompt=None, ...)` mints a branch id if needed. `resume(answer, pending_id=None, ...)` defaults to the first pending request. `recover(history=None, ...)` loads committed history when omitted. `fork(source, at=None, prompt=None, *, history=None, regate=False, ...)` makes this instance's branch a fork of another. `dispatch(command, ...)`, `submit(item, ...)`, `state()` and `pending()` operate on that instance's branch. `last` holds the last outcome. Pydantic AI's `run_sync(prompt, run_id=...)` is inherited unchanged: its `run_id` is the loop's, so bind the branch in the constructor.
 
 Instance fields are not automatically durable. Restore trusted tool configuration when constructing a replacement instance. Mutable class attributes are shared; do not put per-run working state there.
 
@@ -109,7 +116,7 @@ Instance fields are not automatically durable. Restore trusted tool configuratio
 
 ## Effect and storage contract
 
-`Effects(store, run_id, token=0, *, controls=None, retry_running=False, rules_version="", subject="", resumed=None, inputs=None, record=None)` is the capability the runtime installs per attempt. Prefer `AgentRuntime` so lease and continuation ownership stay centralized.
+`Effects(store, branch_id, token=0, *, controls=None, retry_running=False, rules_version="", subject="", resumed=None, inputs=None, record=None)` is the capability the runtime installs per attempt. Prefer `AgentRuntime` so lease and continuation ownership stay centralized.
 
 - `tool:{call_id}` stores the original effect result envelope. Ordinary tool exceptions produce committed error results. `ControlSignal`, ledger signals and cancellation propagate.
 - `after:{call_id}` stores the completed model-visible journal projection separately. Recovery reuses that projection without leaking the unredacted original. A journal can execute again if the process dies before committing its projection: external journal effects must be idempotent.
@@ -117,4 +124,4 @@ Instance fields are not automatically durable. Restore trusted tool configuratio
 - Run-scoped keys do not deduplicate a business operation across runs. The console supplies stable request/customer keys for its simulated payment separately.
 - `MemorySteps` and `MemoryTranscript` do not survive a process restart. PostgreSQL adapters use an async psycopg pool and share the same protocols; see the conformance tests for setup and behavior.
 
-`Contended` means another worker holds the run lease. `Fenced` means a stale writer's token was rejected. `Indeterminate` includes `run_id` and `step`. `InvalidTransition` (from `semora.dispatch`) carries the observed `state` and rejected `command`. Do not convert these signals into ordinary tool errors in host adapters.
+`Contended` means another worker holds the run lease. `Fenced` means a stale writer's token was rejected. `Indeterminate` includes `branch_id` and `step`. `InvalidTransition` (from `semora.dispatch`) carries the observed `state` and rejected `command`. Do not convert these signals into ordinary tool errors in host adapters.

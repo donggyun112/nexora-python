@@ -3,6 +3,13 @@
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and
 documentation corrections belong in the commit log, not here.
 
+## 0.4.0 — 2026-09-06
+
+- **`run_id` is now `branch_id`.** Semora's durable unit carried Pydantic AI's name for one loop, and it is not one loop: a first loop, its resumes and its recoveries share the id, and a fork starts a new one. That unit is a *branch* of a conversation and is named so everywhere: `ExecutionContext.branch_id`, the first argument of every `AgentRuntime` method, `Agent(branch_id=...)`, `new_branch_id()`, the `branch_id` attribute of `Fenced`, `Contended`, `Indeterminate` and `EffectConflict`, `Transcript.record_branch`/`read_branch` with `BRANCH_FIELDS`, and the `branch_id` in entry metadata. Pydantic AI's `run_id` keeps its meaning and now reaches Pydantic AI untouched, `Agent.run_sync` included.
+- **The ledger is scoped by conversation.** `ExecutionContext.conversation_id` is the conversation the branch belongs to, as Pydantic AI uses the word; it is the session. `for_execution` on `MemorySteps` and `PostgresSteps` returns that conversation's view (`ConversationScopedSteps`, filed as `"<conversation>/<branch>"`), and `AgentRuntime` reads and writes every step, lease and input through it, on both ends of a fork too. A branch id under one conversation, under another, and under none are three branches. `conversation_id=` on `run`, `recover`, `fork`, `dispatch` and `committed_history` fills the context; `resume`, `submit`, `state` and `pending` accept it as well, and a branch that parked inside a conversation is resumed by naming that conversation. Without a conversation nothing is scoped.
+- **Storage.** Postgres columns are `branch_id`, and `ledger_run`, `ledger_run_model`, `ledger_run_lease` are `ledger_branch`, `ledger_branch_model`, `ledger_branch_lease`. Transcript entries are `pai-v2`. Start on a fresh database: [migration](docs/MIGRATION-0.4.md).
+- `ScopedStore.for_execution` returns a `ScopedStore` rather than `Self`; `ExecutionStore` and `Transcript` narrow it to themselves. An adapter that returns `self` is unaffected.
+
 ## 0.3.3 — 2026-09-06
 
 - An approval may replace the call's arguments: `resume(..., {"type": "approve", "args": {...}})`. Pydantic AI validates and runs the replaced arguments, and `on_resume` re-decides on them as the call; the original request is still in `ResumeInput.request`. Before, `args` in an answer was silently dropped.

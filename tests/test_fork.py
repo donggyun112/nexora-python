@@ -26,12 +26,40 @@ async def source_run(
     agent.tool_plain(files.write)
     outcome = await AgentRuntime(store, transcript=transcript).run("run-a", agent, "write both")
     assert outcome.output == "both written" and files.ran == ["a.md", "b.md"]
-    return await transcript.for_execution(ExecutionContext(run_id="run-a")).read("run-a")
+    return await transcript.for_execution(ExecutionContext(branch_id="run-a")).read("run-a")
 
 
 def entry_of(entries: list[dict[str, Any]], kind: str) -> str:
     """The uuid of the first message entry of one kind."""
     return next(str(e["uuid"]) for e in entries if e.get("message", {}).get("kind") == kind)
+
+
+async def test_a_replayed_effect_lives_in_the_conversation_that_recorded_it() -> None:
+    """A branch records into its conversation's ledger, and a fork in that conversation replays it.
+
+    The same branch ids outside the conversation hold nothing: the replay is bound to the
+    conversation, not to the branch id alone.
+    """
+    store, transcript, files = MemorySteps(), MemoryTranscript(), Files()
+    agent, _ = never_asked_twice()
+    agent.tool_plain(files.write)
+    runtime = AgentRuntime(store, transcript=transcript)
+    source = ExecutionContext(branch_id="b-a", conversation_id="chat-1")
+    outcome = await runtime.run(source, agent, "write both")
+    assert outcome.output == "both written" and files.ran == ["a.md", "b.md"]
+    entries = await transcript.for_execution(source).read("chat-1")
+
+    agent, consulted = never_asked_twice()
+    agent.tool_plain(files.write)
+    branch = ExecutionContext(branch_id="b-b", conversation_id="chat-1")
+    await runtime.fork(source, entry_of(entries, "response"), branch, agent)
+
+    assert files.ran == ["a.md", "b.md"], "the branch replayed both writes"
+    assert consulted == [3]
+    inside = store.for_execution(branch)
+    assert (await inside.read("b-b", "tool:c1")).status == "done"
+    assert (await store.read("b-b", "tool:c1")).status == "absent", "invisible outside"
+    assert (await store.read("b-a", "tool:c1")).status == "absent"
 
 
 async def test_a_fork_after_the_round_replays_its_effects_without_gating_them() -> None:
@@ -124,4 +152,6 @@ async def test_a_fork_before_the_round_runs_it_again_as_the_branch() -> None:
     assert outcome.output == "both written"
     assert consulted == [1, 3], "the branch asked the model for the round, then for the answer"
     assert files.ran == ["a.md", "b.md", "a.md", "b.md"], "the branch's own effects, run once"
-    assert len(await transcript.for_execution(ExecutionContext(run_id="run-c")).read("run-c")) > 0
+    assert (
+        len(await transcript.for_execution(ExecutionContext(branch_id="run-c")).read("run-c")) > 0
+    )

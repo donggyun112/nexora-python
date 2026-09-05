@@ -66,7 +66,7 @@ async def test_entries_chain_through_parent_uuid() -> None:
 
 async def test_a_rewind_shortens_the_branch_without_deleting_anything() -> None:
     transcript = MemoryTranscript()
-    writer = TranscriptWriter(transcript, conversation_id="c", run_id="r")
+    writer = TranscriptWriter(transcript, conversation_id="c", branch_id="r")
     first = ModelRequest(parts=[UserPromptPart("one")])
     await writer.record(first)
     await writer.record(ModelResponse(parts=[TextPart("two")]))
@@ -91,7 +91,7 @@ async def test_a_run_that_never_ends_is_a_row_with_no_ending() -> None:
             "run-4", tool_round(), "go", controls=ControlPlane(pre_tool_use=Permissions(ask))
         )
 
-    record = await transcript.read_run("run-4")
+    record = await transcript.read_branch("run-4")
     assert record is not None and "started_at" in record and "ended_at" not in record
     committed = await runtime.committed_history("run-4")
     assert isinstance(committed[-1].parts[0], ToolCallPart), "the parked round is transcript fact"

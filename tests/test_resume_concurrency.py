@@ -21,13 +21,13 @@ class PausedWrites(MemorySteps):
         self.proceed = asyncio.Event()
 
     async def write_control(
-        self, run_id: str, key: str, value: dict[str, Any], token: int = 0
+        self, branch_id: str, key: str, value: dict[str, Any], token: int = 0
     ) -> None:
         if key == ACTIVE_SUSPENSION and value.get("state") == self.pause_state:
             self.pause_state = None
             self.entered.set()
             await self.proceed.wait()
-        await super().write_control(run_id, key, value, token)
+        await super().write_control(branch_id, key, value, token)
 
 
 def setup_agent() -> tuple[Agent[None, str], ControlPlane, list[str]]:

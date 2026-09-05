@@ -11,13 +11,13 @@ from typing import Any, NamedTuple, Protocol, Self, runtime_checkable
 from .context import ExecutionContext, ScopedStore
 
 __all__ = [
+    "BRANCH_FIELDS",
     "MODEL_USAGE_FIELDS",
-    "RUN_FIELDS",
     "MemoryTranscript",
     "Transcript",
 ]
 
-RUN_FIELDS = frozenset(
+BRANCH_FIELDS = frozenset(
     {
         "conversation_id",
         "stop_reason",
@@ -53,6 +53,10 @@ class _Row(NamedTuple):
 class Transcript(ScopedStore, Protocol):
     """Persist one ordered transcript while leaving its physical representation to the adapter."""
 
+    def for_execution(self, context: ExecutionContext) -> "Transcript":
+        """Return the transcript as ``context`` sees it."""
+        ...
+
     async def append(self, entry: dict[str, Any]) -> bool:
         """Append an entry idempotently.
 
@@ -68,19 +72,19 @@ class Transcript(ScopedStore, Protocol):
         """Return entries in arrival order, optionally limited to the newest tail."""
         ...
 
-    async def record_run(self, run_id: str, fields: dict[str, Any]) -> None:
+    async def record_branch(self, branch_id: str, fields: dict[str, Any]) -> None:
         """Merge validated lifecycle fields into this transcript's run record.
 
         Raises:
-            ValueError: If ``fields`` contains a name outside ``RUN_FIELDS``.
+            ValueError: If ``fields`` contains a name outside ``BRANCH_FIELDS``.
         """
         ...
 
-    async def read_run(self, run_id: str) -> dict[str, Any] | None:
+    async def read_branch(self, branch_id: str) -> dict[str, Any] | None:
         """The run record, or `None` if this run was never opened."""
         ...
 
-    async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
+    async def record_model_usage(self, branch_id: str, model: str, counts: dict[str, Any]) -> None:
         """Merge validated usage fields for one model in this transcript run.
 
         Raises:
@@ -88,7 +92,7 @@ class Transcript(ScopedStore, Protocol):
         """
         ...
 
-    async def read_model_usage(self, run_id: str) -> dict[str, dict[str, Any]]:
+    async def read_model_usage(self, branch_id: str) -> dict[str, dict[str, Any]]:
         """This run's token counts keyed by the model that spent them."""
         ...
 
@@ -133,27 +137,27 @@ class MemoryTranscript:
         window = rows if limit is None else rows[len(rows) - limit :] if limit > 0 else []
         return [_frozen(row.entry) for row in window]
 
-    async def record_run(self, run_id: str, fields: dict[str, Any]) -> None:
+    async def record_branch(self, branch_id: str, fields: dict[str, Any]) -> None:
         """Merge validated fields into a process-local run record."""
-        check_fields("run", fields, RUN_FIELDS)
-        self._runs.setdefault(run_id, {}).update(fields)
+        check_fields("run", fields, BRANCH_FIELDS)
+        self._runs.setdefault(branch_id, {}).update(fields)
 
-    async def read_run(self, run_id: str) -> dict[str, Any] | None:
+    async def read_branch(self, branch_id: str) -> dict[str, Any] | None:
         """Return a copied run record."""
-        row = self._runs.get(run_id)
+        row = self._runs.get(branch_id)
         return dict(row) if row is not None else None
 
-    async def record_model_usage(self, run_id: str, model: str, counts: dict[str, Any]) -> None:
+    async def record_model_usage(self, branch_id: str, model: str, counts: dict[str, Any]) -> None:
         """Merge validated token counts for one model of one run."""
         check_fields("model usage", counts, MODEL_USAGE_FIELDS)
-        self._model_usage.setdefault((run_id, model), {}).update(counts)
+        self._model_usage.setdefault((branch_id, model), {}).update(counts)
 
-    async def read_model_usage(self, run_id: str) -> dict[str, dict[str, Any]]:
+    async def read_model_usage(self, branch_id: str) -> dict[str, dict[str, Any]]:
         """Return this run's token counts per model."""
         return {
             model: dict(counts)
             for (recorded, model), counts in self._model_usage.items()
-            if recorded == run_id
+            if recorded == branch_id
         }
 
 

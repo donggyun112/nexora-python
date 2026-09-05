@@ -44,7 +44,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
-      # All eight at once. One token covers the account, so unlike Trusted Publishing there is
+      # All three at once. One token covers the account, so unlike Trusted Publishing there is
       # no per-project exchange to split the build across.
       - name: Build every distribution
         run: uv build --all-packages

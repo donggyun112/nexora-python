@@ -39,6 +39,7 @@ class Fenced(Exception):
         self.presented = presented
         self.issued = issued
 
+
 class Contended(Exception):
     """Report that another worker holds the run lease."""
 
@@ -46,6 +47,7 @@ class Contended(Exception):
         """Initialize the error for the contended run."""
         super().__init__(f"run {run_id!r} is held by another worker")
         self.run_id = run_id
+
 
 class Indeterminate(Exception):
     """Report a step whose external effect may have occurred."""
@@ -67,11 +69,13 @@ class EffectConflict(Exception):
         self.key = key
         self.reason = reason
 
+
 class Step(NamedTuple):
     """Represent the persisted state and value of one step."""
 
     status: Literal["absent", "running", "done"]
     value: Any = None
+
 
 class InputRecord(NamedTuple):
     """Represent one durable input queue row."""
@@ -97,6 +101,7 @@ class ExecutionTransition:
     effects: tuple[EffectCompletion, ...] = ()
     controls: Mapping[str, Any] = field(default_factory=dict)
     inputs: tuple[tuple[str, dict[str, Any]], ...] = ()
+
 
 @runtime_checkable
 class ExecutionStore(ScopedStore, Protocol):
@@ -299,9 +304,7 @@ class MemorySteps:
             key = (run_id, input_id)
             record = self._inputs.get(key)
             if record is not None and record.status != "discarded":
-                self._inputs[key] = InputRecord(
-                    input_id, "admitted", record.value, record.sequence
-                )
+                self._inputs[key] = InputRecord(input_id, "admitted", record.value, record.sequence)
 
     async def discard_inputs(self, run_id: str, input_ids: list[str], token: int = 0) -> None:
         """Make screened-out inputs terminal without deleting their idempotency keys."""

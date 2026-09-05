@@ -1,11 +1,20 @@
-"""Semora's public Python package."""
+"""Semora: an execution boundary for Pydantic AI agents.
 
-from importlib.metadata import PackageNotFoundError, version
+Completed effects replay from a ledger; unreported effects remain indeterminate unless the host
+explicitly allows retry. Messages, tool calls, models and the agent loop are Pydantic AI's.
+"""
 
-from semora_llm import ChatModel
-from semora_store import ExecutionContext, MemorySteps
+from semora_store import (
+    Contended,
+    ExecutionContext,
+    Fenced,
+    Indeterminate,
+    MemorySteps,
+    MemoryTranscript,
+)
 
-from .contracts import Agent, AgentDefinition, PendingInput, ToolCall, Tools
+from .agent import Agent, tool
+from .contracts import AgentSuspended, ControlSignal, PendingInput, StopReason, Suspended
 from .controls import (
     Continue,
     ControlPlane,
@@ -15,46 +24,62 @@ from .controls import (
     FinishPolicy,
     Halt,
     Ingress,
+    Journal,
     Permissions,
     Proceed,
     ResumeInput,
+    Steering,
     Suspend,
+    Suspending,
     gate,
+    writer,
 )
+from .dispatch import Answer, InvalidTransition, Prompt, Recover
+from .effects import CONCURRENCY_SAFE, Effects
 from .ids import new_run_id
-from .runtime import AgentRuntime, run
-from .workspace import HostWorkspaceProvider
+from .runtime import AgentRuntime, Outcome
 
-try:
-    __version__ = version("semora")
-except PackageNotFoundError:  # pragma: no cover - source tree without installation
-    __version__ = "0.0.0"
+__version__ = "0.3.0"
 
 __all__ = [
+    "CONCURRENCY_SAFE",
     "Agent",
-    "AgentDefinition",
     "AgentRuntime",
-    "ChatModel",
+    "AgentSuspended",
+    "Answer",
+    "Contended",
     "Continue",
     "ControlPlane",
+    "ControlSignal",
     "Controls",
     "Ctx",
     "Deny",
+    "Effects",
     "ExecutionContext",
+    "Fenced",
     "FinishPolicy",
     "Halt",
-    "HostWorkspaceProvider",
+    "Indeterminate",
     "Ingress",
+    "InvalidTransition",
+    "Journal",
     "MemorySteps",
+    "MemoryTranscript",
+    "Outcome",
     "PendingInput",
     "Permissions",
     "Proceed",
+    "Prompt",
+    "Recover",
     "ResumeInput",
+    "Steering",
+    "StopReason",
     "Suspend",
-    "ToolCall",
-    "Tools",
+    "Suspended",
+    "Suspending",
     "__version__",
     "gate",
     "new_run_id",
-    "run",
+    "tool",
+    "writer",
 ]

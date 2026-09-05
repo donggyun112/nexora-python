@@ -9,7 +9,9 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol, runtime_checkable
 
-from .contracts.types import BaseMessage, PendingInput, StopReason, ToolCall
+from pydantic_ai.messages import ModelMessage, ModelRequestPart
+
+from .contracts import PendingInput, StopReason, ToolCall
 
 __all__ = [
     "Continue",
@@ -29,6 +31,7 @@ __all__ = [
     "Suspending",
     "ToolDecision",
     "TurnDecision",
+    "controls_of",
     "gate",
     "writer",
 ]
@@ -39,16 +42,12 @@ class Ctx:
     """Provide shared run context to every control point."""
 
     turn: int
-    messages: list[BaseMessage] = field(default_factory=list)
+    messages: list[ModelMessage] = field(default_factory=list)
     calls_made: list[dict[str, Any]] = field(default_factory=list)
     text: str = ""
-    """Assistant text accumulated in the current round."""
+    """Assistant text of the current round."""
     subject: str = ""
-    """Who the run acts for, as the host names them, carried verbatim and never interpreted.
-
-    Stages may decide with it, and it is stamped onto tool events and suspensions. Empty means the
-    host did not say.
-    """
+    """Who the run acts for, as the host names them, carried verbatim and never interpreted."""
 
 
 class Continue(NamedTuple):
@@ -58,11 +57,11 @@ class Continue(NamedTuple):
 class Deny(NamedTuple):
     """Deny a tool call and provide its model-visible result."""
 
-    result: dict[str, Any]
+    result: Any
 
 
 class Suspend(NamedTuple):
-    """Suspend a tool call with its complete external request."""
+    """Suspend a tool call with its complete external request. Must carry a `pending_id`."""
 
     request: dict[str, Any]
 
@@ -81,9 +80,9 @@ class ResumeInput:
 
 
 class Proceed(NamedTuple):
-    """Continue, optionally injecting steering messages first."""
+    """Continue, optionally injecting steering parts into the next model request first."""
 
-    steers: Sequence[BaseMessage] = ()
+    steers: Sequence[ModelRequestPart] = ()
 
 
 class Halt(NamedTuple):
@@ -97,11 +96,11 @@ TurnDecision = Proceed | Halt
 OnInputs = Callable[[Ctx, list[PendingInput]], Awaitable[list[PendingInput] | Halt]]
 BeforeModel = Callable[[Ctx], Awaitable[TurnDecision]]
 PreToolUse = Callable[[Ctx, ToolCall], Awaitable[ToolDecision]]
-PostToolUse = Callable[[Ctx, ToolCall, dict[str, Any]], Awaitable[None]]
+PostToolUse = Callable[[Ctx, ToolCall, Any], Awaitable[None]]
 BeforeFinish = Callable[[Ctx, StopReason], Awaitable[TurnDecision]]
 OnResume = Callable[[Ctx, ToolCall, ResumeInput], Awaitable[ToolDecision]]
 OnSuspend = Callable[
-    [Ctx, ToolCall, dict[str, Any], list[BaseMessage], list[dict[str, Any]]], Awaitable[None]
+    [Ctx, ToolCall, dict[str, Any], list[ModelMessage], list[dict[str, Any]]], Awaitable[None]
 ]
 
 
@@ -114,14 +113,14 @@ class Controls(Protocol):
         ...
 
     async def before_model(self, ctx: Ctx) -> TurnDecision:
-        """Return steering messages or halt before a model call."""
+        """Return steering parts or halt before a model call."""
         ...
 
     async def pre_tool_use(self, ctx: Ctx, call: ToolCall) -> ToolDecision:
         """Allow, deny, or suspend a requested tool call."""
         ...
 
-    async def post_tool_use(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    async def post_tool_use(self, ctx: Ctx, call: ToolCall, result: Any) -> None:
         """Record and validate a tool result, propagating failures."""
         ...
 
@@ -138,7 +137,7 @@ class Controls(Protocol):
         ctx: Ctx,
         call: ToolCall,
         request: dict[str, Any],
-        snapshot: list[BaseMessage],
+        snapshot: list[ModelMessage],
         completed: list[dict[str, Any]],
     ) -> None:
         """Persist a continuation before its suspension is announced."""
@@ -147,8 +146,12 @@ class Controls(Protocol):
 
 def gate(
     answer: Callable[[ToolCall], Awaitable[dict[str, Any] | None]],
-) -> Callable[[Ctx, ToolCall], Awaitable[ToolDecision]]:
-    """Adapt a simple tool predicate to a ``pre_tool_use`` control stage."""
+) -> PreToolUse:
+    """Adapt a simple tool predicate to a ``pre_tool_use`` control stage.
+
+    ``None`` or ``{"type": "allow"}`` allows, ``{"type": "suspend", "pending_id": ...}`` parks,
+    anything else denies with itself as the model-visible result.
+    """
 
     async def stage(ctx: Ctx, call: ToolCall) -> ToolDecision:
         decision = await answer(call)
@@ -159,12 +162,10 @@ def gate(
     return stage
 
 
-def writer(
-    record: Callable[[ToolCall, dict[str, Any]], Awaitable[None]],
-) -> Callable[[Ctx, ToolCall, dict[str, Any]], Awaitable[None]]:
+def writer(record: Callable[[ToolCall, Any], Awaitable[None]]) -> PostToolUse:
     """Adapt a simple result writer to a ``post_tool_use`` control stage."""
 
-    async def stage(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    async def stage(ctx: Ctx, call: ToolCall, result: Any) -> None:
         await record(call, result)
 
     return stage
@@ -219,7 +220,7 @@ class Journal:
         """Initialize the ordered result writers."""
         self._writers = writers
 
-    async def __call__(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    async def __call__(self, ctx: Ctx, call: ToolCall, result: Any) -> None:
         """Write a tool result through every registered writer."""
         for write in self._writers:
             await write(ctx, call, result)
@@ -235,8 +236,8 @@ class FinishPolicy:
     async def __call__(self, ctx: Ctx, reason: StopReason) -> TurnDecision:
         """Return accumulated veto steering or preserve the original stop reason."""
         keep_going: Proceed | None = None
-        for gate in self._gates:
-            match await gate(ctx, reason):
+        for verify in self._gates:
+            match await verify(ctx, reason):
                 case Proceed(steers):
                     keep_going = Proceed([*(keep_going.steers if keep_going else []), *steers])
                 case _:
@@ -252,8 +253,8 @@ class Steering:
         self._sources = sources
 
     async def __call__(self, ctx: Ctx) -> TurnDecision:
-        """Collect steering messages or return the first halt."""
-        steers: list[BaseMessage] = []
+        """Collect steering parts or return the first halt."""
+        steers: list[ModelRequestPart] = []
         for source in self._sources:
             match await source(ctx):
                 case Halt() as stop:
@@ -275,7 +276,7 @@ class Suspending:
         ctx: Ctx,
         call: ToolCall,
         request: dict[str, Any],
-        snapshot: list[BaseMessage],
+        snapshot: list[ModelMessage],
         completed: list[dict[str, Any]],
     ) -> None:
         """Persist a suspension through every registered persister."""
@@ -324,7 +325,7 @@ class ControlPlane:
             return Continue()
         return await self._pre_tool_use(ctx, call)
 
-    async def post_tool_use(self, ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    async def post_tool_use(self, ctx: Ctx, call: ToolCall, result: Any) -> None:
         """Apply configured result writers and validators."""
         if self._post_tool_use is not None:
             await self._post_tool_use(ctx, call, result)
@@ -336,7 +337,7 @@ class ControlPlane:
         return await self._before_finish(ctx, reason)
 
     async def on_resume(self, ctx: Ctx, call: ToolCall, resume: ResumeInput) -> ToolDecision:
-        """Apply the human answer and current-policy revalidation."""
+        """Apply the human answer and current-policy revalidation. A human denial stands."""
         if resume.answer.get("type") == "error":
             return Deny(resume.answer)
         if self._on_resume is None:
@@ -348,9 +349,32 @@ class ControlPlane:
         ctx: Ctx,
         call: ToolCall,
         request: dict[str, Any],
-        snapshot: list[BaseMessage],
+        snapshot: list[ModelMessage],
         completed: list[dict[str, Any]],
     ) -> None:
         """Persist a suspension through the configured control."""
         if self._on_suspend is not None:
             await self._on_suspend(ctx, call, request, snapshot, completed)
+
+
+CONTROL_POINTS = (
+    "on_inputs",
+    "before_model",
+    "pre_tool_use",
+    "post_tool_use",
+    "before_finish",
+    "on_resume",
+    "on_suspend",
+)
+"""The seven decision points, in loop order."""
+
+
+def controls_of(agent: object) -> Controls | None:
+    """The control plane an agent carries as methods, or `None` when it defines none.
+
+    A class that subclasses `pydantic_ai.Agent` and defines `pre_tool_use`, `before_finish` and
+    the rest as methods is its own default policy. An explicit `controls=` at run time replaces
+    it whole, so one agent can run under different rules.
+    """
+    found = {name: getattr(agent, name) for name in CONTROL_POINTS if hasattr(agent, name)}
+    return ControlPlane(**found) if found else None

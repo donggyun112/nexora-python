@@ -1,7 +1,7 @@
-"""Encode LangChain messages as append-only transcript entries.
+"""Encode Pydantic AI messages as append-only transcript entries.
 
-Entries use the TypeScript transcript envelope and a Python-specific LangChain message body.
-The backing transcript store treats the resulting mappings as opaque values.
+Entries chain through `parent_uuid`; `leaf` markers move the active tip without deleting anything,
+`tombstone` markers hide one entry. The backing transcript store treats entries as opaque values.
 """
 
 import hashlib
@@ -9,45 +9,72 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from langchain_core.messages import messages_from_dict, messages_to_dict
-from semora_store import Transcript
-
-from .contracts.types import BaseMessage
+from pydantic_ai import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessage
+from pydantic_core import to_jsonable_python
+from semora_store import ExecutionContext, Transcript
 
 __all__ = [
     "SCHEMA_VERSION",
+    "Branch",
     "TranscriptWriter",
     "active_branch",
+    "encode_message",
     "entry_id",
     "marker_entry",
     "message_entry",
     "messages_at",
     "messages_of",
+    "stripped",
 ]
 
-SCHEMA_VERSION = "py-v1"
+SCHEMA_VERSION = "pai-v1"
 
-_VOLATILE = frozenset({"id", "usage_metadata", "response_metadata"})
+_VOLATILE = frozenset(
+    {
+        "timestamp",
+        "run_id",
+        "conversation_id",
+        "usage",
+        "provider_details",
+        "provider_response_id",
+        "provider_name",
+        "provider_url",
+        "finish_reason",
+        "model_name",
+    }
+)
 """Message fields excluded from deterministic entry identifiers."""
+
+
+def stripped(value: Any) -> Any:
+    """Remove fields that vary across equivalent conversation replays."""
+    if isinstance(value, dict):
+        return {k: stripped(v) for k, v in value.items() if k not in _VOLATILE}
+    if isinstance(value, list):
+        return [stripped(item) for item in value]
+    return value
 
 
 def entry_id(parent_uuid: str | None, body: dict[str, Any]) -> str:
     """Derive an idempotent entry identifier from its parent and stable body fields."""
-    canonical = json.dumps(_stripped(body), sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(stripped(body), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(f"{parent_uuid or ''}\x1f{canonical}".encode()).hexdigest()[:32]
 
 
-def _stripped(value: Any) -> Any:
-    """Remove fields that vary across equivalent conversation replays."""
-    if isinstance(value, dict):
-        return {k: _stripped(v) for k, v in value.items() if k not in _VOLATILE}
-    if isinstance(value, list):
-        return [_stripped(item) for item in value]
-    return value
+def encode_message(message: ModelMessage) -> dict[str, Any]:
+    """One message as a JSON-compatible body."""
+    body: dict[str, Any] = to_jsonable_python(message)
+    return body
+
+
+def decode_messages(bodies: list[dict[str, Any]]) -> list[ModelMessage]:
+    """The other half."""
+    return list(ModelMessagesTypeAdapter.validate_python(bodies))
 
 
 def message_entry(
-    message: BaseMessage,
+    message: ModelMessage,
     *,
     conversation_id: str,
     parent_uuid: str | None = None,
@@ -55,12 +82,12 @@ def message_entry(
     timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Encode one message as a transcript entry."""
-    body = messages_to_dict([message])[0]
+    body = encode_message(message)
     entry: dict[str, Any] = {
         "uuid": entry_id(parent_uuid, body),
         "parent_uuid": parent_uuid,
         "conversation_id": conversation_id,
-        "type": str(body.get("type", "")),
+        "type": str(body.get("kind", "")),
         "timestamp": timestamp or datetime.now(UTC).isoformat(),
         "schema_version": SCHEMA_VERSION,
         "message": body,
@@ -68,6 +95,10 @@ def message_entry(
     if metadata:
         entry["metadata"] = metadata
     return entry
+
+
+_POSITIONAL = frozenset({"leaf"})
+"""Marker kinds whose effect depends on when they were made, not only on what they say."""
 
 
 def marker_entry(kind: str, conversation_id: str, **fields: Any) -> dict[str, Any]:
@@ -87,21 +118,11 @@ def marker_entry(kind: str, conversation_id: str, **fields: Any) -> dict[str, An
     }
 
 
-_POSITIONAL = frozenset({"leaf"})
-"""Marker kinds whose effect depends on when they were made, not only on what they say."""
-
-
 def active_branch(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Resolve the active transcript branch in chronological order.
 
     The latest ``leaf`` marker selects a prior tip unless newer chained entries exist. Tombstoned
     entries are omitted without changing parent links.
-
-    Args:
-        entries: Transcript entries in append order.
-
-    Returns:
-        Entries reachable from the active tip, oldest first.
     """
     chained = {entry["uuid"]: entry for entry in entries if "parent_uuid" in entry}
     buried = {entry["deleted_uuid"] for entry in entries if entry.get("type") == "tombstone"}
@@ -120,17 +141,14 @@ def active_branch(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return branch
 
 
-def messages_of(entries: list[dict[str, Any]]) -> list[BaseMessage]:
+def messages_of(entries: list[dict[str, Any]]) -> list[ModelMessage]:
     """Decode model messages from the active transcript branch."""
-    bodies = [
-        entry["message"]
-        for entry in active_branch(entries)
-        if isinstance(entry.get("message"), dict)
-    ]
-    return list(messages_from_dict(bodies))
+    return decode_messages(
+        [e["message"] for e in active_branch(entries) if isinstance(e.get("message"), dict)]
+    )
 
 
-def messages_at(entries: list[dict[str, Any]], leaf_uuid: str | None) -> list[BaseMessage]:
+def messages_at(entries: list[dict[str, Any]], leaf_uuid: str | None) -> list[ModelMessage]:
     """Decode the branch ending at an explicit cursor, independent of the active leaf."""
     chained = {entry["uuid"]: entry for entry in entries if "parent_uuid" in entry}
     buried = {entry["deleted_uuid"] for entry in entries if entry.get("type") == "tombstone"}
@@ -146,11 +164,11 @@ def messages_at(entries: list[dict[str, Any]], leaf_uuid: str | None) -> list[Ba
     if leaf_uuid is not None and leaf_uuid not in chained:
         raise LookupError(f"transcript cursor {leaf_uuid!r} does not exist")
     branch.reverse()
-    return list(messages_from_dict(branch))
+    return decode_messages(branch)
 
 
 class TranscriptWriter:
-    """Append one run's conversation and cost metadata to a transcript."""
+    """Append one run's conversation and lifecycle metadata to a transcript."""
 
     def __init__(
         self,
@@ -159,18 +177,16 @@ class TranscriptWriter:
         conversation_id: str,
         run_id: str,
         parent_uuid: str | None = None,
-        context: dict[str, Any] | None = None,
     ) -> None:
         """Initialize a writer for one run and conversation chain."""
         self._store = store
         self._conversation_id = conversation_id
         self._run_id = run_id
         self._parent_uuid = parent_uuid
-        self._context = dict(context or {})
 
     @property
     def parent_uuid(self) -> str | None:
-        """Return the last written entry identifier for continuing the chain."""
+        """The last written entry identifier, for continuing the chain."""
         return self._parent_uuid
 
     async def opened(self) -> None:
@@ -180,24 +196,21 @@ class TranscriptWriter:
             {"conversation_id": self._conversation_id, "started_at": datetime.now(UTC)},
         )
 
-    async def record(self, message: BaseMessage, **metadata: Any) -> bool:
+    async def record(self, message: ModelMessage) -> bool:
         """Append one message idempotently and report whether it was new."""
         entry = message_entry(
             message,
             conversation_id=self._conversation_id,
             parent_uuid=self._parent_uuid,
-            metadata={"run_id": self._run_id, **self._context, **metadata},
+            metadata={"run_id": self._run_id},
         )
         appended = await self._store.append(entry)
         # Advanced even when the entry was a duplicate: the chain position is the same either way,
         # and stopping would re-parent the next entry onto an older link and fork the conversation.
         self._parent_uuid = entry["uuid"]
         if not appended:
-            # Say it out loud, too. A replayed round re-records messages the conversation already
-            # holds, so nothing is appended, and `active_branch` — which reads the tip off the
-            # entries — would still report the leaf the replay started from. The writer has moved
-            # and every reader has to see the same position, or a fork taken after a replayed
-            # tool round resumes from before the result it is named after.
+            # A replayed round re-records messages the conversation already holds, so nothing is
+            # appended and `active_branch` would still report the leaf the replay started from.
             await self._append_marker("leaf", leaf_uuid=entry["uuid"])
         return appended
 
@@ -210,53 +223,78 @@ class TranscriptWriter:
         """Hide an entry from the active branch using a tombstone marker."""
         await self._append_marker("tombstone", deleted_uuid=deleted_uuid)
 
-    async def _append_marker(self, kind: str, **fields: Any) -> None:
-        entry = marker_entry(kind, self._conversation_id, **fields)
-        await self._store.append(entry)
-
     async def closed(
-        self, done: dict[str, Any], *, cost_usd: dict[str, float] | None = None
+        self,
+        stop_reason: str,
+        *,
+        tool_calls: int = 0,
+        usage: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        """Record terminal run metadata and per-model usage.
-
-        Args:
-            done: Terminal runtime event containing usage and stop metadata.
-            cost_usd: Optional precomputed cost keyed by model name.
-        """
+        """Record terminal run metadata and per-model usage."""
         await self._store.record_run(
             self._run_id,
             {
                 "conversation_id": self._conversation_id,
-                "stop_reason": done.get("stop_reason"),
-                "tool_calls": len(done.get("tool_calls") or []),
-                "interrupted_mid_turn": bool(done.get("interrupted_mid_turn")),
+                "stop_reason": stop_reason,
+                "tool_calls": tool_calls,
+                "interrupted_mid_turn": False,
                 "ended_at": datetime.now(UTC),
             },
         )
-        for model, counts in _per_model(done).items():
-            usage = {name: count for name, count in counts.items() if name in _MODEL_TOKEN_FIELDS}
-            if cost_usd and model in cost_usd:
-                usage["cost_usd"] = cost_usd[model]
-            if usage:
-                await self._store.record_model_usage(self._run_id, model, usage)
+        for model, counts in (usage or {}).items():
+            if counts:
+                await self._store.record_model_usage(self._run_id, model, counts)
+
+    async def _append_marker(self, kind: str, **fields: Any) -> None:
+        await self._store.append(marker_entry(kind, self._conversation_id, **fields))
 
 
-def _per_model(done: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Normalize terminal usage into a mapping keyed by model name."""
-    breakdown = done.get("usage_by_model")
-    if isinstance(breakdown, dict) and breakdown:
-        return breakdown
-    usage = done.get("usage") or {}
-    return {str(done.get("model") or ""): usage} if usage else {}
+class Branch:
+    """Keep one runtime attempt aligned with an append-only conversation branch."""
 
+    def __init__(
+        self, writer: TranscriptWriter, messages: list[ModelMessage], uuids: list[str]
+    ) -> None:
+        """Bind a writer to the branch it continues."""
+        self.writer = writer
+        self.messages = messages
+        self.uuids = uuids
 
-_MODEL_TOKEN_FIELDS = frozenset(
-    {
-        "prompt_tokens",
-        "completion_tokens",
-        "total_tokens",
-        "cached_tokens",
-        "cache_write_tokens",
-    }
-)
-"""Usage keys `ledger_run_model` has columns for."""
+    @classmethod
+    async def open(
+        cls, store: Transcript, conversation_id: str, run_id: str, *, context: ExecutionContext
+    ) -> "Branch":
+        """Restore a run's active branch and continue writing from its tip."""
+        store = store.for_execution(context)
+        entries = await store.read(conversation_id)
+        branch = active_branch(entries)
+        message_entries = [e for e in branch if isinstance(e.get("message"), dict)]
+        writer = TranscriptWriter(
+            store,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            parent_uuid=branch[-1]["uuid"] if branch else None,
+        )
+        await writer.opened()
+        return cls(writer, messages_of(entries), [str(e["uuid"]) for e in message_entries])
+
+    async def replace(self, desired: list[ModelMessage]) -> None:
+        """Move to the common prefix and append the desired model-visible history."""
+        common = 0
+        current = [stripped(encode_message(m)) for m in self.messages]
+        wanted = [stripped(encode_message(m)) for m in desired]
+        while common < min(len(current), len(wanted)) and current[common] == wanted[common]:
+            common += 1
+        if common < len(current):
+            await self.writer.rewind(self.uuids[common - 1] if common else None)
+            del self.messages[common:]
+            del self.uuids[common:]
+        await self.append(desired[common:])
+
+    async def append(self, messages: list[ModelMessage]) -> None:
+        """Append exact messages and retain their resulting branch coordinates."""
+        for message in messages:
+            await self.writer.record(message)
+            self.messages.append(message)
+            assert self.writer.parent_uuid is not None
+            self.uuids.append(self.writer.parent_uuid)

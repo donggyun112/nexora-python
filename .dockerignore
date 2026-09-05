@@ -9,3 +9,8 @@ docs
 examples
 reference
 tests
+.env
+.env.*
+**/.codecanvas
+**/.mypy_cache
+**/.ruff_cache

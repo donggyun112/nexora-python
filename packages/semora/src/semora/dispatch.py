@@ -4,23 +4,21 @@ Adapters (HTTP, CLI, queue worker, webhook) translate their wire format into one
 commands and hand it to a :class:`CommandRouter` — usually the :func:`default_router` preset
 behind ``AgentRuntime.dispatch``. The router matches on the command first and observes the
 run's durable state at most once — only when a candidate row declares ``states`` or a refusal
-must name the state precisely; the transitions themselves call
-only the runtime's public primitives (``run``/``resume``/``recover``/``submit``), so taking a
-row out removes exactly its behavior and nothing else.
+must name the state precisely; the transitions themselves call only the runtime's public
+primitives (``run``/``resume``/``recover``/``submit``), so taking a row out removes exactly its
+behavior and nothing else.
 
-The core provides mechanism and this module assembles policy: nothing here is required to use
-the primitives directly, and a host may reorder, drop, or add transitions of its own. The
-runtime is handed in as a value, never imported — the assembly layer must not import the core
-it assembles.
+The core provides mechanism and this module assembles policy. The runtime is handed in as a
+value, never imported — the assembly layer must not import the core it assembles.
 """
 
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from langchain_core.messages import HumanMessage
+from pydantic_ai.messages import UserPromptPart
 from semora_store import Contended
 
-from .contracts import Agent, PendingInput
+from .contracts import PendingInput
 
 __all__ = [
     "Answer",
@@ -41,15 +39,10 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class Prompt:
-    """Deliver user input to a run.
-
-    Starts an idle run; on a parked run, ``input_mode`` decides whether it cancels the pending
-    request (interactive) or queues behind it (headless).
-    """
+    """Deliver user input to a run. Starts an idle run; on a parked run it queues behind it."""
 
     text: str
     prompt_id: str | None = None
-    input_mode: Literal["interactive", "headless"] = "interactive"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,11 +55,7 @@ class Answer:
 
 @dataclass(frozen=True, slots=True)
 class Recover:
-    """Finish an interrupted run: a parked continuation, or a round the journal can replay.
-
-    Hosts that own their history, or need ``retry_running=False``, call
-    ``AgentRuntime.recover`` directly instead.
-    """
+    """Finish an interrupted run: a parked continuation, or a round the journal can replay."""
 
 
 Command = Prompt | Answer | Recover
@@ -76,8 +65,7 @@ class InvalidTransition(Exception):
     """A command the run's current durable state cannot accept.
 
     Carries the observed ``state`` and the rejected ``command`` so an adapter can map the
-    refusal (e.g. to HTTP 409) without string-matching. An ``Answer`` refused this way may be
-    retried once the park it races has landed — recording an answer is idempotent.
+    refusal (e.g. to HTTP 409) without string-matching.
     """
 
     def __init__(self, state: str, command: Command) -> None:
@@ -91,20 +79,15 @@ class InvalidTransition(Exception):
 class Transition(Protocol):
     """One row of a router's transition table.
 
-    A row matches on two axes, deliberately split: ``applies`` is a pure predicate over the
-    command alone, and ``states`` declares — as data, not code — which observed states the row
-    accepts (``None`` accepts every state). The split is what lets the router skip the state
-    read entirely when no candidate row declared one, and it leaves nothing to forget: a
-    predicate never sees an unobserved state, so it cannot silently mis-compare one.
-
-    Raising :class:`~semora_store.Contended` from ``apply`` is a hand-off, not a failure: the
-    router offers the command to the next matching row, and re-raises only when no row is left.
+    ``applies`` is a pure predicate over the command alone, and ``states`` declares — as data —
+    which observed states the row accepts (``None`` accepts every state without forcing an
+    observation). Raising `Contended` from ``apply`` is a hand-off: the router offers the command
+    to the next matching row, and re-raises only when no row is left.
     """
 
     states: ClassVar[frozenset[str] | None]
-    """Observed states this row accepts; ``None`` accepts all without forcing an observation."""
 
-    def applies(self, command: "Command") -> bool:
+    def applies(self, command: Command) -> bool:
         """Whether this transition accepts ``command``, before any state is observed."""
         ...
 
@@ -112,24 +95,18 @@ class Transition(Protocol):
         self,
         runtime: Any,
         run_id: Any,
-        agent: Agent,
-        command: "Command",
+        agent: Any,
+        command: Command,
         state: str | None,
         *,
         controls: Any = None,
         **options: Any,
-    ) -> dict[str, Any]:
-        """Execute the transition through the runtime's public primitives.
-
-        ``state`` is the router's observation, or ``None`` when no candidate row required one —
-        a row that needs it then reads fresh, which is the better observation for an error
-        anyway. ``runtime`` is an ``AgentRuntime``, typed loosely because the assembly layer
-        must not import the core it assembles.
-        """
+    ) -> Any:
+        """Execute the transition through the runtime's public primitives."""
         ...
 
 
-_PARKED = frozenset({"waiting", "switching", "resuming"})
+_PARKED = frozenset({"waiting", "resuming"})
 """Continuation states a suspension can leave behind; everything else is unparked."""
 
 
@@ -139,7 +116,7 @@ class StartRun:
 
     states: ClassVar[frozenset[str] | None] = None
 
-    def applies(self, command: "Command") -> bool:
+    def applies(self, command: Command) -> bool:
         """A prompt always may try to start; ``run`` itself owns the parked-run admission."""
         return isinstance(command, Prompt)
 
@@ -147,25 +124,23 @@ class StartRun:
         self,
         runtime: Any,
         run_id: Any,
-        agent: Agent,
-        command: "Command",
+        agent: Any,
+        command: Command,
         state: str | None,
         *,
         controls: Any = None,
         **options: Any,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Run one attempt with the prompt as its input."""
         assert isinstance(command, Prompt)
-        outcome: dict[str, Any] = await runtime.run(
+        return await runtime.run(
             run_id,
             agent,
             command.text,
             prompt_id=command.prompt_id,
-            input_mode=command.input_mode,
             controls=controls,
             **options,
         )
-        return outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,7 +153,7 @@ class QueueSteer:
 
     states: ClassVar[frozenset[str] | None] = None
 
-    def applies(self, command: "Command") -> bool:
+    def applies(self, command: Command) -> bool:
         """Any prompt can queue; only the hand-off order decides when this row is reached."""
         return isinstance(command, Prompt)
 
@@ -186,20 +161,17 @@ class QueueSteer:
         self,
         runtime: Any,
         run_id: Any,
-        agent: Agent,
-        command: "Command",
+        agent: Any,
+        command: Command,
         state: str | None,
         *,
         controls: Any = None,
         **options: Any,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Enqueue the prompt for the lease holder and report the durable input id."""
         assert isinstance(command, Prompt)
         item = await runtime.submit(
-            run_id,
-            PendingInput("user_prompt", HumanMessage(command.text), command.prompt_id),
-            input_mode=command.input_mode,
-            conversation_id=options.get("conversation_id"),
+            run_id, PendingInput("user_prompt", UserPromptPart(command.text), command.prompt_id)
         )
         return {"type": "enqueued", "input_id": item.origin_id}
 
@@ -210,7 +182,7 @@ class ResumeApproval:
 
     states: ClassVar[frozenset[str] | None] = None
 
-    def applies(self, command: "Command") -> bool:
+    def applies(self, command: Command) -> bool:
         """An answer is offered in any state; resume validates the pending id durably."""
         return isinstance(command, Answer)
 
@@ -218,27 +190,24 @@ class ResumeApproval:
         self,
         runtime: Any,
         run_id: Any,
-        agent: Agent,
-        command: "Command",
+        agent: Any,
+        command: Command,
         state: str | None,
         *,
         controls: Any = None,
         **options: Any,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Resume the parked call, mapping a missing park to ``InvalidTransition``."""
         assert isinstance(command, Answer)
         try:
-            outcome: dict[str, Any] = await runtime.resume(
+            return await runtime.resume(
                 run_id, command.pending_id, command.payload, agent, controls=controls, **options
             )
         except LookupError as undecided:
             if isinstance(undecided, KeyError):
                 raise
-            # Unobserved until now, so read fresh — an error should name the state at failure
-            # time, not a snapshot from before the attempt.
             named = state if state is not None else await runtime.state(run_id)
             raise InvalidTransition(named, command) from undecided
-        return outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,7 +216,7 @@ class RecoverInterrupted:
 
     states: ClassVar[frozenset[str] | None] = _PARKED
 
-    def applies(self, command: "Command") -> bool:
+    def applies(self, command: Command) -> bool:
         """Only a parked continuation has a transcript round to finish."""
         return isinstance(command, Recover)
 
@@ -255,19 +224,16 @@ class RecoverInterrupted:
         self,
         runtime: Any,
         run_id: Any,
-        agent: Agent,
-        command: "Command",
+        agent: Any,
+        command: Command,
         state: str | None,
         *,
         controls: Any = None,
         **options: Any,
-    ) -> dict[str, Any]:
-        """Finish the interrupted round without replaying its model turn."""
+    ) -> Any:
+        """Finish the parked round without replaying its model turn."""
         history = await runtime.committed_history(run_id, options.get("conversation_id"))
-        outcome: dict[str, Any] = await runtime.recover(
-            run_id, history, agent, controls=controls, **options
-        )
-        return outcome
+        return await runtime.recover(run_id, agent, history, controls=controls, **options)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,13 +243,12 @@ class ReplayJournal:
     A round that died before parking never reached the transcript — its assistant turn lives
     only in the step journal, so recovery is a ``run()`` whose durable model step replays that
     turn and whose effects dedup on the ledger. The same state also names a merely-busy run;
-    the lease attempt inside ``run`` is what tells them apart, surfacing ``Contended`` for the
-    live one.
+    the lease attempt inside ``run`` is what tells them apart, surfacing ``Contended``.
     """
 
     states: ClassVar[frozenset[str] | None] = frozenset({"interrupted"})
 
-    def applies(self, command: "Command") -> bool:
+    def applies(self, command: Command) -> bool:
         """An open run record with nothing parked is the journal-replay case."""
         return isinstance(command, Recover)
 
@@ -291,30 +256,21 @@ class ReplayJournal:
         self,
         runtime: Any,
         run_id: Any,
-        agent: Agent,
-        command: "Command",
+        agent: Any,
+        command: Command,
         state: str | None,
         *,
         controls: Any = None,
         **options: Any,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Re-run the attempt with no new input; the journal supplies the interrupted turn."""
-        outcome: dict[str, Any] = await runtime.run(run_id, agent, "", controls=controls, **options)
-        return outcome
+        return await runtime.run(run_id, agent, None, controls=controls, **options)
 
 
 class CommandRouter:
     """An ordered transition table over the runtime's execution primitives.
 
-    The router filters rows by command, observes the run's durable state at most once — and
-    not at all when no candidate row declared ``states`` — then offers the command to each
-    matching row in order. ``Contended`` from a row is a hand-off to the next matching row —
-    that is how :class:`StartRun` falls back to :class:`QueueSteer` — and propagates when no
-    row remains, so the host can retry. A command no row accepts raises
-    :class:`InvalidTransition` with the observed state.
-
-    This is assembly, not core: reorder the rows, drop one to remove exactly its behavior, or
-    add your own ``Transition``.
+    Reorder the rows, drop one to remove exactly its behavior, or add your own ``Transition``.
     """
 
     def __init__(self, *transitions: Transition) -> None:
@@ -325,24 +281,16 @@ class CommandRouter:
         self,
         runtime: Any,
         run_id: Any,
-        agent: Agent,
-        command: "Command",
+        agent: Any,
+        command: Command,
         *,
         controls: Any = None,
         **options: Any,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Route one command through the table. ``runtime`` is an ``AgentRuntime``."""
-        # Commands are closed on purpose while routing stays open: the vocabulary mirrors the
-        # runtime's primitives one-to-one, so a new command type is a core change, not assembly.
-        # If host-defined commands are ever wanted, this guard is the one extension point —
-        # consult the table first and reserve TypeError for a command no row claimed.
         if not isinstance(command, Prompt | Answer | Recover):
             raise TypeError(f"not a dispatch command: {command!r}")
         candidates = [row for row in self._transitions if row.applies(command)]
-        # Observed lazily, because this is a framework and the host's call frequency is not
-        # ours to assume: the state is read only when a candidate row declared `states` or a
-        # refusal needs its precise name. A Prompt or Answer routed by command alone costs no
-        # reads here at all.
         state: str | None = None
         if any(row.states is not None for row in candidates):
             state = await runtime.state(run_id)
@@ -364,12 +312,7 @@ class CommandRouter:
 
 
 def default_router() -> CommandRouter:
-    """The preset behind ``AgentRuntime.dispatch``.
-
-    Decomposable on purpose: without :class:`QueueSteer` a busy run surfaces ``Contended``,
-    without :class:`RecoverInterrupted`/:class:`ReplayJournal` a ``Recover`` is refused, and a
-    host's own transitions slot in anywhere in the order.
-    """
+    """The preset behind ``AgentRuntime.dispatch``."""
     return CommandRouter(
         ResumeApproval(),
         RecoverInterrupted(),

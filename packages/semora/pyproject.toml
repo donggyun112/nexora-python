@@ -4,9 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "semora"
-version = "0.2.0"
-description = "Durable multi-agent runtime for Python."
-readme = "README.md"
+version = "0.3.0"
+description = "Durable execution controls, approval revalidation and effect recovery for Pydantic AI agents."
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "donggyun112" }]
@@ -17,43 +16,23 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Typing :: Typed",
 ]
-urls = { Homepage = "https://github.com/donggyun112/semora", Source = "https://github.com/donggyun112/semora", Changelog = "https://github.com/donggyun112/semora/blob/main/CHANGELOG.md" }
 dependencies = [
-  "langchain-core>=1,<2",
-  "loguru>=0.7,<1",
-  "semora-llm==0.2.0",
-  "semora-store==0.2.0",
+  "pydantic-ai-slim>=2.38,<3",
+  "semora-store==0.3.0",
 ]
-# The core: contracts, controls, tool execution, the orchestrator, the engine, and the facade over
-# them. Those are layers of one thing rather than separate products — they share a dependency
-# footprint and nobody installs them apart — so they are subpackages here.
-# `tests/test_packaging.py` keeps them layered, which is the job separate manifests used to do.
 
 [project.optional-dependencies]
-postgres = ["semora-store-pg==0.2.0"]
-permissions = ["semora-permissions==0.2.0"]
-ui = ["semora-ui==0.2.0"]
-fork = ["semora-fork==0.2.0"]
-# The coding agent's tools, prompts and policies. A product over the core, not part of it: the
-# core's promise is that an effect happens once, and nothing in this extra decides that.
-coding = ["semora-coding==0.2.0"]
-# Chat models stay LangChain's. These extras only install the provider adapter;
-# `from langchain_openai import ChatOpenAI` is still how a caller constructs one.
-openai = ["langchain-openai>=1,<2"]
-anthropic = ["langchain-anthropic>=1,<2"]
-google = ["langchain-google-genai>=4,<5"]
-xai = ["langchain-xai>=1,<2"]
-# OpenRouter speaks the OpenAI wire. Same adapter, different base URL.
-openrouter = ["langchain-openai>=1,<2"]
+postgres = ["semora-store-pg==0.3.0"]
+openai = ["pydantic-ai-slim[openai]>=2.38,<3"]
+
+[project.urls]
+Homepage = "https://github.com/donggyun112/semora"
+Source = "https://github.com/donggyun112/semora"
+Changelog = "https://github.com/donggyun112/semora/blob/main/CHANGELOG.md"
+
+[tool.uv.sources]
+semora-store = { workspace = true }
+semora-store-pg = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/semora"]
-
-[tool.uv.sources]
-semora-coding = { workspace = true }
-semora-fork = { workspace = true }
-semora-llm = { workspace = true }
-semora-permissions = { workspace = true }
-semora-store = { workspace = true }
-semora-store-pg = { workspace = true }
-semora-ui = { workspace = true }

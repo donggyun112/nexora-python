@@ -1,3 +1,17 @@
+# 0.3.0 — Unreleased
+
+- Continue Semora as a Pydantic AI execution extension, importing the `pydantic-ai-runtime` implementation under the canonical package names.
+- Retire the LangChain engine and the five auxiliary distributions from active development; retain legacy Git history through `156e4b1`.
+- Keep ledger/lease/fencing, approval revalidation, seven policy controls, transcripts and dispatch.
+- Default recovery of unreported effects to `Indeterminate` (`retry_running=False`).
+- Preserve runtime control signals through tool execution and replay journal projections without exposing raw results.
+- Hold the run lease across approval updates and finalization so concurrent answers cannot overwrite each other.
+- Route `@tool(requires_approval=True)` through the `pre_tool_use` gate so it parks with a routable `pending_id` instead of failing the run.
+- `Agent.run_sync` works: a forwarded `output_type` no longer collides with the parked-round output type. A dispatch that only queues a prompt leaves `Agent.last` untouched.
+- Breaking APIs and native message types: see [migration](docs/MIGRATION-0.3.md).
+
+---
+
 # Changelog
 
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and

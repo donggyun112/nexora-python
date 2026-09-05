@@ -1,16 +1,16 @@
-"""Typed control points with point-specific composition rules."""
+"""The composition rules, one per control point. Pure: no model, no store."""
 
-from typing import Any
+from collections.abc import Sequence
 
 import pytest
-from langchain_core.messages import HumanMessage
+from pydantic_ai.messages import ModelRequestPart, ToolCallPart, UserPromptPart
 from semora.contracts import PendingInput
 from semora.controls import (
     Continue,
     ControlPlane,
-    Controls,
     Ctx,
     Deny,
+    FinishPolicy,
     Halt,
     Ingress,
     Journal,
@@ -19,201 +19,160 @@ from semora.controls import (
     ResumeInput,
     Steering,
     Suspend,
-    Suspending,
 )
 
-from tests.test_loop import a_call
-
-CTX = Ctx(turn=0)
-CALL = a_call("c1", "deploy")
+CTX = Ctx(turn=1)
+CALL = ToolCallPart("write", {"path": "a"}, tool_call_id="c1")
 
 
-def gate(answer: Any, seen: list[str], name: str) -> Any:
-    async def stage(ctx: Ctx, call: Any) -> Any:
-        seen.append(name)
-        return answer
-
-    return stage
+def text(item: PendingInput) -> str:
+    assert isinstance(item.part, UserPromptPart)
+    return str(item.part.content)
 
 
-# ── on_inputs: screens chain, any may halt ───────────────────────────────
-
-INPUT = PendingInput("user_prompt", HumanMessage("ssn is 123"))
+def texts(parts: Sequence[ModelRequestPart]) -> list[str]:
+    return [str(p.content) for p in parts if isinstance(p, UserPromptPart)]
 
 
 async def test_screens_chain_each_seeing_the_previous_rewrite() -> None:
-    """A pipeline, not a vote: masking only works if later screens never see the original."""
+    async def upper(ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput]:
+        return [PendingInput(i.kind, UserPromptPart(text(i).upper())) for i in inputs]
 
-    def stamp(tag: str) -> Any:
-        async def screen(ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput]:
-            return [
-                PendingInput(i.kind, HumanMessage(f"{i.message.content}|{tag}"), i.origin_id)
-                for i in inputs
-            ]
+    async def exclaim(ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput]:
+        return [PendingInput(i.kind, UserPromptPart(text(i) + "!")) for i in inputs]
 
-        return screen
-
-    admitted = await Ingress(stamp("a"), stamp("b"))(CTX, [INPUT])
-
-    assert isinstance(admitted, list)
-    assert [str(i.message.content) for i in admitted] == ["ssn is 123|a|b"]
+    out = await Ingress(upper, exclaim)(CTX, [PendingInput("user", UserPromptPart("hi"))])
+    assert not isinstance(out, Halt)
+    assert text(out[0]) == "HI!"
 
 
 async def test_a_halting_screen_is_the_last_one_asked() -> None:
-    seen: list[str] = []
+    asked: list[str] = []
 
-    def screen(outcome: Any, name: str) -> Any:
-        async def stage(ctx: Ctx, inputs: Any) -> Any:
-            seen.append(name)
-            return outcome
+    async def halt(ctx: Ctx, inputs: list[PendingInput]) -> Halt:
+        asked.append("halt")
+        return Halt("policy")
 
-        return stage
+    async def later(ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput]:
+        asked.append("later")
+        return inputs
 
-    chain = Ingress(screen(Halt("policy"), "blocks"), screen([], "never"))
-
-    assert await chain(CTX, [INPUT]) == Halt("policy")
-    assert seen == ["blocks"]
-
-
-async def test_nothing_registered_admits_inputs_unchanged() -> None:
-    inputs = [INPUT]
-
-    assert await Ingress()(CTX, inputs) == inputs
-    assert await ControlPlane().on_inputs(CTX, inputs) == inputs
-
-
-# ── pre_tool_use: deny wins, allow decides nothing ───────────────────────
+    assert await Ingress(halt, later)(CTX, []) == Halt("policy")
+    assert asked == ["halt"]
 
 
 async def test_a_deny_beats_a_suspend_whatever_the_order() -> None:
-    seen: list[str] = []
-    chain = Permissions(
-        gate(Suspend({"pending_id": "c1"}), seen, "asks"),
-        gate(Deny({"type": "error", "message": "no"}), seen, "denies"),
-    )
+    async def deny(ctx: Ctx, call: ToolCallPart) -> Deny:
+        return Deny({"type": "error", "message": "no"})
 
-    assert await chain(CTX, CALL) == Deny({"type": "error", "message": "no"})
-    assert seen == ["asks", "denies"]
+    async def ask(ctx: Ctx, call: ToolCallPart) -> Suspend:
+        return Suspend({"pending_id": "p1"})
+
+    assert isinstance(await Permissions(ask, deny)(CTX, CALL), Deny)
+    assert isinstance(await Permissions(deny, ask)(CTX, CALL), Deny)
 
 
 async def test_an_allow_does_not_short_circuit() -> None:
-    """The load-bearing half: a permissive stage is an opinion, and the rules below still run."""
-    seen: list[str] = []
-    chain = Permissions(
-        gate(Continue(), seen, "hook"),
-        gate(Deny({"type": "error", "message": "rule"}), seen, "rules"),
-        gate(Continue(), seen, "after"),
-    )
+    asked: list[str] = []
 
-    assert await chain(CTX, CALL) == Deny({"type": "error", "message": "rule"})
-    assert seen == ["hook", "rules"]  # the deny stopped it, the allow did not
+    async def allow(ctx: Ctx, call: ToolCallPart) -> Continue:
+        asked.append("allow")
+        return Continue()
+
+    async def deny(ctx: Ctx, call: ToolCallPart) -> Deny:
+        asked.append("deny")
+        return Deny("no")
+
+    assert isinstance(await Permissions(allow, deny)(CTX, CALL), Deny)
+    assert asked == ["allow", "deny"]
 
 
 async def test_a_remembered_suspend_is_the_answer_when_nothing_denies() -> None:
-    seen: list[str] = []
-    chain = Permissions(
-        gate(Suspend({"pending_id": "c1"}), seen, "asks"),
-        gate(Continue(), seen, "allows"),
-    )
+    async def ask(ctx: Ctx, call: ToolCallPart) -> Suspend:
+        return Suspend({"pending_id": "p1"})
 
-    assert await chain(CTX, CALL) == Suspend({"pending_id": "c1"})
-    assert seen == ["asks", "allows"]
+    async def allow(ctx: Ctx, call: ToolCallPart) -> Continue:
+        return Continue()
 
-
-async def test_nothing_registered_lets_the_call_through() -> None:
-    assert await Permissions()(CTX, CALL) == Continue()
-
-
-# ── post_tool_use: all run, a raise stops the run ──────────────────────────
+    assert await Permissions(ask, allow)(CTX, CALL) == Suspend({"pending_id": "p1"})
 
 
 async def test_every_writer_runs_and_a_raise_is_fail_closed() -> None:
-    written: list[str] = []
+    seen: list[str] = []
 
-    async def ok(ctx: Ctx, call: Any, result: Any) -> None:
-        written.append("ok")
+    async def first(ctx: Ctx, call: ToolCallPart, result: object) -> None:
+        seen.append("first")
 
-    async def broken(ctx: Ctx, call: Any, result: Any) -> None:
-        raise RuntimeError("disk full")
+    async def broken(ctx: Ctx, call: ToolCallPart, result: object) -> None:
+        raise OSError("journal is full")
 
-    async def never(ctx: Ctx, call: Any, result: Any) -> None:
-        written.append("never")
+    async def third(ctx: Ctx, call: ToolCallPart, result: object) -> None:
+        seen.append("third")
 
-    with pytest.raises(RuntimeError, match="disk full"):
-        await Journal(ok, broken, never)(CTX, CALL, {"type": "text", "text": "x"})
-
-    assert written == ["ok"]
-
-
-# ── before_model: steers accumulate in order ─────────────────────────────────
+    with pytest.raises(OSError):
+        await Journal(first, broken, third)(CTX, CALL, "ok")
+    assert seen == ["first"]
 
 
 async def test_steers_accumulate_in_arrival_order() -> None:
-    a, b = HumanMessage("first"), HumanMessage("second")
+    async def one(ctx: Ctx) -> Proceed:
+        return Proceed([UserPromptPart("one")])
 
-    async def one(ctx: Ctx) -> Any:
-        return Proceed([a])
+    async def two(ctx: Ctx) -> Proceed:
+        return Proceed([UserPromptPart("two")])
 
-    async def two(ctx: Ctx) -> Any:
-        return Proceed([b])
-
-    action = await Steering(one, two)(CTX)
-
-    assert isinstance(action, Proceed)
-    assert action.steers == [a, b]
+    decision = await Steering(one, two)(CTX)
+    assert isinstance(decision, Proceed)
+    assert texts(decision.steers) == ["one", "two"]
 
 
 async def test_a_halt_stops_before_the_later_sources() -> None:
-    seen: list[str] = []
+    asked: list[str] = []
 
-    async def stops(ctx: Ctx) -> Any:
-        seen.append("stops")
+    async def stop(ctx: Ctx) -> Halt:
+        asked.append("stop")
         return Halt("policy")
 
-    async def never(ctx: Ctx) -> Any:
-        seen.append("never")
+    async def later(ctx: Ctx) -> Proceed:
+        asked.append("later")
         return Proceed()
 
-    assert await Steering(stops, never)(CTX) == Halt("policy")
-    assert seen == ["stops"]
+    assert await Steering(stop, later)(CTX) == Halt("policy")
+    assert asked == ["stop"]
 
 
-# ── on_suspend: all must succeed before it is announced ──────────────────────
+async def test_a_gate_cannot_relabel_an_ending_it_did_not_object_to() -> None:
+    async def fine(ctx: Ctx, reason: str) -> Halt:
+        return Halt("policy")
+
+    assert await FinishPolicy(fine)(CTX, "completed") == Halt("completed")
 
 
-async def test_a_failed_persist_prevents_the_announcement() -> None:
-    async def broken(*args: Any) -> None:
-        raise RuntimeError("no database")
+async def test_vetoes_accumulate_their_steering() -> None:
+    async def cite(ctx: Ctx, reason: str) -> Proceed:
+        return Proceed([UserPromptPart("cite")])
 
-    with pytest.raises(RuntimeError, match="no database"):
-        await Suspending(broken)(CTX, CALL, {"pending_id": "c1"}, [], [])
+    async def test(ctx: Ctx, reason: str) -> Proceed:
+        return Proceed([UserPromptPart("test")])
 
-
-# ── the plane ────────────────────────────────────────────────────────────────
+    decision = await FinishPolicy(cite, test)(CTX, "completed")
+    assert isinstance(decision, Proceed)
+    assert texts(decision.steers) == ["cite", "test"]
 
 
 async def test_an_empty_plane_lets_everything_through() -> None:
     plane = ControlPlane()
-
-    assert isinstance(plane, Controls)
+    inputs = [PendingInput("user", UserPromptPart("hi"))]
+    assert await plane.on_inputs(CTX, inputs) == inputs
     assert await plane.before_model(CTX) == Proceed()
     assert await plane.pre_tool_use(CTX, CALL) == Continue()
-    resume = ResumeInput(
-        answer={"type": "text", "text": "approved"},
-        request={"type": "suspend", "pending_id": "c1"},
-        suspended_rules_version="v1",
-        current_rules_version="v1",
-    )
-    assert await plane.on_resume(CTX, CALL, resume) == Continue()
-    await plane.post_tool_use(CTX, CALL, {"type": "text", "text": "x"})
-    await plane.on_suspend(CTX, CALL, {"pending_id": "c1"}, [], [])
+    assert await plane.before_finish(CTX, "completed") == Halt("completed")
 
 
 async def test_a_denied_human_answer_cannot_be_lifted_by_the_resume_handler() -> None:
-    async def allow(ctx: Ctx, call: Any, resume: ResumeInput) -> Any:
+    async def lift(ctx: Ctx, call: ToolCallPart, resume: ResumeInput) -> Continue:
         return Continue()
 
-    answer = {"type": "error", "message": "rejected"}
-    resume = ResumeInput(answer, {"pending_id": "c1"}, "v1", "v2")
-
-    assert await ControlPlane(on_resume=allow).on_resume(CTX, CALL, resume) == Deny(answer)
+    plane = ControlPlane(on_resume=lift)
+    resume = ResumeInput({"type": "error", "message": "no"}, {"pending_id": "p1"}, "v1", "v1")
+    assert await plane.on_resume(CTX, CALL, resume) == Deny({"type": "error", "message": "no"})

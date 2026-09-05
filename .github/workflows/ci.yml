@@ -52,13 +52,13 @@ jobs:
       - name: Type-check
         run: uv run mypy
 
-      # The `glob` builtin requires ripgrep rather than falling back, so without it on PATH its
-      # test skips and the runner reports a pass for a dependency it never exercised.
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
+      - name: Check formatting
+        run: uv run ruff format --check .
 
       - name: Test
         env:
           SEMORA_TEST_DSN: postgresql://postgres:postgres@127.0.0.1:5432/semora_test
         run: uv run pytest
 
+      - name: Build all three distributions
+        run: uv build --all-packages

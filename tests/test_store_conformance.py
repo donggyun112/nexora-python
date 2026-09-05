@@ -8,10 +8,11 @@ in its own docstring: *the semantics are tested through `MemorySteps` … but no
 connects to Postgres.* This file is what that sentence was waiting for.
 
 So every property here runs over both `StepLog` implementations and both `Transcript` ones. The
-Postgres half is skipped unless `SEMORA_TEST_DSN` is set, so **it is still unverified in an ordinary
-run** — but the skip is visible, which is the point. Point it at a scratch database to close it:
+Postgres half is skipped unless `SEMORA_TEST_DSN` is set, so **it is still unverified
+in an ordinary run** — but the skip is visible, which is the point. Point it at a scratch database:
 
-    SEMORA_TEST_DSN=postgresql://localhost/semora_test uv run pytest tests/test_store_conformance.py
+    export SEMORA_TEST_DSN=postgresql://localhost/runtime_test
+    uv run pytest tests/test_store_conformance.py
 
 Divergences it was written to catch, all now fixed:
 
@@ -47,7 +48,12 @@ from semora_store import (
     StepLog,
     Transcript,
 )
-from semora_store_pg import SCHEMA, TRANSCRIPT_SCHEMA, PostgresSteps, PostgresTranscript
+from semora_store_pg import (
+    SCHEMA,
+    TRANSCRIPT_SCHEMA,
+    PostgresSteps,
+    PostgresTranscript,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -327,9 +333,7 @@ async def test_a_transition_commits_steps_and_inputs_together(steps: StepLog) ->
     """The atomicity that keeps a cancellation ahead of its replacement across a crash."""
     inserted = await steps.commit_transition(
         "run-1",
-        ExecutionTransition(
-            controls={"turn": {"n": 1}}, inputs=(("in-1", {"text": "one"}),)
-        ),
+        ExecutionTransition(controls={"turn": {"n": 1}}, inputs=(("in-1", {"text": "one"}),)),
     )
 
     assert inserted == {"in-1"}

@@ -1,1152 +1,706 @@
-"""Public facade over the plain planner with optional runtime orchestration."""
+"""Run a Pydantic AI agent under a run lease with the execution boundary attached.
 
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+The runtime owns what happens between attempts: the lease, parking a suspended round durably,
+routing a person's answer back to it, queuing input for a live worker, and finishing an
+interrupted round from what the dead worker committed.
+"""
+
+import asyncio
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
+from uuid import uuid4
 
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage, messages_to_dict
+from pydantic import TypeAdapter
+from pydantic_ai import (
+    Agent,
+    DeferredToolRequests,
+    DeferredToolResults,
+    ModelMessagesTypeAdapter,
+    ToolApproved,
+    ToolDenied,
+)
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequestPart,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.run import AgentRunResult
+from pydantic_core import to_jsonable_python
 from semora_store import (
+    Contended,
     ExecutionContext,
     ExecutionStore,
+    ExecutionTransition,
     Transcript,
 )
 
-from .background import BackgroundResult
-from .contracts import (
-    Agent,
-    BaseMessage,
-    CompactContext,
-    EventStream,
-    EventType,
-    InvokeModel,
-    ModelStreamFactory,
-    ObservationEventSink,
-    OnModelFailure,
-    PendingInput,
-    RuntimeEvents,
-    Tools,
-)
-from .contracts.types import Aborted, Emit, OnSuspend
-from .controls import Controls, Ctx
+from .contracts import AgentSuspended, PendingInput, StopReason
+from .controls import Controls, Ctx, controls_of
 from .dispatch import Command, default_router
-from .driver import drive
-from .engines.plain import react_loop
-from .history import (
-    continuation_cursor,
-    decode_continuation,
-    decode_cursor_continuation,
-    suspension_result_message,
-)
-from .orchestration import (
-    DurableRuntimeOrchestrator,
-    RuntimeOrchestrationContext,
-    RuntimeOrchestrationSession,
-    RuntimeOrchestrator,
-    _DurableRuntimeSession,
-    _execute_direct,
-)
-from .orchestrator import AgentSuspended, Orchestrator, StepLog, require_pending_ids
-from .subagents import Deliver
-from .transcript import TranscriptWriter, active_branch, messages_at, messages_of
-from .workspace import ContextualTools, ToolContext, WorkspaceProvider, WorkspaceSeed
+from .effects import PENDING_ROUND, Effects, Resumed
+from .transcript import Branch, messages_of
 
-__all__ = ["AgentRuntime", "run"]
+__all__ = ["ACTIVE_SUSPENSION", "AgentRuntime", "Outcome", "unanswered_tool_calls"]
 
-OnAgentEvent = Callable[[dict[str, Any]], Awaitable[None]]
-InputMode = Literal["interactive", "headless"]
+ACTIVE_SUSPENSION = "agent:active-suspension"
+"""Control key holding the run-level continuation of a parked round."""
 
-_CANCELLED = {
-    "type": "error",
-    "message": "cancelled by a newer user request",
-    "code": "cancelled",
-}
+_PART: TypeAdapter[ModelRequestPart] = TypeAdapter(ModelRequestPart)
 
 
-async def _invoke_direct(
-    step: str, factory: ModelStreamFactory
-) -> AsyncIterator[Any]:
-    """Expose the loop's direct provider call as a wrappable invocation boundary."""
-    del step
-    async for chunk in factory():
-        yield chunk
+def suspend_key(call_id: str) -> str:
+    """Per-call index into the one run-level continuation."""
+    return f"suspend:{call_id}"
 
 
-@dataclass(slots=True)
-class _RuntimeTranscript:
-    """Keep one runtime attempt aligned with an append-only conversation branch."""
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """The terminal state of one attempt: what the model said and why the run stopped.
 
-    writer: TranscriptWriter
-    messages: list[BaseMessage]
-    uuids: list[str]
+    A parked attempt is an outcome too, with `stop_reason == "suspended"` and the undecided
+    `(pending_id, tool_call_id)` pairs in `pending`, in model order.
+    """
 
-    @classmethod
-    async def open(
-        cls,
-        store: Transcript,
-        conversation_id: str,
-        run_id: str,
-        *,
-        context: ExecutionContext,
-    ) -> "_RuntimeTranscript":
-        """Restore a run's active branch and continue writing from its tip."""
-        store = store.for_execution(context)
-        entries = await store.read(conversation_id)
-        branch = active_branch(entries)
-        message_entries = [entry for entry in branch if isinstance(entry.get("message"), dict)]
-        restored = messages_of(entries)
-        writer = TranscriptWriter(
-            store,
-            conversation_id=conversation_id,
-            run_id=run_id,
-            parent_uuid=branch[-1]["uuid"] if branch else None,
-        )
-        await writer.opened()
-        return cls(writer, restored, [str(entry["uuid"]) for entry in message_entries])
+    output: Any
+    stop_reason: StopReason
+    result: AgentRunResult[Any] | None = None
+    pending: tuple[tuple[str, str], ...] = ()
 
-    async def replace(self, desired: list[BaseMessage]) -> None:
-        """Move to the common prefix and append the desired model-visible history."""
-        common = 0
-        current = messages_to_dict(self.messages)
-        wanted = messages_to_dict(desired)
-        while common < min(len(current), len(wanted)) and current[common] == wanted[common]:
-            common += 1
-        if common < len(current):
-            await self.writer.rewind(self.uuids[common - 1] if common else None)
-            del self.messages[common:]
-            del self.uuids[common:]
-        await self.append(desired[common:])
+    @property
+    def suspended(self) -> bool:
+        """Whether the attempt parked for a person's answer."""
+        return self.stop_reason == "suspended"
 
-    async def append(self, messages: list[BaseMessage]) -> None:
-        """Append exact LangChain messages and retain their resulting branch coordinates."""
-        for message in messages:
-            await self.writer.record(message)
-            self.messages.append(message)
-            assert self.writer.parent_uuid is not None
-            self.uuids.append(self.writer.parent_uuid)
+    @property
+    def pending_id(self) -> str | None:
+        """The first undecided request's external id, or `None` when nothing is parked."""
+        return self.pending[0][0] if self.pending else None
+
+    def all_messages(self) -> list[ModelMessage]:
+        """The model-visible history at the end of the attempt."""
+        return self.result.all_messages() if self.result is not None else []
 
 
 class AgentRuntime:
-    """Run the plain planner directly or through an attached orchestrator."""
+    """Attach a ledger and a transcript to agent runs. Without them a run is Pydantic AI's."""
 
     def __init__(
         self,
-        *,
         execution_store: ExecutionStore | None = None,
-        store: StepLog | None = None,
-        orchestrator: RuntimeOrchestrator | None = None,
-        emit: Emit | None = None,
-        event_sink: ObservationEventSink | None = None,
-        owner: str = "local",
-        lease_ttl: float = 60.0,
+        *,
         transcript: Transcript | None = None,
-        workspace_provider: WorkspaceProvider | None = None,
-        workspace_manifest: Mapping[str, Any] | None = None,
-        workspace_seed_dirs: Sequence[WorkspaceSeed] = (),
-        model_failure_policy: OnModelFailure | None = None,
-        compact_context: CompactContext | None = None,
+        lease_ttl: float = 60.0,
+        retry_running: bool = False,
     ) -> None:
-        """Initialize runtime collaborators and optional durable compatibility wiring."""
-        if execution_store is not None and store is not None:
-            raise TypeError("pass either execution_store or the compatibility store argument")
-        configured_execution_store = execution_store if execution_store is not None else store
-        if configured_execution_store is not None and orchestrator is not None:
-            raise TypeError("pass either execution_store or orchestrator, not both")
-        if emit is not None and event_sink is not None:
-            raise TypeError("pass either emit or event_sink, not both")
-        self._runtime_orchestrator = (
-            orchestrator
-            if orchestrator is not None
-            else (
-                DurableRuntimeOrchestrator(
-                    configured_execution_store, owner=owner, lease_ttl=lease_ttl
-                )
-                if configured_execution_store is not None
-                else None
-            )
-        )
-        self._emit = emit
-        self._event_sink = event_sink
-        self._transcript = transcript
-        self._workspace_provider = workspace_provider
-        self._workspace_manifest = workspace_manifest
-        self._workspace_seed_dirs = tuple(workspace_seed_dirs)
-        self._model_failure_policy = model_failure_policy
-        self._compact_context = compact_context
-        self.events = RuntimeEvents(emit)
+        """Configure durability for every run this runtime drives.
 
-    def background_sink(
-        self, run_id: str | ExecutionContext, *, conversation_id: str | None = None
-    ) -> Deliver:
-        """Return a callback that submits background results to a run's input queue."""
-
-        async def deliver(result: BackgroundResult) -> None:
-            arrival = PendingInput(
-                "background_result", HumanMessage(result.as_message()), result.task_id
-            )
-            await self.submit(run_id, arrival, conversation_id=conversation_id)
-
-        return deliver
+        Args:
+            execution_store: The ledger. `None` records nothing: a crash may run a tool again,
+                and a suspension has nowhere to park.
+            transcript: The committed conversation. Required by `dispatch` and `committed_history`.
+            lease_ttl: Seconds a run lease lives between renewals.
+            retry_running: Whether a step that started and never reported may run again.
+        """
+        self.store = execution_store
+        self.transcript = transcript
+        self.lease_ttl = lease_ttl
+        self.retry_running = retry_running
 
     async def run(
         self,
         run_id: str | ExecutionContext,
-        model: BaseChatModel | Agent,
-        tools: Tools | str | None = None,
-        prompt: str = "",
+        agent: Agent[Any, Any],
+        prompt: str | None = None,
         *,
         controls: Controls | None = None,
-        on_event: OnAgentEvent | None = None,
-        on_suspend: OnSuspend | None = None,
         rules_version: str = "",
         prompt_id: str | None = None,
-        input_mode: InputMode = "interactive",
-        model_identity: str | None = None,
         conversation_id: str | None = None,
-        **engine_options: Any,
-    ) -> dict[str, Any]:
-        """Run one turn directly, or attach the configured orchestration session."""
-        model, tools, prompt = _resolve_agent(model, tools, prompt, engine_options)
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deps: Any = None,
+        capabilities: Sequence[AbstractCapability[Any]] = (),
+        _resumed: dict[str, Resumed] | None = None,
+        **options: Any,
+    ) -> Outcome:
+        """Drive one attempt at a run under its lease.
+
+        `options` reach Pydantic AI's `run` untouched (`model`, `usage_limits`, `model_settings`,
+        `toolsets`, `event_stream_handler`, ...), so a harness that delegates to this agent with
+        its own arguments still lands inside the boundary.
+
+        Without `message_history` the attempt continues the committed conversation. A prompt
+        aimed at a parked run is queued behind the park and the park is announced again.
+        `conversation_id` names the transcript the run belongs to; one conversation holds many
+        runs. It defaults to the run id.
+
+        Raises:
+            AgentSuspended: A gate parked the round. Answer it with `resume`.
+            Contended: Another worker holds the run's lease, or an answered continuation still
+                needs finalization. A prompt aimed at that continuation is queued before raising.
+            Indeterminate: A step started and never reported, and repeating it was not allowed.
+        """
         execution = _execution_context(run_id)
-        if execution.subject is not None:
-            supplied_subject = engine_options.get("subject")
-            if supplied_subject not in {None, "", execution.subject}:
-                raise ValueError("subject cannot differ from the trusted execution context")
-            engine_options["subject"] = execution.subject
-        context = self._orchestration_context(
-            execution,
-            conversation_id=conversation_id,
-            on_suspend=on_suspend,
-            rules_version=rules_version,
-            on_event=on_event,
-        )
-        if self._runtime_orchestrator is None:
-            return await self._run_direct(
-                execution.run_id,
-                model,
-                tools,
-                prompt,
-                controls=controls,
-                on_event=on_event,
-                prompt_id=prompt_id,
-                model_identity=model_identity,
-                conversation_id=conversation_id,
-                session=None,
-                emit=context.emit,
-                execution=execution,
-                **engine_options,
-            )
-        async with self._runtime_orchestrator.open(context) as session:
-            if not isinstance(session, _DurableRuntimeSession):
-                return await self._run_direct(
-                    execution.run_id,
-                    model,
-                    tools,
-                    prompt,
-                    controls=controls,
-                    on_event=on_event,
-                    prompt_id=prompt_id,
-                    model_identity=model_identity,
-                    conversation_id=conversation_id,
-                    session=session,
-                    emit=context.emit,
-                    execution=execution,
-                    **engine_options,
+        if self.store is not None and prompt is not None:
+            active = await self._active(execution.run_id)
+            if active is not None:
+                await self.submit(
+                    execution, PendingInput("user_prompt", UserPromptPart(prompt), prompt_id)
                 )
-            return await self._run_durable(
-                session.orchestrator,
-                model,
-                tools,
+                undecided = _undecided(active)
+                if not undecided:
+                    raise Contended(execution.run_id)
+                raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
+        async with self._lease(execution.run_id) as token:
+            return await self._attempt(
+                execution,
+                token,
+                agent,
                 prompt,
                 controls=controls,
-                on_event=on_event,
+                rules_version=rules_version,
                 prompt_id=prompt_id,
-                input_mode=input_mode,
-                model_identity=model_identity,
                 conversation_id=conversation_id,
-                **engine_options,
+                message_history=message_history,
+                deferred_tool_results=deferred_tool_results,
+                deps=deps,
+                capabilities=capabilities,
+                _resumed=_resumed,
+                **options,
             )
 
-    async def _run_durable(
+    async def _attempt(
         self,
-        orchestrator: Orchestrator,
-        model: Any,
-        tools: Tools,
-        prompt: str,
-        *,
-        controls: Controls | None,
-        on_event: OnAgentEvent | None,
-        prompt_id: str | None,
-        input_mode: InputMode,
-        model_identity: str | None,
-        conversation_id: str | None,
-        **engine_options: Any,
-    ) -> dict[str, Any]:
-        """Apply durable continuation semantics around the shared plain planner."""
-        run_id = orchestrator.run_id
-        conversation = conversation_id or run_id
-        history = engine_options.pop("history", None)
-        recover_pending = self._transcript is not None
-        incoming = PendingInput("user_prompt", HumanMessage(prompt), prompt_id) if prompt else None
-        completing: str | None = None
-        # Decoded once, before the branch, because every parked state needs the same answer
-        # and three copies of "decode, then check for None" was three chances to disagree
-        # about what a corrupt record means.
-        active = await orchestrator.active_continuation()
-        waiting = await self._decode_waiting(active, conversation, orchestrator.context)
-
-        # A run is parked in one of three states, and a new prompt means something different
-        # in each. `waiting` is the only one a prompt can change: interactively it cancels the
-        # request the run stopped on, headlessly it queues behind it. `switching`/`resuming`
-        # are a transition already committed, so a prompt just joins the queue.
-        if active is None:
-            if incoming is not None:
-                await orchestrator.enqueue_input(incoming)
-        elif waiting is None:
-            raise RuntimeError("active continuation is corrupt")
-        elif (
-            active.get("state") == "waiting"
-            and incoming is not None
-            and input_mode == "interactive"
-        ):
-            await self._cancel_and_switch(orchestrator, active, waiting, incoming)
-            # Not `if history is None`: the suspension's own transcript is the only one that
-            # answers the call this just cancelled.
-            history = list(waiting.messages)
-            completing = waiting.call["id"] or ""
-            recover_pending = False
-        else:
-            if incoming is not None:
-                await orchestrator.enqueue_input(incoming)
-            if active.get("state") == "waiting":
-                answered = active.get("answers") or {}
-                undecided = [
-                    (str(request.get("pending_id")), call["id"] or "")
-                    for call, request in waiting.parked
-                    if (call["id"] or "") not in answered
-                ] or [(str(waiting.request["pending_id"]), waiting.call["id"] or "")]
-                raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
-            if active.get("state") in {"switching", "resuming"}:
-                history = list(waiting.messages) if history is None else history
-                completing = waiting.call["id"] or ""
-                recover_pending = False
-
-        outcome = await self._drive(
-            orchestrator,
-            model,
-            tools,
-            history=history,
-            controls=controls,
-            on_event=on_event,
-            recover_pending=recover_pending,
-            conversation_id=conversation,
-            model_identity=model_identity,
-            **engine_options,
-        )
-        if completing is not None:
-            await orchestrator.complete_continuation(completing)
-        return outcome
-
-    async def _run_direct(
-        self,
-        run_id: str | ExecutionContext,
-        model: Any,
-        tools: Tools,
-        prompt: str,
-        *,
-        controls: Controls | None,
-        on_event: OnAgentEvent | None,
-        prompt_id: str | None,
-        model_identity: str | None,
-        conversation_id: str | None,
-        session: RuntimeOrchestrationSession | None,
-        emit: Emit | None,
         execution: ExecutionContext,
-        **engine_options: Any,
-    ) -> dict[str, Any]:
-        """Drive the shared planner without durable continuation or step state."""
-        run_id = _execution_context(run_id).run_id
-        owned = {
-            "drain_inputs",
-            "discard_inputs",
-            "admit_inputs",
-            "invoke_model",
-            "execute_round",
-            "record_messages",
-        }.intersection(engine_options)
-        if owned:
-            names = ", ".join(sorted(owned))
-            raise TypeError(f"AgentRuntime owns {names}; call react_loop directly to replace them")
-
-        history = engine_options.pop("history", None)
-        conversation = conversation_id or run_id
-        transcript = (
-            await _RuntimeTranscript.open(
-                self._transcript,
-                conversation,
-                run_id,
-                context=execution,
-            )
-            if self._transcript is not None
-            else None
-        )
-        if transcript is not None:
-            if history is None:
-                history = list(transcript.messages)
-            else:
-                await transcript.replace(history)
-
-        queued = [PendingInput("user_prompt", HumanMessage(prompt), prompt_id)] if prompt else []
-        input_session = session.inputs if session is not None else None
-        if input_session is not None and queued:
-            await input_session.submit(queued[0])
-            queued.clear()
-
-        async def drain_inputs() -> list[PendingInput]:
-            nonlocal queued
-            drained, queued = queued, []
-            if input_session is not None:
-                represented = {message.id for message in history or [] if message.id is not None}
-                drained.extend(await input_session.claim(represented))
-            return drained
-
-        engine_options.setdefault("on_model_failure", self._model_failure_policy)
-        engine_options.setdefault("compact_context", self._compact_context)
-        invoke_model: InvokeModel | None = (
-            session.wrap_model(_invoke_direct) if session is not None else None
-        )
-        execute_round = (
-            session.wrap_tools(_execute_direct) if session is not None else _execute_direct
-        )
-
-        async with self._workspace_tools(run_id, tools) as active_tools:
-            outcome = await drive(
-                react_loop,
-                model,
-                active_tools,
-                history=history,
-                controls=controls,
-                emit=emit,
-                drain_inputs=drain_inputs,
-                discard_inputs=input_session.discard if input_session is not None else None,
-                admit_inputs=input_session.admit if input_session is not None else None,
-                record_messages=transcript.append if transcript is not None else None,
-                invoke_model=invoke_model,
-                execute_round=execute_round,
-                on_event=on_event,
-                model_identity=model_identity,
-                **engine_options,
-            )
-        if transcript is not None:
-            await transcript.writer.closed(outcome)
-        return outcome
-
-    async def submit(
-        self,
-        run_id: str | ExecutionContext,
-        item: PendingInput,
-        *,
-        input_mode: InputMode = "interactive",
-        conversation_id: str | None = None,
-    ) -> PendingInput:
-        """Durably route input; user input cancels a parked request in interactive mode."""
-        execution = _execution_context(run_id)
-        orchestrator = self._orchestrator(execution)
-        active = await orchestrator.active_continuation()
-        if (
-            active is not None
-            and active.get("state") == "waiting"
-            and item.kind in {"user_prompt", "user_steer"}
-            and input_mode == "interactive"
-        ):
-            waiting = await self._decode_waiting(
-                active, conversation_id or execution.run_id, execution
-            )
-            if waiting is None:
-                raise RuntimeError("active suspension has no continuation")
-            # Only this branch rewrites the transcript, and only a parked run can reach it — the
-            # attempt ended when it suspended, so the lease is free to take.
-            async with orchestrator:
-                return await self._cancel_and_switch(orchestrator, active, waiting, item)
-        # Unleased on purpose. Enqueueing is append-only and keyed by the input's own id, so it
-        # needs no exclusion — while a live run holds the lease itself, and taking it here (then
-        # dropping it on the way out) moved the token out from under the attempt still writing
-        # with it. A background child settling mid-run fenced its own parent.
-        return await orchestrator.enqueue_input(item)
-
-    async def dispatch(
-        self,
-        run_id: str | ExecutionContext,
-        agent: Agent,
-        command: Command,
+        token: int,
+        agent: Agent[Any, Any],
+        prompt: str | None = None,
         *,
         controls: Controls | None = None,
+        rules_version: str = "",
+        prompt_id: str | None = None,
+        conversation_id: str | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deps: Any = None,
+        capabilities: Sequence[AbstractCapability[Any]] = (),
+        _resumed: dict[str, Resumed] | None = None,
         **options: Any,
-    ) -> dict[str, Any]:
-        """Route a host command to the transition the run's durable state allows.
-
-        One state-aware entry point over ``run``/``resume``/``recover``/``submit`` so every
-        adapter (HTTP, CLI, queue worker, webhook) shares a single transition table. It needs
-        both durable collaborators: state comes from the execution store, history from the
-        transcript.
-
-        A ``Prompt`` sent while another live worker holds the run's lease is durably enqueued
-        for that worker's loop instead, and ``{"type": "enqueued", "input_id": ...}`` is
-        returned. ``Contended`` still propagates from ``Answer``/``Recover`` — those transitions
-        need the lease themselves, and the host may retry. A command the current state cannot
-        accept raises :class:`~semora.dispatch.InvalidTransition`.
-        """
-        if self._runtime_orchestrator is None or self._transcript is None:
-            raise TypeError("dispatch requires AgentRuntime(store=..., transcript=...)")
-        return await default_router().dispatch(
-            self, run_id, agent, command, controls=controls, **options
+    ) -> Outcome:
+        """Drive an attempt while the caller owns the run lease."""
+        conversation = conversation_id or execution.run_id
+        branch = await self._open(execution, conversation)
+        if branch is not None:
+            if message_history is None:
+                message_history = branch.messages or None
+            else:
+                await branch.replace(list(message_history))
+        if prompt is not None and prompt_id is not None and self.store is not None:
+            item = PendingInput("user_prompt", UserPromptPart(prompt), prompt_id)
+            if not await self.store.enqueue_input(execution.run_id, prompt_id, _encode(item)):
+                prompt = None  # delivered once: the earlier attempt already carried it
+            else:
+                await self.store.admit_inputs(execution.run_id, [prompt_id], token)
+        # An explicit control plane wins; otherwise the agent's own methods are the policy.
+        controls = controls if controls is not None else controls_of(agent)
+        effects = Effects(
+            self.store,
+            execution.run_id,
+            token,
+            controls=controls,
+            retry_running=self.retry_running,
+            rules_version=rules_version,
+            subject=execution.subject or "",
+            resumed=_resumed,
+            inputs=_InputSession(self.store, execution.run_id, token) if self.store else None,
+            record=branch.append if branch is not None else None,
         )
-
-    async def state(self, run_id: str | ExecutionContext) -> str:
-        """Name the run's durable state from one observation.
-
-        A parked run reports its continuation state (``waiting``/``switching``/``resuming``).
-        Otherwise the transcript's run record names it: ``fresh`` (never ran), ``completed``
-        (ended), or ``interrupted`` (an open round — a crash, or a run another worker is still
-        driving; only a lease attempt can tell those apart). Without a transcript an unparked
-        run is just ``idle``.
-        """
-        execution = _execution_context(run_id)
-        active = await self._orchestrator(execution).active_continuation()
-        if active:
-            return str(active.get("state"))
-        if self._transcript is None:
-            return "idle"
-        record = await self._transcript.for_execution(execution).read_run(execution.run_id)
-        if record is None:
-            return "fresh"
-        return "completed" if record.get("ended_at") is not None else "interrupted"
-
-    async def committed_history(
-        self, run_id: str | ExecutionContext, conversation_id: str | None = None
-    ) -> list[BaseMessage]:
-        """Read the run's committed model history from the configured transcript."""
-        if self._transcript is None:
-            raise TypeError("committed_history requires AgentRuntime(transcript=...)")
-        execution = _execution_context(run_id)
-        transcript = self._transcript.for_execution(execution)
-        return messages_of(await transcript.read(conversation_id or execution.run_id))
+        # Semora's run id is the durable coordinate every attempt shares; Pydantic AI stamps
+        # each attempt with its own `run_id`, so ours is the conversation.
+        # Called on the base class on purpose: our `Agent` overrides `run` to come here.
+        result: AgentRunResult[Any] = await Agent.run(
+            agent,
+            prompt,
+            conversation_id=conversation,
+            message_history=message_history,
+            deferred_tool_results=deferred_tool_results,
+            deps=deps,
+            output_type=_with_deferred(options.pop("output_type", None) or agent.output_type),
+            capabilities=[effects, *(capabilities or ())],
+            **options,
+        )
+        if branch is not None:
+            await branch.replace(result.all_messages())
+        if isinstance(result.output, DeferredToolRequests):
+            await self._park(execution, conversation, effects, result, token)
+        stop_reason = effects.stop_reason or "completed"
+        if branch is not None:
+            await branch.writer.closed(
+                stop_reason, tool_calls=len(effects.calls_made), usage=_usage(result)
+            )
+        return Outcome(result.output, stop_reason, result)
 
     async def resume(
         self,
         run_id: str | ExecutionContext,
         pending_id: str,
         answer: dict[str, Any],
-        model: BaseChatModel | Agent,
-        tools: Tools | None = None,
+        agent: Agent[Any, Any],
         *,
         controls: Controls | None = None,
-        on_event: OnAgentEvent | None = None,
-        on_suspend: OnSuspend | None = None,
         rules_version: str = "",
-        model_identity: str | None = None,
-        conversation_id: str | None = None,
-        **engine_options: Any,
-    ) -> dict[str, Any]:
+        deps: Any = None,
+    ) -> Outcome:
         """Route an answer by its suspension's external `pending_id`.
 
         A batch park executes nothing until every parked call is decided: an answer for one of
         several parked calls is recorded durably and `AgentSuspended` is raised again with the
-        still-undecided requests. The final answer revalidates and finishes every parked call
-        in model order, and only then does the run continue.
+        still-undecided requests. The final answer revalidates and finishes every parked call in
+        model order, and only then does the run continue. The answer is an *input* to `on_resume`,
+        never the decision: current policy re-decides.
         """
-        model, tools = _resolve_continuation(model, tools, engine_options)
         execution = _execution_context(run_id)
-        conversation = conversation_id or execution.run_id
-        async with self._orchestrator(
-            execution, on_suspend, rules_version, on_event
-        ) as orchestrator:
-            active = await orchestrator.active_continuation()
-            waiting = await self._decode_waiting(active, conversation, execution)
-            parked = list(waiting.parked) if waiting is not None else []
-            by_pending = require_pending_ids(parked)
-            if (
-                waiting is None
-                or active is None
-                or active.get("state") not in {"waiting", "finalizing", "resuming"}
-                or pending_id not in by_pending
-            ):
+        store = self._require_store()
+        async with self._lease(execution.run_id) as token:
+            active = await self._active(execution.run_id)
+            parked = _decode_parked(active) if active is not None else []
+            by_pending = {str(request["pending_id"]): call for call, request in parked}
+            if active is None or pending_id not in by_pending:
                 raise LookupError(f"no active suspension for pending id {pending_id!r}")
-            if execution.subject is not None and waiting.subject not in {"", execution.subject}:
-                raise ValueError("subject cannot differ from the suspended execution context")
-            supplied_subject = engine_options.get("subject")
-            if execution.subject is not None and supplied_subject not in {
-                None,
-                "",
-                execution.subject,
-            }:
-                raise ValueError("subject cannot differ from the trusted execution context")
-            subject = execution.subject or str(supplied_subject or waiting.subject)
-            engine_options["subject"] = subject
-            active = await orchestrator.record_suspension_answer(
-                by_pending[pending_id]["id"] or "", answer
+            answers = {**active["answers"], by_pending[pending_id].tool_call_id: answer}
+            await store.write_control(
+                execution.run_id, ACTIVE_SUSPENSION, {**active, "answers": answers}, token
             )
-            answers = dict(active.get("answers") or {})
-            undecided = [
-                (str(request.get("pending_id")), call["id"] or "")
-                for call, request in parked
-                if (call["id"] or "") not in answers
-            ]
+            undecided = _undecided({**active, "answers": answers})
             if undecided:
                 raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
-            return await self._finalize_suspension(
-                orchestrator,
-                active,
-                waiting,
-                answers,
-                model,
-                tools,
-                controls=controls,
-                on_event=on_event,
-                conversation=conversation,
-                model_identity=model_identity,
-                subject=subject,
-                aborted=engine_options.get("aborted", lambda: False),
-                engine_options=engine_options,
+            return await self._finalize(
+                execution, token, agent, active, answers, parked, controls, rules_version, deps
             )
-
-    async def _finalize_suspension(
-        self,
-        orchestrator: Orchestrator,
-        active: dict[str, Any],
-        waiting: Any,
-        answers: dict[str, Any],
-        model: Any,
-        tools: Tools,
-        *,
-        controls: Controls | None,
-        on_event: OnAgentEvent | None,
-        conversation: str,
-        model_identity: str | None,
-        subject: str,
-        aborted: Aborted,
-        engine_options: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Idempotently finish a fully answered continuation after resume or recovery."""
-        parked = list(waiting.parked)
-        tool_call_id = waiting.call["id"] or ""
-        drive_options = {**engine_options, "aborted": aborted}
-        async with self._workspace_tools(orchestrator.run_id, tools) as active_tools:
-            items: list[PendingInput] = []
-            for index, (call, request) in enumerate(parked):
-                result = await orchestrator.resume_effect(
-                    active_tools,
-                    call,
-                    answers[call["id"] or ""],
-                    request,
-                    waiting.rules_version,
-                    aborted=aborted,
-                    turn=waiting.turn,
-                    controls=controls,
-                    ctx=Ctx(
-                        turn=waiting.turn,
-                        messages=list(waiting.messages),
-                        subject=subject,
-                    ),
-                    park=False,
-                )
-                if result.get("type") == "suspend":
-                    await orchestrator.repark_suspension(
-                        [
-                            (candidate, result if position == index else old_request)
-                            for position, (candidate, old_request) in enumerate(parked)
-                        ],
-                        list(waiting.messages),
-                        waiting.completed,
-                        turn=waiting.turn,
-                        subject=subject,
-                        answers={
-                            key: value
-                            for key, value in answers.items()
-                            if key != (call["id"] or "")
-                        },
-                        reissued=(call, result),
-                    )
-                items.append(
-                    PendingInput(
-                        "resume_result",
-                        suspension_result_message(
-                            call["id"] or "", result, name=call.get("name", "")
-                        ),
-                        f"resume:{request.get('pending_id')}",
-                    )
-                )
-            await orchestrator.continue_with_input(
-                tool_call_id, active["continuation"], items
-            )
-            outcome = await self._drive_active(
-                orchestrator,
-                model,
-                active_tools,
-                history=waiting.messages,
-                controls=controls,
-                on_event=on_event,
-                recover_pending=False,
-                conversation_id=conversation,
-                model_identity=model_identity,
-                **drive_options,
-            )
-        await orchestrator.complete_continuation(tool_call_id)
-        return outcome
 
     async def recover(
         self,
         run_id: str | ExecutionContext,
-        history: list[BaseMessage],
-        model: BaseChatModel | Agent,
-        tools: Tools | None = None,
+        agent: Agent[Any, Any],
+        history: Sequence[ModelMessage],
         *,
         controls: Controls | None = None,
-        aborted: Aborted = lambda: False,
-        retry_running: bool = True,
-        on_event: OnAgentEvent | None = None,
-        on_suspend: OnSuspend | None = None,
         rules_version: str = "",
-        model_identity: str | None = None,
         conversation_id: str | None = None,
-        **engine_options: Any,
-    ) -> dict[str, Any]:
-        """Recover an interrupted tool round and continue without replaying its model turn."""
-        model, tools = _resolve_continuation(model, tools, engine_options)
+        deps: Any = None,
+    ) -> Outcome:
+        """Finish an interrupted run from the transcript the dead worker committed.
+
+        The history ends with the model's tool calls. Pydantic AI resumes from that round; the
+        boundary answers committed calls from the record and runs the rest. The model is not asked
+        again for calls it already made. A round parked before the crash stays parked under its
+        original pending ids — re-gating would orphan every answer in flight.
+        """
         execution = _execution_context(run_id)
-        if execution.subject is not None:
-            supplied_subject = engine_options.get("subject")
-            if supplied_subject not in {None, "", execution.subject}:
-                raise ValueError("subject cannot differ from the trusted execution context")
-            engine_options["subject"] = execution.subject
-        conversation = conversation_id or execution.run_id
-        async with self._orchestrator(
-            execution, on_suspend, rules_version, on_event
-        ) as orchestrator:
-            active = await orchestrator.active_continuation()
-            waiting = await self._decode_waiting(active, conversation, execution)
-            if active is not None and waiting is not None and active.get("state") in {
-                "waiting",
-                "finalizing",
-                "resuming",
-            }:
-                parked = list(waiting.parked)
-                answers = dict(active.get("answers") or {})
-                undecided = [
-                    (str(request["pending_id"]), call["id"] or "")
-                    for call, request in parked
-                    if (call["id"] or "") not in answers
-                ]
-                if undecided:
-                    raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
-                subject = execution.subject or str(engine_options.get("subject") or waiting.subject)
-                engine_options["subject"] = subject
-                return await self._finalize_suspension(
-                    orchestrator,
-                    active,
-                    waiting,
-                    answers,
-                    model,
-                    tools,
-                    controls=controls,
-                    on_event=on_event,
-                    conversation=conversation,
-                    model_identity=model_identity,
-                    subject=subject,
-                    aborted=aborted,
-                    engine_options=engine_options,
-                )
-            async with self._workspace_tools(execution.run_id, tools) as active_tools:
-                recovered = await orchestrator.recover_pending(
-                    history,
-                    active_tools,
-                    controls=controls,
-                    aborted=aborted,
-                    retry_running=retry_running,
-                )
-                for message in recovered.history[len(history) :]:
-                    if isinstance(message, ToolMessage):
-                        await orchestrator.enqueue_input(
-                            PendingInput(
-                                "tool_result",
-                                message,
-                                f"tool:{message.tool_call_id}:result",
-                            )
-                        )
-                return await self._drive_active(
-                    orchestrator,
-                    model,
-                    active_tools,
-                    history=history,
-                    controls=controls,
-                    on_event=on_event,
-                    recover_pending=False,
-                    conversation_id=conversation,
-                    aborted=aborted,
-                    model_identity=model_identity,
-                    **engine_options,
-                )
-
-    async def _drive(
-        self,
-        orchestrator: Orchestrator,
-        model: Any,
-        tools: Tools,
-        *,
-        history: list[BaseMessage] | None,
-        controls: Controls | None,
-        on_event: OnAgentEvent | None,
-        recover_pending: bool,
-        conversation_id: str,
-        **engine_options: Any,
-    ) -> dict[str, Any]:
-        """Acquire one attempt workspace and drive all tool effects through its context."""
-        async with self._workspace_tools(orchestrator.run_id, tools) as active_tools:
-            return await self._drive_active(
-                orchestrator,
-                model,
-                active_tools,
-                history=history,
-                controls=controls,
-                on_event=on_event,
-                recover_pending=recover_pending,
+        async with self._lease(execution.run_id) as token:
+            if self.store is not None:
+                active = await self._active(execution.run_id)
+                if active is not None:
+                    undecided = _undecided(active)
+                    if undecided:
+                        raise AgentSuspended(undecided[0][0], undecided[0][1], pending=undecided)
+                    return await self._finalize(
+                        execution,
+                        token,
+                        agent,
+                        active,
+                        active["answers"],
+                        _decode_parked(active),
+                        controls,
+                        rules_version,
+                        deps,
+                    )
+                recorded = await self.store.read(execution.run_id, PENDING_ROUND)
+                if recorded.status == "done":
+                    ids = {call["id"] for call in recorded.value["calls"]}
+                    if any(call.tool_call_id not in ids for call in unanswered_tool_calls(history)):
+                        raise ValueError("agent history does not match the recorded pending round")
+            return await self._attempt(
+                execution,
+                token,
+                agent,
                 conversation_id=conversation_id,
-                **engine_options,
-            )
-
-    async def _drive_active(
-        self,
-        orchestrator: Orchestrator,
-        model: Any,
-        tools: Tools,
-        *,
-        history: list[BaseMessage] | None,
-        controls: Controls | None,
-        on_event: OnAgentEvent | None,
-        recover_pending: bool,
-        conversation_id: str,
-        **engine_options: Any,
-    ) -> dict[str, Any]:
-        if any(
-            name in engine_options
-            for name in (
-                "drain_inputs",
-                "discard_inputs",
-                "admit_inputs",
-                "invoke_model",
-                "record_messages",
-            )
-        ):
-            raise TypeError(
-                "AgentRuntime owns drain_inputs, discard_inputs, admit_inputs, invoke_model, "
-                "and record_messages"
-            )
-        engine_options.setdefault("on_model_failure", self._model_failure_policy)
-        engine_options.setdefault("compact_context", self._compact_context)
-        # A recovery option, not an engine one: which run's finished effect records may
-        # stand in for this run's absent ones. Taken out here so the loop never sees it.
-        replay_from = engine_options.pop("replay_from", None)
-
-        transcript = (
-            await _RuntimeTranscript.open(
-                self._transcript,
-                conversation_id,
-                orchestrator.run_id,
-                context=orchestrator.context,
-            )
-            if self._transcript is not None
-            else None
-        )
-        if transcript is not None:
-            if history is None:
-                history = list(transcript.messages)
-            else:
-                await transcript.replace(history)
-
-        prefetched: list[PendingInput] = []
-
-        async def drain_inputs() -> list[PendingInput]:
-            # Rebuilt per drain, not hoisted: `history` belongs to the caller, and a set computed
-            # once would answer for the transcript as it looked before the run rather than now.
-            claimed = list(prefetched)
-            prefetched.clear()
-            claimed += await orchestrator.claim_inputs(
-                {message.id for message in history or [] if message.id is not None}
-            )
-            return claimed
-
-        try:
-            if recover_pending:
-                prefetched.extend(
-                    await orchestrator.claim_inputs(
-                        {message.id for message in history or [] if message.id is not None}
-                    )
-                )
-                recovery_history = [
-                    *(history or []),
-                    *(
-                        item.message
-                        for item in prefetched
-                        if isinstance(item.message, ToolMessage)
-                    ),
-                ]
-                await self._recover_pending_inputs(
-                    orchestrator,
-                    recovery_history,
-                    tools,
-                    controls,
-                    engine_options,
-                    replay_from=replay_from,
-                )
-            outcome = await drive(
-                react_loop,
-                model,
-                tools,
-                history=history,
+                message_history=history,
                 controls=controls,
-                emit=orchestrator.emit,
-                drain_inputs=drain_inputs,
-                discard_inputs=orchestrator.discard_inputs,
-                admit_inputs=orchestrator.admit_inputs,
-                record_messages=transcript.append if transcript is not None else None,
-                invoke_model=orchestrator.invoke_model,
-                execute_round=orchestrator.execute_round,
-                on_event=on_event,
-                **engine_options,
+                rules_version=rules_version,
+                deps=deps,
             )
-        except AgentSuspended:
-            # The executor prunes unexecuted calls and includes results completed before the
-            # suspension. Persist that canonical continuation rather than the model's wider batch.
-            if transcript is not None:
-                active = await orchestrator.active_continuation()
-                waiting = decode_continuation(active.get("continuation")) if active else None
-                if waiting is not None:
-                    await transcript.replace(list(waiting.messages))
-                    await orchestrator.compact_suspension(
-                        waiting.call["id"] or "",
-                        conversation_id=conversation_id,
-                        leaf_uuid=transcript.writer.parent_uuid,
-                    )
-            raise
-        if transcript is not None:
-            await transcript.writer.closed(outcome)
+
+    async def submit(self, run_id: str | ExecutionContext, item: PendingInput) -> PendingInput:
+        """Durably queue one input for the run's next model boundary.
+
+        Unleased on purpose: enqueueing is append-only and keyed by the input's own id, so it
+        needs no exclusion, and a live run holds the lease itself.
+        """
+        execution = _execution_context(run_id)
+        normalized = PendingInput(item.kind, item.part, item.origin_id or str(uuid4()))
+        assert normalized.origin_id is not None
+        await self._require_store().enqueue_input(
+            execution.run_id, normalized.origin_id, _encode(normalized)
+        )
+        return normalized
+
+    async def dispatch(
+        self,
+        run_id: str | ExecutionContext,
+        agent: Agent[Any, Any],
+        command: Command,
+        *,
+        controls: Controls | None = None,
+        **options: Any,
+    ) -> Any:
+        """Route a host command to the transition the run's durable state allows.
+
+        One state-aware entry point over ``run``/``resume``/``recover``/``submit`` so every
+        adapter shares a single transition table. It needs both durable collaborators: state
+        comes from the execution store, history from the transcript.
+        """
+        if self.store is None or self.transcript is None:
+            raise TypeError("dispatch requires AgentRuntime(execution_store=..., transcript=...)")
+        return await default_router().dispatch(
+            self, run_id, agent, command, controls=controls, **options
+        )
+
+    async def pending(self, run_id: str | ExecutionContext) -> list[tuple[str, str]]:
+        """The undecided `(pending_id, tool_call_id)` pairs of a parked run, in model order."""
+        if self.store is None:
+            return []
+        active = await self._active(_execution_context(run_id).run_id)
+        return _undecided(active) if active is not None else []
+
+    async def state(self, run_id: str | ExecutionContext) -> str:
+        """Name the run's durable state from one observation.
+
+        A parked run reports its continuation state (``waiting``/``resuming``). Otherwise the
+        transcript's run record names it: ``fresh`` (never ran), ``completed`` (ended), or
+        ``interrupted`` (an open round — a crash, or a run another worker is still driving;
+        only a lease attempt can tell those apart). Without a transcript an unparked run is
+        just ``idle``.
+        """
+        execution = _execution_context(run_id)
+        if self.store is not None:
+            active = await self._active(execution.run_id)
+            if active is not None:
+                return str(active["state"])
+        if self.transcript is None:
+            return "idle"
+        record = await self.transcript.for_execution(execution).read_run(execution.run_id)
+        if record is None:
+            return "fresh"
+        return "completed" if record.get("ended_at") is not None else "interrupted"
+
+    async def committed_history(
+        self, run_id: str | ExecutionContext, conversation_id: str | None = None
+    ) -> list[ModelMessage]:
+        """The committed model history of the run's conversation."""
+        if self.transcript is None:
+            raise TypeError("committed_history requires AgentRuntime(transcript=...)")
+        execution = _execution_context(run_id)
+        entries = await self.transcript.for_execution(execution).read(
+            conversation_id or execution.run_id
+        )
+        return messages_of(entries)
+
+    # ── suspension ────────────────────────────────────────────────────────────
+
+    async def _park(
+        self,
+        execution: ExecutionContext,
+        conversation: str,
+        effects: Effects,
+        result: AgentRunResult[Any],
+        token: int,
+    ) -> None:
+        """Persist every parked call of the round in one transition, then announce it."""
+        requests: DeferredToolRequests = result.output
+        if requests.calls:
+            raise RuntimeError("only a pre_tool_use permission gate may suspend a tool request")
+        parked = [(call, requests.metadata[call.tool_call_id]) for call in requests.approvals]
+        ids = [str(request.get("pending_id") or "") for _, request in parked]
+        if len(set(ids)) != len(ids):
+            # Before persistence: a park with two calls under one id could never be answered apart.
+            raise ValueError(f"a parked round reuses a pending_id: {ids}")
+        messages = result.all_messages()
+        completed = _round_results(messages)
+        if effects.controls is not None:
+            ctx = Ctx(turn=effects.turn, messages=messages, subject=effects.subject)
+            for call, request in parked:
+                await effects.controls.on_suspend(ctx, call, request, messages, completed)
+        pending = [(str(request["pending_id"]), call.tool_call_id) for call, request in parked]
+        if self.store is not None:
+            first = parked[0][0].tool_call_id
+            continuation = {
+                "origin": "pre_tool_use",
+                "calls": [
+                    {
+                        "call": {
+                            "tool_name": call.tool_name,
+                            "args": call.args_as_dict(),
+                            "tool_call_id": call.tool_call_id,
+                        },
+                        "request": request,
+                    }
+                    for call, request in parked
+                ],
+                "messages": to_jsonable_python(messages),
+                "completed": completed,
+                "rules_version": effects.rules_version,
+                "turn": effects.turn,
+                "subject": effects.subject,
+            }
+            writes: dict[str, Any] = {
+                suspend_key(call.tool_call_id): {"active_call_id": first} for call, _ in parked
+            }
+            writes[ACTIVE_SUSPENSION] = {
+                "state": "waiting",
+                "conversation_id": conversation,
+                "call_id": first,
+                "continuation": continuation,
+                "call_ids": [call.tool_call_id for call, _ in parked],
+                "answers": {},
+            }
+            await self.store.commit_transition(
+                execution.run_id, ExecutionTransition(controls=writes), token
+            )
+        raise AgentSuspended(pending[0][0], pending[0][1], pending=pending)
+
+    async def _finalize(
+        self,
+        execution: ExecutionContext,
+        token: int,
+        agent: Agent[Any, Any],
+        active: dict[str, Any],
+        answers: dict[str, dict[str, Any]],
+        parked: list[tuple[ToolCallPart, dict[str, Any]]],
+        controls: Controls | None,
+        rules_version: str,
+        deps: Any,
+    ) -> Outcome:
+        """Idempotently finish a fully answered continuation after resume or recovery."""
+        store = self._require_store()
+        continuation = active["continuation"]
+        history = ModelMessagesTypeAdapter.validate_python(continuation["messages"])
+        approvals: dict[str, bool | ToolApproved | ToolDenied] = {}
+        resumed: dict[str, Resumed] = {}
+        for call, request in parked:
+            answer = answers[call.tool_call_id]
+            denied = answer.get("type") == "error"
+            approvals[call.tool_call_id] = (
+                ToolDenied(str(answer.get("message") or "denied")) if denied else True
+            )
+            resumed[call.tool_call_id] = Resumed(answer, request, continuation["rules_version"])
+        await store.write_control(
+            execution.run_id,
+            ACTIVE_SUSPENSION,
+            {**active, "state": "resuming", "answers": answers},
+            token,
+        )
+        outcome = await self._attempt(
+            execution,
+            token,
+            agent,
+            conversation_id=active.get("conversation_id"),
+            message_history=history,
+            deferred_tool_results=DeferredToolResults(approvals=approvals),
+            controls=controls,
+            rules_version=rules_version,
+            deps=deps,
+            _resumed=resumed,
+        )
+        await store.write_control(
+            execution.run_id,
+            ACTIVE_SUSPENSION,
+            {"state": "completed", "call_id": active["call_id"], "call_ids": active["call_ids"]},
+            token,
+        )
         return outcome
 
+    async def _active(self, run_id: str) -> dict[str, Any] | None:
+        """The live continuation, or None when nothing is parked."""
+        record = await self._require_store().read(run_id, ACTIVE_SUSPENSION)
+        if record.status != "done" or record.value.get("state") not in {"waiting", "resuming"}:
+            return None
+        return dict(record.value)
+
+    # ── lease and transcript ──────────────────────────────────────────────────
+
     @asynccontextmanager
-    async def _workspace_tools(
-        self, run_id: str, tools: Tools
-    ) -> AsyncGenerator[Tools, None]:
-        """Inject a provider-acquired session and guarantee end-of-attempt cleanup."""
-        if self._workspace_provider is None:
-            yield tools
+    async def _lease(self, run_id: str) -> AsyncIterator[int]:
+        if self.store is None:
+            yield 0
             return
-        if not isinstance(tools, ContextualTools):
-            raise TypeError(
-                "workspace_provider requires ContextualTools with get_context() and with_context()"
-            )
-        context = tools.get_context()
-        if not isinstance(context, ToolContext):
-            raise TypeError("ContextualTools.get_context() must return ToolContext")
-        workspace = await self._workspace_provider.acquire(
-            run_id=run_id,
-            base_workdir=context.workdir,
-            manifest=self._workspace_manifest,
-            seed_dirs=self._workspace_seed_dirs,
-        )
-        rebound = tools.with_context(
-            ToolContext(
-                workdir=str(workspace.root),
-                workspace=workspace,
-                metadata=context.metadata,
-            )
-        )
+        owner = uuid4().hex
+        token = await self.store.acquire(run_id, owner, self.lease_ttl)
+        if not token:
+            raise Contended(run_id)
+        renewal = asyncio.create_task(self._renew(run_id, owner))
         try:
-            yield rebound
+            yield token
         finally:
-            await workspace.cleanup()
+            renewal.cancel()
+            await self.store.release(run_id, owner)
 
-    async def _decode_waiting(
-        self,
-        active: dict[str, Any] | None,
-        conversation_id: str,
-        context: ExecutionContext,
-    ) -> Any:
-        """Hydrate either a legacy snapshot or a compact transcript continuation."""
-        if active is None:
+    async def _renew(self, run_id: str, owner: str) -> None:
+        assert self.store is not None
+        while True:
+            await asyncio.sleep(self.lease_ttl / 3)
+            # A lost lease is not handled here: the next write carries a stale token and is Fenced.
+            await self.store.acquire(run_id, owner, self.lease_ttl)
+
+    async def _open(self, execution: ExecutionContext, conversation: str) -> Branch | None:
+        if self.transcript is None:
             return None
-        payload = active.get("continuation")
-        if not isinstance(payload, dict):
-            return None
-        cursor = continuation_cursor(payload)
-        if cursor is None:
-            return decode_continuation(payload)
-        if self._transcript is None:
-            raise RuntimeError("compact suspension requires the configured transcript store")
-        if cursor.conversation_id != conversation_id:
-            raise ValueError(
-                "conversation_id does not match the suspension transcript cursor: "
-                f"{conversation_id!r} != {cursor.conversation_id!r}"
-            )
-        transcript = self._transcript.for_execution(context)
-        entries = await transcript.read(cursor.conversation_id)
-        return decode_cursor_continuation(payload, messages_at(entries, cursor.leaf_uuid))
+        return await Branch.open(self.transcript, conversation, execution.run_id, context=execution)
 
-    async def _recover_pending_inputs(
-        self,
-        orchestrator: Orchestrator,
-        history: list[BaseMessage],
-        tools: Tools,
-        controls: Controls | None,
-        engine_options: dict[str, Any],
-        replay_from: str | None = None,
-    ) -> None:
-        """Turn an unanswered transcript tool round into durable queued results."""
-        recovered = await orchestrator.recover_pending(
-            history,
-            tools,
-            controls=controls,
-            aborted=engine_options.get("aborted", lambda: False),
-            retry_running=True,
-            replay_from=replay_from,
+    def _require_store(self) -> ExecutionStore:
+        if self.store is None:
+            raise TypeError("this needs a ledger; pass execution_store=")
+        return self.store
+
+
+class _InputSession:
+    """Admit the durable input queue through one leased attempt."""
+
+    def __init__(self, store: ExecutionStore, run_id: str, token: int) -> None:
+        self._store = store
+        self._run_id = run_id
+        self._token = token
+        self._seen: set[str] = set()
+
+    async def claim(self, represented: set[str]) -> list[PendingInput]:
+        claimed: list[PendingInput] = []
+        for record in await self._store.list_inputs(self._run_id):
+            # ponytail: an admitted input is trusted as delivered even if history lost it;
+            # semora reclaims those by message id. Reinstate if transcripts prove lossy.
+            if (
+                record.status in {"discarded", "admitted"}
+                or record.input_id in represented
+                or record.input_id in self._seen
+            ):
+                continue
+            await self._store.claim_input(self._run_id, record.input_id, self._token)
+            self._seen.add(record.input_id)
+            claimed.append(_decode(record.value))
+        return claimed
+
+    async def admit(self, items: list[PendingInput]) -> None:
+        ids = [item.origin_id for item in items if item.origin_id is not None]
+        if ids:
+            await self._store.admit_inputs(self._run_id, ids, self._token)
+
+    async def discard(self, items: list[PendingInput]) -> None:
+        ids = [item.origin_id for item in items if item.origin_id is not None]
+        if ids:
+            await self._store.discard_inputs(self._run_id, ids, self._token)
+
+
+def unanswered_tool_calls(history: Sequence[ModelMessage]) -> list[ToolCallPart]:
+    """Calls in the latest model response that have no following tool return.
+
+    Also the answer to "where does a run resume from here": a history that still owes a tool
+    answer resumes at the gate for that round, and one that does not hands the conversation
+    back to the model.
+    """
+    for index in range(len(history) - 1, -1, -1):
+        message = history[index]
+        if not isinstance(message, ModelResponse):
+            continue
+        answered = {
+            part.tool_call_id
+            for later in history[index + 1 :]
+            for part in later.parts
+            if isinstance(part, ToolReturnPart)
+        }
+        return [
+            part
+            for part in message.parts
+            if isinstance(part, ToolCallPart) and part.tool_call_id not in answered
+        ]
+    return []
+
+
+def _round_results(messages: Sequence[ModelMessage]) -> list[dict[str, Any]]:
+    """Results of the calls that completed in the latest round, in model order."""
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], ModelResponse):
+            return [
+                {"id": part.tool_call_id, "result": to_jsonable_python(part.content)}
+                for later in messages[index + 1 :]
+                for part in later.parts
+                if isinstance(part, ToolReturnPart)
+            ]
+    return []
+
+
+def _decode_parked(active: dict[str, Any]) -> list[tuple[ToolCallPart, dict[str, Any]]]:
+    return [
+        (
+            ToolCallPart(
+                tool_name=entry["call"]["tool_name"],
+                args=entry["call"]["args"],
+                tool_call_id=entry["call"]["tool_call_id"],
+            ),
+            dict(entry["request"]),
         )
-        for message in recovered.history[len(history) :]:
-            if isinstance(message, ToolMessage):
-                await orchestrator.enqueue_input(
-                    PendingInput(
-                        "tool_result",
-                        message,
-                        f"tool:{message.tool_call_id}:result",
-                    )
-                )
-
-    def _orchestrator(
-        self,
-        run_id: str | ExecutionContext,
-        on_suspend: OnSuspend | None = None,
-        rules_version: str = "",
-        on_event: OnAgentEvent | None = None,
-    ) -> Orchestrator:
-        if not isinstance(self._runtime_orchestrator, DurableRuntimeOrchestrator):
-            raise RuntimeError(
-                "this operation requires DurableRuntimeOrchestrator or AgentRuntime(store=...)"
-            )
-        return self._runtime_orchestrator.session(
-            self._orchestration_context(
-                run_id,
-                on_suspend=on_suspend,
-                rules_version=rules_version,
-                on_event=on_event,
-            )
-        )
-
-    def _orchestration_context(
-        self,
-        run_id: str | ExecutionContext,
-        *,
-        conversation_id: str | None = None,
-        on_suspend: OnSuspend | None = None,
-        rules_version: str = "",
-        on_event: OnAgentEvent | None = None,
-    ) -> RuntimeOrchestrationContext:
-        """Build the stable context passed to an attached orchestrator."""
-        execution = _execution_context(run_id)
-        publisher = self._emit
-        if self._event_sink is not None:
-            publisher = EventStream(
-                self._event_sink,
-                session_id=execution.session_id or execution.run_id,
-                thread_id=execution.namespace or conversation_id or execution.run_id,
-                run_id=execution.run_id,
-            )
-        return RuntimeOrchestrationContext(
-            execution=execution,
-            emit=publisher,
-            on_suspend=on_suspend,
-            on_agent_event=on_event,
-            rules_version=rules_version,
-        )
-
-    async def _cancel_and_switch(
-        self,
-        orchestrator: Orchestrator,
-        active: dict[str, Any],
-        waiting: Any,
-        incoming: PendingInput,
-    ) -> PendingInput:
-        normalized, cancelled = await orchestrator.cancel_and_switch(
-            list(waiting.parked),
-            active["continuation"],
-            dict(_CANCELLED),
-            incoming,
-        )
-        for call in cancelled:
-            await orchestrator.emit(
-                EventType.TOOL_REQUEST_CANCELLED,
-                {
-                    "turn": waiting.turn,
-                    "call_id": call["id"],
-                    "name": call["name"],
-                    "input": call["args"],
-                    "reason": dict(_CANCELLED),
-                    "replacement_input_id": normalized[-1].origin_id,
-                    "event_id": "\x1f".join(
-                        [str(EventType.TOOL_REQUEST_CANCELLED), str(waiting.turn), str(call["id"])]
-                    ),
-                },
-            )
-        return normalized[-1]
+        for entry in active["continuation"]["calls"]
+    ]
 
 
-async def run(
-    model: BaseChatModel | Agent,
-    tools: Tools | str | None = None,
-    prompt: str = "",
-    *,
-    run_id: str = "default",
-    runtime: AgentRuntime | None = None,
-    **options: Any,
-) -> dict[str, Any]:
-    """Convenience entry point for one direct Semora agent turn."""
-    active = runtime if runtime is not None else AgentRuntime()
-    return await active.run(run_id, model, tools, prompt, **options)
+def _undecided(active: dict[str, Any]) -> list[tuple[str, str]]:
+    answers = active["answers"]
+    return [
+        (str(request["pending_id"]), call.tool_call_id)
+        for call, request in _decode_parked(active)
+        if call.tool_call_id not in answers
+    ]
 
 
-def _resolve_agent(
-    model: BaseChatModel | Agent,
-    tools: Tools | str | None,
-    prompt: str,
-    engine_options: dict[str, Any],
-) -> tuple[BaseChatModel, Tools, str]:
-    """Expand an agent definition while preserving the legacy model/tools call shape."""
-    if isinstance(model, Agent):
-        if tools is not None and not isinstance(tools, str):
-            raise TypeError("Agent owns tools; pass the user prompt as the next argument")
-        if isinstance(tools, str):
-            if prompt:
-                raise TypeError("prompt was provided both positionally and by keyword")
-            prompt = tools
-        if "system_prompt" in engine_options:
-            raise TypeError("Agent owns system_prompt")
-        engine_options["system_prompt"] = model.system_prompt
-        return model.model, model.tools, prompt
-    if tools is None or isinstance(tools, str):
-        raise TypeError("model execution requires a Tools instance")
-    return model, tools, prompt
+def _with_deferred(spec: Any) -> list[Any]:
+    """The requested output types plus the one a parked round ends with."""
+    items = list(spec) if isinstance(spec, list | tuple) else [spec]
+    if DeferredToolRequests not in items:
+        items.append(DeferredToolRequests)
+    return items
 
 
-def _resolve_continuation(
-    model: BaseChatModel | Agent,
-    tools: Tools | None,
-    engine_options: dict[str, Any],
-) -> tuple[BaseChatModel, Tools]:
-    """Expand an agent definition for a continuation, which carries no new prompt."""
-    model, tools, prompt = _resolve_agent(model, tools, "", engine_options)
-    if prompt:
-        raise TypeError("a continuation takes no prompt")
-    return model, tools
+def _usage(result: AgentRunResult[Any]) -> dict[str, dict[str, Any]]:
+    """Token counts keyed by the model that answered, in the transcript's vocabulary."""
+    usage = result.usage
+    counts = {
+        "prompt_tokens": usage.input_tokens,
+        "completion_tokens": usage.output_tokens,
+        "total_tokens": usage.input_tokens + usage.output_tokens,
+    }
+    if not counts["total_tokens"]:
+        return {}
+    model = next(
+        (m.model_name for m in reversed(result.all_messages()) if isinstance(m, ModelResponse)),
+        None,
+    )
+    return {model or "": counts}
+
+
+def _encode(item: PendingInput) -> dict[str, Any]:
+    """Serialize one queue item without teaching the execution ledger about messages."""
+    return {"kind": item.kind, "part": to_jsonable_python(item.part), "origin_id": item.origin_id}
+
+
+def _decode(payload: dict[str, Any]) -> PendingInput:
+    return PendingInput(
+        str(payload["kind"]), _PART.validate_python(payload["part"]), payload.get("origin_id")
+    )
 
 
 def _execution_context(value: str | ExecutionContext) -> ExecutionContext:
-    """Normalize the compatibility run-id form at the host boundary."""
-    return value if isinstance(value, ExecutionContext) else ExecutionContext(value)
+    return value if isinstance(value, ExecutionContext) else ExecutionContext(run_id=value)

@@ -3,7 +3,7 @@
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and
 documentation corrections belong in the commit log, not here.
 
-## Unreleased
+## 0.3.1 — 2026-09-05
 
 - `AgentRuntime.fork(source, at, target, agent, ...)` and `Agent.fork(source, at, ...)`: start a run from one entry of another run's transcript. Effects the source finished in that history replay in the branch without being gated again; the rest runs under the branch's policy.
 - A call whose effect is already in the run's ledger is never gated again, on recovery or otherwise. Asking a person to approve an effect that already happened was possible before.

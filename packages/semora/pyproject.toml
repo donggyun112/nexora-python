@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "semora"
-version = "0.3.2"
+version = "0.3.3"
 description = "Durable execution controls, approval revalidation and effect recovery for Pydantic AI agents."
 requires-python = ">=3.12"
 license = "MIT"
@@ -18,11 +18,11 @@ classifiers = [
 ]
 dependencies = [
   "pydantic-ai-slim>=2.38,<3",
-  "semora-store==0.3.2",
+  "semora-store==0.3.3",
 ]
 
 [project.optional-dependencies]
-postgres = ["semora-store-pg==0.3.2"]
+postgres = ["semora-store-pg==0.3.3"]
 openai = ["pydantic-ai-slim[openai]>=2.38,<3"]
 
 [project.urls]

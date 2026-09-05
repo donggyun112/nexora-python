@@ -3,6 +3,10 @@
 Only what changes for a caller: behaviour, and names that were exported. Internal refactors and
 documentation corrections belong in the commit log, not here.
 
+## 0.3.3 — 2026-09-06
+
+- An approval may replace the call's arguments: `resume(..., {"type": "approve", "args": {...}})`. Pydantic AI validates and runs the replaced arguments, and `on_resume` re-decides on them as the call; the original request is still in `ResumeInput.request`. Before, `args` in an answer was silently dropped.
+
 ## 0.3.2 — 2026-09-05
 
 - `fork(..., history=)` takes the branch point as messages, for a host that keeps its own coordinates; no transcript is read then.

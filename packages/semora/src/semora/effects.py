@@ -420,6 +420,8 @@ class Effects(AbstractCapability[Any]):
             # that wants the new policy's verdict on a copied record says so with `regate`.
             decision = Continue()
         elif ctx.tool_call_approved:
+            # `args` is what will run: the answer may have replaced the model's arguments.
+            call = replace(call, args=args) if isinstance(args, dict) else call
             decision = await self._resume_decision(here, call)
         else:
             decision = await self._gate(here, call)

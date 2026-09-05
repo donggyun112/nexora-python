@@ -565,10 +565,15 @@ class AgentRuntime:
         resumed: dict[str, Resumed] = {}
         for call, request in parked:
             answer = answers[call.tool_call_id]
-            denied = answer.get("type") == "error"
-            approvals[call.tool_call_id] = (
-                ToolDenied(str(answer.get("message") or "denied")) if denied else True
-            )
+            if answer.get("type") == "error":
+                approvals[call.tool_call_id] = ToolDenied(str(answer.get("message") or "denied"))
+            else:
+                # An answer may carry `args`: the person approved the call with these arguments
+                # instead. Pydantic AI validates and runs them; `on_resume` sees them as the call.
+                override = answer.get("args")
+                approvals[call.tool_call_id] = ToolApproved(
+                    override_args=dict(override) if isinstance(override, dict) else None
+                )
             resumed[call.tool_call_id] = Resumed(answer, request, continuation["rules_version"])
         await store.write_control(
             execution.run_id,

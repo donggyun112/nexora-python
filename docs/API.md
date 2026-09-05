@@ -67,7 +67,7 @@ Approval updates and finalization hold the run lease; concurrent `resume` calls 
 
 `Outcome` exposes `output`, `stop_reason`, optional native `result`, `pending`, `pending_id`, `suspended`, and `all_messages()`. A runtime-level park is raised as `AgentSuspended`, carrying `pending_id`, `tool_call_id` and ordered `pending` pairs. The class-agent interface below converts that signal to a suspended outcome, whose `all_messages()` is empty because no native completed result exists.
 
-Use `{"type": "approve"}` for approval and `{"type": "error", "message": "declined"}` for refusal. Refusal cannot be lifted by `on_resume`. Policy-version strings are host-provided labels.
+Use `{"type": "approve"}` for approval, `{"type": "approve", "args": {...}}` to approve with replaced arguments, and `{"type": "error", "message": "declined"}` for refusal. Replaced arguments are validated by Pydantic AI and are what `on_resume` sees as the call; the original request stays in `ResumeInput.request`. Refusal cannot be lifted by `on_resume`. Policy-version strings are host-provided labels.
 
 ## Optional class agent
 

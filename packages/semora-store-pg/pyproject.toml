@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "semora-store-pg"
-version = "0.3.2"
+version = "0.3.3"
 description = "PostgreSQL adapters for Semora storage-semantic contracts."
 requires-python = ">=3.12"
 license = "MIT"
@@ -18,7 +18,7 @@ classifiers = [
 ]
 urls = { Homepage = "https://github.com/donggyun112/semora", Source = "https://github.com/donggyun112/semora", Changelog = "https://github.com/donggyun112/semora/blob/main/CHANGELOG.md" }
 dependencies = [
-  "semora-store==0.3.2",
+  "semora-store==0.3.3",
   "psycopg[binary,pool]>=3.3,<4",
 ]
 # Not `semora`. This implements the ledger protocol and nothing above it, which is what keeps a

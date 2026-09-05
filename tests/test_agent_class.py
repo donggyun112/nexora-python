@@ -155,6 +155,35 @@ async def test_a_suspension_parks_and_the_class_re_decides_on_resume() -> None:
     assert outcome.output == "done"
 
 
+async def test_an_approval_may_replace_the_arguments_and_the_class_re_decides_on_them() -> None:
+    """`args` in an answer used to be dropped; now they are what runs and what on_resume judges."""
+    store = MemorySteps()
+    seen: list[dict[str, str]] = []
+
+    class Careful(Reviewer):
+        async def on_resume(
+            self, ctx: Ctx, call: ToolCallPart, resume: ResumeInput
+        ) -> ToolDecision:
+            seen.append(call.args_as_dict())
+            if call.args_as_dict()["path"].endswith(".env"):
+                return Deny("policy: .env is protected, even by hand")
+            return Continue()
+
+    agent = Careful(
+        Path("/repo"),
+        [("write", {"path": "notes.md", "text": "hi"})],
+        runtime=AgentRuntime(store),
+        run_id="run-10",
+    )
+    assert (await agent.run("write notes")).suspended
+
+    outcome = await agent.resume({"type": "approve", "args": {"path": "NOTES.md", "text": "hi"}})
+
+    assert seen == [{"path": "NOTES.md", "text": "hi"}], "the policy judged what would run"
+    assert agent.touched == ["NOTES.md"] and outcome.output == "done"
+    assert (await store.read("run-10", "tool:c00")).value["value"] == "wrote NOTES.md"
+
+
 async def test_an_explicit_control_plane_replaces_the_class_policy() -> None:
     agent = Reviewer(
         Path("/repo"),

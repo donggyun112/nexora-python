@@ -344,6 +344,41 @@ class Agent(PydanticAgent[Any, Any]):
             )
         return await self._attempt(bound, attempt)
 
+    async def fork(
+        self,
+        source: str | ExecutionContext,
+        at: str | None = None,
+        prompt: str | None = None,
+        *,
+        run_id: str | ExecutionContext | None = None,
+        controls: Controls | None = None,
+        rules_version: str = "",
+        conversation_id: str | None = None,
+        deps: Any = None,
+        **options: Any,
+    ) -> Outcome:
+        """Make this instance's run a branch of `source`, from one transcript entry.
+
+        Effects the source finished before `at` replay here without being gated again; the rest
+        runs under this instance's policy.
+        """
+        bound = self._bind(run_id)
+        return await self._attempt(
+            bound,
+            self.runtime.fork(
+                source,
+                at,
+                bound,
+                self,
+                prompt,
+                controls=controls,
+                rules_version=rules_version,
+                conversation_id=conversation_id,
+                deps=deps,
+                **options,
+            ),
+        )
+
     async def dispatch(
         self,
         command: Command,

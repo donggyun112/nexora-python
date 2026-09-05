@@ -408,11 +408,15 @@ class Effects(AbstractCapability[Any]):
     ) -> Any:
         """Ask the gate. A denial is a result the model sees; a suspension parks first."""
         here = self._ctx(ctx)
-        decision = (
-            await self._resume_decision(here, call)
-            if ctx.tool_call_approved
-            else await self._gate(here, call)
-        )
+        decision: ToolDecision
+        if await self._recorded(call):
+            # The effect happened. No gate can undo it, and asking a person to approve it would
+            # be asking about the past: the record replays and only the journal sees it.
+            decision = Continue()
+        elif ctx.tool_call_approved:
+            decision = await self._resume_decision(here, call)
+        else:
+            decision = await self._gate(here, call)
         match decision:
             case Deny(result):
                 self._made(call, refused=True)
@@ -442,12 +446,14 @@ class Effects(AbstractCapability[Any]):
             return Deny(NOT_EXECUTED)
         return decision
 
+    async def _recorded(self, call: ToolCallPart) -> bool:
+        """Whether this run's ledger already holds the call's finished effect."""
+        if self.store is None:
+            return False
+        return (await self.store.read(self.run_id, step_key(call.tool_call_id))).status == "done"
+
     async def _resume_decision(self, here: Ctx, call: ToolCallPart) -> ToolDecision:
-        """Replay a committed effect before revalidating policy; otherwise ask `on_resume`."""
-        if self.store is not None:
-            record = await self.store.read(self.run_id, step_key(call.tool_call_id))
-            if record.status == "done":
-                return Continue()
+        """Ask `on_resume` about an approved call that still has to run."""
         resumed = self.resumed.get(call.tool_call_id)
         if resumed is None or self.controls is None:
             return Continue()

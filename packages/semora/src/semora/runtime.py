@@ -43,8 +43,8 @@ from semora_store import (
 from .contracts import AgentSuspended, PendingInput, StopReason
 from .controls import Controls, Ctx, controls_of
 from .dispatch import Command, default_router
-from .effects import PENDING_ROUND, Effects, Resumed
-from .transcript import Branch, messages_of
+from .effects import PENDING_ROUND, Effects, Resumed, step_key
+from .transcript import Branch, messages_at, messages_of
 
 __all__ = ["ACTIVE_SUSPENSION", "AgentRuntime", "Outcome", "unanswered_tool_calls"]
 
@@ -335,6 +335,57 @@ class AgentRuntime:
                 controls=controls,
                 rules_version=rules_version,
                 deps=deps,
+            )
+
+    async def fork(
+        self,
+        source: str | ExecutionContext,
+        at: str | None,
+        target: str | ExecutionContext,
+        agent: Agent[Any, Any],
+        prompt: str | None = None,
+        *,
+        controls: Controls | None = None,
+        rules_version: str = "",
+        source_conversation_id: str | None = None,
+        conversation_id: str | None = None,
+        deps: Any = None,
+        **options: Any,
+    ) -> Outcome:
+        """Start `target` from one point of `source`'s transcript.
+
+        `at` is a transcript entry uuid; `None` forks from the tip of the active branch. The
+        history up to that point becomes the new run's, and `prompt` follows it. Calls in that
+        history the source run finished are copied into the new run's ledger, so they replay
+        instead of running again and no gate is asked about them; the new run's `post_tool_use`
+        still sees each of them once. Anything the source never finished runs fresh, under the
+        new run's policy. The source run is read, never written.
+        """
+        if self.transcript is None:
+            raise TypeError("fork requires AgentRuntime(transcript=...)")
+        src, dst = _execution_context(source), _execution_context(target)
+        entries = await self.transcript.for_execution(src).read(
+            source_conversation_id or src.run_id
+        )
+        history = messages_at(entries, at) if at is not None else messages_of(entries)
+        async with self._lease(dst.run_id) as token:
+            if self.store is not None:
+                for call in unanswered_tool_calls(history):
+                    key = step_key(call.tool_call_id)
+                    record = await self.store.read(src.run_id, key)
+                    if record.status == "done" and await self.store.start(dst.run_id, key, token):
+                        await self.store.finish_effect(dst.run_id, key, record.value, token)
+            return await self._attempt(
+                dst,
+                token,
+                agent,
+                prompt,
+                controls=controls,
+                rules_version=rules_version,
+                conversation_id=conversation_id,
+                message_history=history,
+                deps=deps,
+                **options,
             )
 
     async def submit(self, run_id: str | ExecutionContext, item: PendingInput) -> PendingInput:

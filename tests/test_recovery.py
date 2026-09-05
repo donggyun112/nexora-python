@@ -18,7 +18,8 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from semora import AgentRuntime
+from semora import AgentRuntime, ControlPlane
+from semora.controls import Continue, Ctx, Suspend, ToolDecision
 from semora_store import Indeterminate, MemorySteps
 
 
@@ -83,6 +84,30 @@ async def test_committed_call_replays_and_absent_call_runs() -> None:
     assert files.ran == ["b.md"], "the committed write must not run a second time"
     assert outcome.output == "both written"
     assert consulted == [3], "the model was consulted once, for the answer, with both results"
+
+
+async def test_a_finished_call_is_not_gated_again_on_recovery() -> None:
+    """A gate cannot undo an effect; asking a person to approve one that happened is a bug."""
+    store = MemorySteps()
+    files = Files()
+    agent, _ = never_asked_twice()
+    agent.tool_plain(files.write)
+    await store.start("run-4b", "tool:c1")
+    await store.finish_effect("run-4b", "tool:c1", {"ok": True, "value": "wrote a.md"})
+    asked: list[str] = []
+
+    async def ask_about_a(ctx: Ctx, call: ToolCallPart) -> ToolDecision:
+        asked.append(call.tool_call_id)
+        if call.args_as_dict()["path"] == "a.md":
+            return Suspend({"pending_id": "approve-a"})
+        return Continue()
+
+    outcome = await AgentRuntime(execution_store=store).recover(
+        "run-4b", agent, dead_workers_transcript(), controls=ControlPlane(pre_tool_use=ask_about_a)
+    )
+
+    assert asked == ["c2"], "the finished call never reached the gate"
+    assert outcome.stop_reason == "completed" and files.ran == ["b.md"]
 
 
 async def test_started_but_unreported_call_is_indeterminate() -> None:
